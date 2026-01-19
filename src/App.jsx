@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical } from 'lucide-react';
 import { auth, db, appId } from './firebase'; // 作成したファイルからインポート
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -23,34 +23,35 @@ const CATEGORY_DEFS = {
   'req':     { label: '希望',    color: 'bg-pink-50 text-pink-600' },
 };
 
+// 並び替え用のorderを追加
 const DEFAULT_SHIFT_TYPES = {
-  'A': { code: 'A', label: '坂3', color: 'bg-transparent', text: 'text-blue-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'saka', type: 'shift' },
-  'P': { code: 'P', label: '坂2', color: 'bg-transparent', text: 'text-blue-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'saka', type: 'shift' },
-  'C': { code: 'C', label: '坂日', color: 'bg-transparent', text: 'text-blue-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'saka', type: 'shift' },
-  'F': { code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift' },
-  'B': { code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift' },
-  'D': { code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift' },
-  'I': { code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
-  'K': { code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
-  'Z2': { code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift' },
-  'Z1': { code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift' },
-  'L':  { code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
-  'G':  { code: 'G',  label: 'G',    color: 'bg-transparent', text: 'text-orange-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
-  '/':  { code: '/',  label: '出勤', color: 'bg-transparent', text: 'text-gray-800',   startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
-  'O':  { code: 'O',  label: '公出', color: 'bg-transparent', text: 'text-indigo-700', startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
-  'S':  { code: 'S',  label: '指定', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'H':  { code: 'H',  label: '振休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'Y':  { code: 'Y',  label: '年休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'R':  { code: 'R',  label: 'リフレ',color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'HOPE': { code: 'HOPE', label: '希望', color: 'bg-pink-100', text: 'text-pink-600', startTime: '', endTime: '', overtime: 0, time: 'Request', category: 'req', type: 'shift' },
+  'A': { order: 0, code: 'A', label: '坂3', color: 'bg-transparent', text: 'text-blue-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'saka', type: 'shift' },
+  'P': { order: 1, code: 'P', label: '坂2', color: 'bg-transparent', text: 'text-blue-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'saka', type: 'shift' },
+  'C': { order: 2, code: 'C', label: '坂日', color: 'bg-transparent', text: 'text-blue-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'saka', type: 'shift' },
+  'F': { order: 3, code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift' },
+  'B': { order: 4, code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift' },
+  'D': { order: 5, code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift' },
+  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
+  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
+  'Z2': { order: 8, code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift' },
+  'Z1': { order: 9, code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift' },
+  'L':  { order: 10, code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
+  'G':  { order: 11, code: 'G',  label: 'G',    color: 'bg-transparent', text: 'text-orange-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
+  '/':  { order: 12, code: '/',  label: '出勤', color: 'bg-transparent', text: 'text-gray-800',   startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
+  'O':  { order: 13, code: 'O',  label: '公出', color: 'bg-transparent', text: 'text-indigo-700', startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
+  'S':  { order: 14, code: 'S',  label: '指定', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
+  'H':  { order: 15, code: 'H',  label: '振休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
+  'Y':  { order: 16, code: 'Y',  label: '年休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
+  'R':  { order: 17, code: 'R',  label: 'リフレ',color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
+  'HOPE': { order: 18, code: 'HOPE', label: '希望', color: 'bg-pink-100', text: 'text-pink-600', startTime: '', endTime: '', overtime: 0, time: 'Request', category: 'req', type: 'shift' },
   
-  'task_A': { code: 'task_A', label: 'A', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_P': { code: 'task_P', label: 'P', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_N': { code: 'task_N', label: 'N', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_B': { code: 'task_B', label: 'B', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_K': { code: 'task_K', label: 'K', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_3F': { code: 'task_3F', label: '3F', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
-  'task_ICU': { code: 'task_ICU', label: 'ICU', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_A': { order: 19, code: 'task_A', label: 'A', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_P': { order: 20, code: 'task_P', label: 'P', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_N': { order: 21, code: 'task_N', label: 'N', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_B': { order: 22, code: 'task_B', label: 'B', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_K': { order: 23, code: 'task_K', label: 'K', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_3F': { order: 24, code: 'task_3F', label: '3F', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
+  'task_ICU': { order: 25, code: 'task_ICU', label: 'ICU', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
 };
 
 const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パート'];
@@ -504,14 +505,31 @@ export default function WorkScheduleApp() {
       return;
     }
     const newDefs = { ...shiftDefs };
+    
+    // コード変更時の処理
     if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) {
       delete newDefs[editingShift.originalCode];
     }
+
     const { originalCode, ...cleanShift } = editingShift;
+
+    // 新規作成の場合、orderを自動付与
+    if (newDefs[cleanShift.code]?.order === undefined) {
+      const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
+      cleanShift.order = maxOrder + 1;
+    } else {
+      // 既存の場合はorderを維持（フォームには含まれていない可能性があるため念のため）
+      cleanShift.order = newDefs[cleanShift.code].order;
+    }
+
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
-    setShowShiftEditModal(false);
+    
+    // 修正: モーダルを閉じずにアラートを表示し、連続編集を可能にする
+    alert('保存しました');
+    // コードが変更された場合、editingShiftのoriginalCodeも更新しておく
+    setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
 
   const deleteShiftConfig = (code) => {
@@ -522,6 +540,38 @@ export default function WorkScheduleApp() {
       saveMasterData(staffList, newDefs);
       if (editingShift?.originalCode === code) setShowShiftEditModal(false);
     }
+  };
+
+  const handleSortShift = (dragCode, dropCode) => {
+    if (dragCode === dropCode) return;
+    const dragShift = shiftDefs[dragCode];
+    const dropShift = shiftDefs[dropCode];
+    // 同じカテゴリ内のみ移動可能とする
+    if (dragShift.category !== dropShift.category) return;
+
+    // 現在の表示順（ソート済み）を取得
+    const group = dynamicPaletteGroups.find(g => g.id === dragShift.category);
+    if (!group) return;
+
+    const items = [...group.items];
+    const dragIdx = items.indexOf(dragCode);
+    const dropIdx = items.indexOf(dropCode);
+    if (dragIdx === -1 || dropIdx === -1) return;
+
+    // 配列内で移動
+    items.splice(dragIdx, 1);
+    items.splice(dropIdx, 0, dragCode);
+
+    // order値を再割り当て
+    const newDefs = { ...shiftDefs };
+    items.forEach((code, index) => {
+      if (newDefs[code]) {
+        newDefs[code] = { ...newDefs[code], order: index };
+      }
+    });
+
+    setShiftDefs(newDefs);
+    saveMasterData(staffList, newDefs);
   };
 
   // AI
@@ -572,16 +622,22 @@ export default function WorkScheduleApp() {
   const dynamicPaletteGroups = useMemo(() => {
     const groups = {};
     Object.keys(CATEGORY_DEFS).forEach(cat => groups[cat] = []);
-    Object.values(shiftDefs).forEach(shift => {
-      if (groups[shift.category]) groups[shift.category].push(shift.code);
-      else { if (!groups['basic']) groups['basic'] = []; groups['basic'].push(shift.code); }
-    });
+    Object.values(shiftDefs)
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)) // orderでソート
+      .forEach(shift => {
+        if (groups[shift.category]) groups[shift.category].push(shift.code);
+        else { if (!groups['basic']) groups['basic'] = []; groups['basic'].push(shift.code); }
+      });
     return Object.keys(CATEGORY_DEFS).map(key => ({ id: key, name: CATEGORY_DEFS[key].label, items: groups[key] })).filter(g => g.items.length > 0);
   }, [shiftDefs]);
   const dynamicSummaryGroups = useMemo(() => {
     const targetCategories = ['saka', 'kimi', 'moku', 'jinkuri', 'me'];
     return targetCategories.map(catKey => {
-      const categoryItems = Object.values(shiftDefs).filter(s => s.category === catKey && s.type === 'shift').map(s => s.code);
+      // 集計欄もorder順に表示するためソート
+      const categoryItems = Object.values(shiftDefs)
+        .filter(s => s.category === catKey && s.type === 'shift')
+        .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+        .map(s => s.code);
       return { name: CATEGORY_DEFS[catKey].label, items: categoryItems, totalLabel: `${CATEGORY_DEFS[catKey].label} 計`, headerColor: CATEGORY_DEFS[catKey].color };
     });
   }, [shiftDefs]);
@@ -905,7 +961,20 @@ export default function WorkScheduleApp() {
                         <div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div>
                         <div className="space-y-1">
                           {g.items.map(code => (
-                            <div key={code} onClick={() => handleEditShift(code)} className={`p-2 rounded cursor-pointer border text-xs ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}>
+                            <div 
+                              key={code} 
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData('text/plain', code)}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const dragCode = e.dataTransfer.getData('text/plain');
+                                handleSortShift(dragCode, code);
+                              }}
+                              onClick={() => handleEditShift(code)} 
+                              className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}
+                            >
+                              <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
                               <span className={shiftDefs[code].text}>{shiftDefs[code].label}</span>
                             </div>
                           ))}
