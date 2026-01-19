@@ -558,6 +558,10 @@ export default function WorkScheduleApp() {
     const dropIdx = items.indexOf(dropCode);
     if (dragIdx === -1 || dropIdx === -1) return;
 
+    // 移動前のアイテムたちが持っているorder値を収集・ソートして確保しておく
+    // これにより、他のカテゴリのorder値（0, 1, 2...など）と重複しないようにする
+    const currentOrders = items.map(code => shiftDefs[code]?.order || 0).sort((a, b) => a - b);
+
     // 配列内で移動
     items.splice(dragIdx, 1);
     items.splice(dropIdx, 0, dragCode);
