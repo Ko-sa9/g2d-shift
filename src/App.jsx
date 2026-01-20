@@ -11,12 +11,12 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// 管理者ログイン時のパスワードと表示モードの対応設定
-const ADMIN_VIEW_PASSWORDS = {
-  'admin': 'all',        // 全体
-  'admin-opera': 'opera', // オペ班
-  'admin-echo': 'echo',   // エコー班
-  'admin-hhd': 'hhd',     // HHD班
+// 管理者設定の初期値（DBにデータがない場合に使用）
+const DEFAULT_ADMIN_SETTINGS = {
+  'all':   { password: 'admin',       label: '全体管理者' },
+  'opera': { password: 'admin-opera', label: 'オペ班管理者' },
+  'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
+  'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
 
 const CATEGORY_DEFS = {
@@ -221,7 +221,7 @@ const callGemini = async (prompt, systemInstruction = "") => {
   }
 };
 
-const LoginScreen = ({ onLogin, staffList }) => {
+const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTINGS }) => {
   const [selectedRole, setSelectedRole] = useState('staff');
   const [selectedStaffId, setSelectedStaffId] = useState('');
   const [password, setPassword] = useState('');
@@ -229,10 +229,12 @@ const LoginScreen = ({ onLogin, staffList }) => {
 
   const handleLogin = () => {
     if (selectedRole === 'admin') {
-      // パスワードマップをチェックして表示モードを決定
-      const viewMode = ADMIN_VIEW_PASSWORDS[password];
-      if (viewMode) {
-        onLogin({ role: 'admin', name: '管理者', initialView: viewMode });
+      // adminSettings から一致するパスワードを検索
+      const foundViewKey = Object.keys(adminSettings).find(key => adminSettings[key].password === password);
+      
+      if (foundViewKey) {
+        // 見つかった場合、そのビューモードでログイン
+        onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
       } else {
         setError('パスワードが違います (初期: admin)');
       }
@@ -291,6 +293,7 @@ export default function WorkScheduleApp() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [staffList, setStaffList] = useState([]);
   const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_TYPES);
+  const [adminSettings, setAdminSettings] = useState(DEFAULT_ADMIN_SETTINGS); // 管理者設定をState管理
   const [shiftData, setShiftData] = useState({});
   const [taskData, setTaskData] = useState({});
   
@@ -302,6 +305,9 @@ export default function WorkScheduleApp() {
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
+
+  // 管理者パスワード変更時のターゲット選択
+  const [targetAdminKey, setTargetAdminKey] = useState('all');
 
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
@@ -332,9 +338,11 @@ export default function WorkScheduleApp() {
         const data = docSnap.data();
         setStaffList(data.staffList || []);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
+        setAdminSettings(data.adminSettings || DEFAULT_ADMIN_SETTINGS); // DBから管理者設定を読み込み
       } else {
-        setDoc(masterDocRef, { staffList: INITIAL_STAFF, shiftDefs: DEFAULT_SHIFT_TYPES });
+        setDoc(masterDocRef, { staffList: INITIAL_STAFF, shiftDefs: DEFAULT_SHIFT_TYPES, adminSettings: DEFAULT_ADMIN_SETTINGS });
         setStaffList(INITIAL_STAFF);
+        setAdminSettings(DEFAULT_ADMIN_SETTINGS);
       }
     });
     const scheduleId = `schedule_${year}_${month}`;
@@ -362,10 +370,15 @@ export default function WorkScheduleApp() {
     await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks }, { merge: true });
   };
 
-  const saveMasterData = async (newStaffList, newShiftDefs) => {
+  // 引数をオプショナルにして、省略された場合は現在のStateを使用するように変更
+  const saveMasterData = async (list = staffList, defs = shiftDefs, settings = adminSettings) => {
     if (!authUser) return;
     const masterDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'general', 'masterData');
-    await setDoc(masterDocRef, { staffList: newStaffList, shiftDefs: newShiftDefs }, { merge: true });
+    await setDoc(masterDocRef, { 
+      staffList: list, 
+      shiftDefs: defs, 
+      adminSettings: settings 
+    }, { merge: true });
   };
 
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
@@ -427,10 +440,24 @@ export default function WorkScheduleApp() {
       alert('新しいパスワードを入力してください');
       return;
     }
-    const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: newPassword } : s);
-    setStaffList(newList);
-    saveMasterData(newList, shiftDefs);
-    alert('パスワードを変更しました。次回ログイン時から有効です。');
+
+    if (appUser.role === 'admin') {
+      // 管理者パスワードの更新処理
+      const newSettings = { ...adminSettings };
+      if (newSettings[targetAdminKey]) {
+        newSettings[targetAdminKey] = { ...newSettings[targetAdminKey], password: newPassword };
+      }
+      setAdminSettings(newSettings);
+      saveMasterData(staffList, shiftDefs, newSettings);
+      alert(`${newSettings[targetAdminKey].label}のパスワードを変更しました。`);
+    } else {
+      // 職員パスワードの更新処理
+      const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: newPassword } : s);
+      setStaffList(newList);
+      saveMasterData(newList, shiftDefs, adminSettings);
+      alert('パスワードを変更しました。次回ログイン時から有効です。');
+    }
+    
     setShowPasswordChangeModal(false);
     setNewPassword('');
   };
@@ -454,7 +481,7 @@ export default function WorkScheduleApp() {
       ? staffList.map(s => s.id === targetStaff.id ? targetStaff : s)
       : [...staffList, { ...targetStaff, id: Date.now().toString() }];
     setStaffList(newList);
-    saveMasterData(newList, shiftDefs);
+    saveMasterData(newList);
     setShowStaffModal(false);
   };
 
@@ -462,7 +489,7 @@ export default function WorkScheduleApp() {
     if (window.confirm('この職員を削除しますか？')) {
       const newList = staffList.filter(s => s.id !== id);
       setStaffList(newList);
-      saveMasterData(newList, shiftDefs);
+      saveMasterData(newList);
     }
   };
 
@@ -475,7 +502,7 @@ export default function WorkScheduleApp() {
     const [dragItem] = newStaffList.splice(dragIndex, 1);
     newStaffList.splice(dropIndex, 0, dragItem);
     setStaffList(newStaffList);
-    saveMasterData(newStaffList, shiftDefs);
+    saveMasterData(newStaffList);
   };
 
   const handleAddNewShift = () => {
@@ -672,6 +699,7 @@ export default function WorkScheduleApp() {
         if (user.role === 'staff') setViewMode('personal');
       }} 
       staffList={staffList} 
+      adminSettings={adminSettings} // 管理者設定を渡す
     />
   );
   
@@ -1050,42 +1078,6 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {showStaffModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowStaffModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
-                <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
-              </div>
-              <div className="p-6 space-y-4">
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label>
-                  <select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => {
-                    const newTitle = e.target.value;
-                    let newRoles = targetStaff.roles ? [...targetStaff.roles] : [];
-                    if(LEADER_FORCE_TITLES.includes(newTitle) && !newRoles.includes('リーダー')) newRoles.push('リーダー');
-                    setTargetStaff({...targetStaff, jobTitle: newTitle, roles: newRoles});
-                  }}>
-                    {JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール</label>
-                  <div className="space-y-2">{STAFF_ROLES.map(r => (
-                    <label key={r} className="flex items-center gap-2"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => {
-                      const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r];
-                      setTargetStaff({...targetStaff, roles});
-                    }}/> <span className="text-sm">{r}</span></label>
-                  ))}</div>
-                </div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
-              </div>
-              <div className="p-4 border-t flex justify-end gap-2">
-                <button onClick={saveStaff} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存</button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {showPasswordChangeModal && (
           <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowPasswordChangeModal(false)}>
              <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1094,6 +1086,20 @@ export default function WorkScheduleApp() {
                  <button onClick={() => setShowPasswordChangeModal(false)}><X size={20} className="text-gray-400"/></button>
                </div>
                <div className="p-6">
+                 {appUser.role === 'admin' ? (
+                   <div className="mb-4">
+                     <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
+                     <select 
+                       className="w-full border p-2 rounded-lg"
+                       value={targetAdminKey}
+                       onChange={e => setTargetAdminKey(e.target.value)}
+                     >
+                       {Object.keys(adminSettings).map(key => (
+                         <option key={key} value={key}>{adminSettings[key].label}</option>
+                       ))}
+                     </select>
+                   </div>
+                 ) : null}
                  <label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label>
                  <input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} autoFocus />
                </div>
