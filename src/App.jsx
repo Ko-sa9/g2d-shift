@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, Filter } from 'lucide-react';
-import { auth, db, appId } from './firebase'; // 作成したファイルからインポート
+// Filterを削除し、Settingsのみ残しました
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings } from 'lucide-react';
+import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
 
 // Gemini API Key
-// .envファイルから VITE_GEMINI_API_KEY を読み込みます
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 // ------------------------------------------------------------------
@@ -737,7 +737,12 @@ export default function WorkScheduleApp() {
   const getPopupOptions = (type) => {
     // オペ班モードなら L, G のみ
     if (currentView === 'opera' && type === 'shift') {
-      return [shiftDefs['L'], shiftDefs['G']].filter(Boolean);
+      const l = shiftDefs['L'];
+      const g = shiftDefs['G'];
+      const opts = [];
+      if (l) opts.push(l);
+      if (g) opts.push(g);
+      return opts;
     }
 
     // Left palette order
