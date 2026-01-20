@@ -240,11 +240,9 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 
   const handleLogin = () => {
     if (selectedRole === 'admin') {
-      // adminSettings から一致するパスワードを検索
       const foundViewKey = Object.keys(adminSettings).find(key => adminSettings[key].password === password);
       
       if (foundViewKey) {
-        // 見つかった場合、そのビューモードでログイン
         onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
       } else {
         setError('パスワードが違います (初期: admin)');
@@ -256,7 +254,6 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
         return;
       }
       if (password === staff.password) {
-        // 職員はデフォルト設定でログイン
         onLogin({ role: 'staff', ...staff });
       } else {
         setError('パスワードが違います (初期: 1234)');
@@ -344,10 +341,10 @@ export default function WorkScheduleApp() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         
-        // 職員リスト読み込み時に loginId がない場合は id を loginId として設定するマイグレーション
+        // 修正: 既存データのシステムIDを勝手にログインIDとして使わないようにする
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
-          loginId: s.loginId || s.id // loginIdがない場合はidを代用
+          loginId: s.loginId || '' // loginIdがない場合は空文字（未設定）
         }));
 
         setStaffList(loadedStaffList);
@@ -499,16 +496,16 @@ export default function WorkScheduleApp() {
       return;
     }
 
-    // ログインIDの重複チェック (自分自身は除外)
-    const isDuplicate = staffList.some(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
-    if (isDuplicate) {
-      alert('そのログインIDは既に使用されています');
+    // ログインID重複チェック（自分自身以外の重複を探す）
+    const duplicateStaff = staffList.find(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
+    if (duplicateStaff) {
+      alert(`そのログインID "${targetStaff.loginId}" は既に "${duplicateStaff.name}" さんに使用されています。\n別のIDを指定してください。`);
       return;
     }
 
     let newList = [...staffList];
     if (targetStaff.id) {
-      // 既存の更新: システムIDが一致するものを探して更新
+      // 既存データの更新: システムIDが一致するものを探して更新
       newList = newList.map(s => s.id === targetStaff.id ? targetStaff : s);
     } else {
       // 新規作成: システムIDを生成して追加
