@@ -11,8 +11,13 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// 管理者設定の表示順序定義
-const ADMIN_ROLE_ORDER = ['all', 'ope', 'echo', 'hhd'];
+// 管理者ログイン時のパスワードと表示モードの対応設定
+const ADMIN_VIEW_PASSWORDS = {
+  'admin': 'all',        // 全体
+  'admin-ope': 'ope',    // オペ班
+  'admin-echo': 'echo',  // エコー班
+  'admin-hhd': 'hhd',    // HHD班
+};
 
 const CATEGORY_DEFS = {
   'saka':    { label: '坂田',    color: 'bg-blue-50 text-blue-800' },
@@ -83,6 +88,9 @@ const DEFAULT_ADMIN_SETTINGS = {
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
+
+// 管理者設定の表示順序定義
+const ADMIN_ROLE_ORDER = ['all', 'ope', 'echo', 'hhd'];
 
 const TIME_OPTIONS = (() => {
   const times = [];
@@ -338,7 +346,6 @@ export default function WorkScheduleApp() {
         setStaffList(data.staffList || []);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
         
-        // adminSettingsの読み込みとマイグレーション (opera -> ope)
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
         if (loadedAdminSettings['opera']) {
            const { opera, ...rest } = loadedAdminSettings;
@@ -466,12 +473,12 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddStaff = () => {
-    setTargetStaff({ id: '', name: '', jobTitle: '一般', roles: [] });
+    setTargetStaff({ id: '', name: '', jobTitle: '一般', roles: [], _originalId: null });
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
-    setTargetStaff({ ...staff });
+    setTargetStaff({ ...staff, _originalId: staff.id });
     setShowStaffModal(true);
   };
 
@@ -484,26 +491,34 @@ export default function WorkScheduleApp() {
       alert('IDを入力してください');
       return;
     }
-    // IDの重複チェック
-    const isDuplicate = staffList.some(s => s.id === targetStaff.id && s.name !== targetStaff.name); 
-    if(isDuplicate && !window.confirm('このIDは既に使用されています。上書きしますか？')){
-      return;
+
+    // 更新ロジック修正: 追加か編集かを元IDの有無で判断
+    const originalId = targetStaff._originalId;
+    const newId = targetStaff.id;
+    let newList = [...staffList];
+
+    if (!originalId) {
+      // 新規作成時：ID重複チェック
+      if (staffList.some(s => s.id === newId)) {
+        alert('そのIDは既に使用されています');
+        return;
+      }
+      newList.push(targetStaff);
+    } else {
+      // 編集時：IDを変更した場合の重複チェック
+      if (originalId !== newId && staffList.some(s => s.id === newId)) {
+        alert('変更後のIDは既に使用されています');
+        return;
+      }
+      // 既存データの更新（元IDを持つデータを置換）
+      newList = newList.map(s => s.id === originalId ? targetStaff : s);
     }
 
-    // IDが一致するものを更新、なければ新規追加
-    let exists = false;
-    const newList = staffList.map(s => {
-      if (s.id === targetStaff.id) {
-        exists = true;
-        return targetStaff;
-      }
-      return s;
-    });
-    
-    if (!exists) newList.push(targetStaff);
+    // 保存用に一時プロパティを除去
+    const cleanList = newList.map(({ _originalId, ...rest }) => rest);
 
-    setStaffList(newList);
-    saveMasterData(newList);
+    setStaffList(cleanList);
+    saveMasterData(cleanList);
     setShowStaffModal(false);
   };
 
