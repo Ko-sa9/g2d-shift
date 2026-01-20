@@ -480,13 +480,11 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddStaff = () => {
-    // 新規作成時はシステムIDは空（保存時に生成）、ログインIDは入力待ち
     setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [] });
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
-    // 編集時は既存のデータをセット
     setTargetStaff({ ...staff });
     setShowStaffModal(true);
   };
@@ -1132,7 +1130,7 @@ export default function WorkScheduleApp() {
               </div>
               <div className="p-6 space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">職員ID <span className="text-red-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label>
                   <input type="text" className="w-full border p-2 rounded" placeholder="任意のIDを入力" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} />
                   <p className="text-[10px] text-gray-400 mt-1">ログインに使用するIDです</p>
                 </div>
@@ -1180,10 +1178,8 @@ export default function WorkScheduleApp() {
                        value={targetAdminKey}
                        onChange={e => setTargetAdminKey(e.target.value)}
                      >
-                       {ADMIN_ROLE_ORDER.map(key => (
-                         adminSettings[key] ? (
-                           <option key={key} value={key}>{adminSettings[key].label}</option>
-                         ) : null
+                       {Object.keys(adminSettings).map(key => (
+                         <option key={key} value={key}>{adminSettings[key].label}</option>
                        ))}
                      </select>
                    </div>
