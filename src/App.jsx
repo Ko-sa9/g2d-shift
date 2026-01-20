@@ -5,7 +5,8 @@ import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut }
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
 
 // Gemini API Key
-const apiKey = "";
+// .envファイルから VITE_GEMINI_API_KEY を読み込みます
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 // ------------------------------------------------------------------
 // 定数・初期設定
