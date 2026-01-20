@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings } from 'lucide-react';
 import { auth, db, appId } from './firebase'; // 作成したファイルからインポート
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -310,8 +310,6 @@ export default function WorkScheduleApp() {
   const [taskData, setTaskData] = useState({});
   
   // UI State
-  const [selectedTool, setSelectedTool] = useState('A');
-  const [isPaintMode, setIsPaintMode] = useState(true);
   const [activePopup, setActivePopup] = useState(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
@@ -732,6 +730,11 @@ export default function WorkScheduleApp() {
           )}
         </div>
         <div className="flex items-center gap-2">
+           {appUser.role === 'admin' && (
+             <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
+               <Settings size={16} /> <span className="hidden sm:inline">シフト設定</span>
+             </button>
+           )}
            <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
              <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
            </button>
@@ -748,31 +751,6 @@ export default function WorkScheduleApp() {
       </header>
 
       <div className="flex flex-1 overflow-hidden relative">
-        {appUser.role === 'admin' && (
-          <aside className="w-64 bg-white border-r border-gray-200 flex flex-col overflow-y-auto z-0" onClick={e => e.stopPropagation()}>
-            <div className="p-4 border-b flex justify-between items-center">
-              <h2 className="font-bold text-gray-600 flex items-center gap-2"><Calculator size={16}/> シフト編集</h2>
-              <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="p-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-md"><Edit2 size={14} /></button>
-            </div>
-            <div className="p-4 space-y-4">
-              {dynamicPaletteGroups.map(group => (
-                <div key={group.id}>
-                  <div className="text-xs text-gray-400 font-bold mb-2 uppercase">{group.name}</div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {group.items.map(code => {
-                      const type = shiftDefs[code];
-                      return (
-                        <button key={code} onClick={() => setSelectedTool(code)} className={`h-10 w-full rounded flex items-center justify-center font-bold text-sm border transition ${type.text} ${selectedTool === code ? 'border-blue-500 ring-2' : 'border-gray-200'}`}>{type.label}</button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-              <button onClick={() => setSelectedTool(null)} className="w-full h-10 border-2 border-dashed border-gray-300 text-gray-400 rounded flex items-center justify-center gap-2 hover:bg-gray-50"><Trash2 size={14} /> 解除</button>
-            </div>
-          </aside>
-        )}
-
         <main className="flex-1 overflow-auto bg-gray-100 relative">
           <div className="inline-block min-w-full align-middle p-4">
             
@@ -904,7 +882,7 @@ export default function WorkScheduleApp() {
                             }
 
                             return (
-                              <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`} onMouseEnter={(e) => { if(isEditable && e.buttons === 1 && isPaintMode) handleUpdateCell(staff.id, day, selectedTool, shiftDefs[selectedTool]?.type || 'shift'); }}>
+                              <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
                                 <div className="w-full h-full flex flex-col">
                                   <div className="h-3/4 flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5" onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}>
                                     {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : null}
