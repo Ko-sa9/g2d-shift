@@ -954,7 +954,7 @@ export default function WorkScheduleApp() {
                                     const count = dailyStats[day][code] || 0;
                                     let isAlert = false;
                                     if (code === 'L') isAlert = (!isHoliday(year, month, day) && !isSunday(year, month, day) && count === 0);
-                                    return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{isAlert ? '!' : (count > 0 ? count : '-')}</td>;
+                                    return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{count > 0 ? count : '-'}</td>;
                                   })}
                                   <td className="bg-gray-50 border-b"></td>
                                 </tr>
