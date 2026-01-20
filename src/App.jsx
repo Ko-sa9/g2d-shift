@@ -307,6 +307,7 @@ export default function WorkScheduleApp() {
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
@@ -515,15 +516,21 @@ export default function WorkScheduleApp() {
 
     setStaffList(newList);
     saveMasterData(newList);
-    setShowStaffModal(false);
+    // 保存時は閉じない
+    alert('保存しました。');
   };
 
   const removeStaff = (id) => {
-    if (window.confirm('この職員を削除しますか？')) {
-      const newList = staffList.filter(s => s.id !== id);
-      setStaffList(newList);
-      saveMasterData(newList);
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: '職員削除',
+      message: 'この職員を削除しますか？復元できません。',
+      onConfirm: () => {
+        const newList = staffList.filter(s => s.id !== id);
+        setStaffList(newList);
+        saveMasterData(newList);
+      }
+    });
   };
 
   const handleSortStaff = (dragId, dropId) => {
@@ -572,13 +579,18 @@ export default function WorkScheduleApp() {
   };
 
   const deleteShiftConfig = (code) => {
-    if (window.confirm(`シフト設定「${shiftDefs[code].label}」を削除しますか？`)) {
-      const newDefs = { ...shiftDefs };
-      delete newDefs[code];
-      setShiftDefs(newDefs);
-      saveMasterData(staffList, newDefs);
-      if (editingShift?.originalCode === code) setShowShiftEditModal(false);
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'シフト設定削除',
+      message: `シフト設定「${shiftDefs[code].label}」を削除しますか？`,
+      onConfirm: () => {
+        const newDefs = { ...shiftDefs };
+        delete newDefs[code];
+        setShiftDefs(newDefs);
+        saveMasterData(staffList, newDefs);
+        if (editingShift?.originalCode === code) setShowShiftEditModal(false);
+      }
+    });
   };
 
   const handleSortShift = (dragCode, dropCode) => {
@@ -1119,7 +1131,7 @@ export default function WorkScheduleApp() {
         )}
 
         {showStaffModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowStaffModal(false)}>
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
@@ -1188,6 +1200,24 @@ export default function WorkScheduleApp() {
                  <button onClick={handleChangePassword} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">変更する</button>
                </div>
              </div>
+          </div>
+        )}
+
+        {confirmModal.isOpen && (
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500"/> {confirmModal.title}</h3>
+                 <button onClick={() => setConfirmModal({...confirmModal, isOpen: false})}><X size={20} className="text-gray-400"/></button>
+               </div>
+               <div className="p-6">
+                 <p className="text-sm text-gray-700 font-bold">{confirmModal.message}</p>
+               </div>
+               <div className="p-4 border-t flex justify-end gap-2">
+                 <button onClick={() => setConfirmModal({...confirmModal, isOpen: false})} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
+                 <button onClick={() => { confirmModal.onConfirm(); setConfirmModal({...confirmModal, isOpen: false}); }} className="px-4 py-2 bg-red-600 text-white rounded font-bold">削除する</button>
+               </div>
+            </div>
           </div>
         )}
 
