@@ -73,12 +73,12 @@ const TEAMS = [
 ];
 
 const INITIAL_STAFF = [
-  { id: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], password: '1234' },
-  { id: '2', name: '職員B', jobTitle: '主任', roles: ['リーダー', 'エコー班'], password: '1234' },
-  { id: '3', name: '職員C', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '4', name: '職員D', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '5', name: '職員E', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '6', name: '職員F', jobTitle: 'パート', roles: [], password: '1234' },
+  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], password: '1234' },
+  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['リーダー', 'エコー班'], password: '1234' },
+  { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], password: '1234' },
+  { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], password: '1234' },
+  { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], password: '1234' },
+  { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], password: '1234' },
 ];
 
 // 管理者設定の初期値
@@ -234,7 +234,7 @@ const callGemini = async (prompt, systemInstruction = "") => {
 
 const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTINGS }) => {
   const [selectedRole, setSelectedRole] = useState('staff');
-  const [staffId, setStaffId] = useState('');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
@@ -250,9 +250,9 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
         setError('パスワードが違います (初期: admin)');
       }
     } else {
-      const staff = staffList.find(s => s.id === staffId);
+      const staff = staffList.find(s => s.loginId === loginId);
       if (!staff) {
-        setError('職員IDが見つかりません');
+        setError('ログインIDが見つかりません');
         return;
       }
       if (password === staff.password) {
@@ -277,8 +277,8 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
         <div className="space-y-4">
           {selectedRole === 'staff' && (
             <div>
-              <label className="block text-sm font-bold text-gray-600 mb-1">職員ID</label>
-              <input type="text" className="w-full border p-2 rounded-lg" value={staffId} onChange={e => setStaffId(e.target.value)} placeholder="IDを入力" />
+              <label className="block text-sm font-bold text-gray-600 mb-1">ログインID</label>
+              <input type="text" className="w-full border p-2 rounded-lg" value={loginId} onChange={e => setLoginId(e.target.value)} placeholder="IDを入力" />
             </div>
           )}
           <div>
@@ -343,7 +343,14 @@ export default function WorkScheduleApp() {
     const unsubMaster = onSnapshot(masterDocRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setStaffList(data.staffList || []);
+        
+        // 職員リスト読み込み時に loginId がない場合は id を loginId として設定するマイグレーション
+        const loadedStaffList = (data.staffList || []).map(s => ({
+          ...s,
+          loginId: s.loginId || s.id // loginIdがない場合はidを代用
+        }));
+
+        setStaffList(loadedStaffList);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
         
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
@@ -473,12 +480,14 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddStaff = () => {
-    setTargetStaff({ id: '', name: '', jobTitle: '一般', roles: [], _originalId: null });
+    // 新規作成時はシステムIDは空（保存時に生成）、ログインIDは入力待ち
+    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [] });
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
-    setTargetStaff({ ...staff, _originalId: staff.id });
+    // 編集時は既存のデータをセット
+    setTargetStaff({ ...staff });
     setShowStaffModal(true);
   };
 
@@ -487,38 +496,30 @@ export default function WorkScheduleApp() {
       alert('名前を入力してください');
       return;
     }
-    if (!targetStaff.id.trim()) {
-      alert('IDを入力してください');
+    if (!targetStaff.loginId.trim()) {
+      alert('ログインIDを入力してください');
       return;
     }
 
-    // 更新ロジック修正: 追加か編集かを元IDの有無で判断
-    const originalId = targetStaff._originalId;
-    const newId = targetStaff.id;
-    let newList = [...staffList];
-
-    if (!originalId) {
-      // 新規作成時：ID重複チェック
-      if (staffList.some(s => s.id === newId)) {
-        alert('そのIDは既に使用されています');
-        return;
-      }
-      newList.push(targetStaff);
-    } else {
-      // 編集時：IDを変更した場合の重複チェック
-      if (originalId !== newId && staffList.some(s => s.id === newId)) {
-        alert('変更後のIDは既に使用されています');
-        return;
-      }
-      // 既存データの更新（元IDを持つデータを置換）
-      newList = newList.map(s => s.id === originalId ? targetStaff : s);
+    // ログインIDの重複チェック (自分自身は除外)
+    const isDuplicate = staffList.some(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
+    if (isDuplicate) {
+      alert('そのログインIDは既に使用されています');
+      return;
     }
 
-    // 保存用に一時プロパティを除去
-    const cleanList = newList.map(({ _originalId, ...rest }) => rest);
+    let newList = [...staffList];
+    if (targetStaff.id) {
+      // 既存の更新: システムIDが一致するものを探して更新
+      newList = newList.map(s => s.id === targetStaff.id ? targetStaff : s);
+    } else {
+      // 新規作成: システムIDを生成して追加
+      const newStaff = { ...targetStaff, id: Date.now().toString() };
+      newList.push(newStaff);
+    }
 
-    setStaffList(cleanList);
-    saveMasterData(cleanList);
+    setStaffList(newList);
+    saveMasterData(newList);
     setShowStaffModal(false);
   };
 
@@ -1132,8 +1133,8 @@ export default function WorkScheduleApp() {
               <div className="p-6 space-y-4">
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">職員ID <span className="text-red-500">*</span></label>
-                  <input type="text" className="w-full border p-2 rounded" placeholder="任意のIDを入力" value={targetStaff.id || ''} onChange={e => setTargetStaff({...targetStaff, id: e.target.value})} />
-                  <p className="text-[10px] text-red-500 mt-1">※IDを変更すると過去のシフトとの紐付けが切れます</p>
+                  <input type="text" className="w-full border p-2 rounded" placeholder="任意のIDを入力" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} />
+                  <p className="text-[10px] text-gray-400 mt-1">ログインに使用するIDです</p>
                 </div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label>
