@@ -11,13 +11,8 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// 管理者ログイン時のパスワードと表示モードの対応設定
-const ADMIN_VIEW_PASSWORDS = {
-  'admin': 'all',      // 全体
-  'admin-ope': 'ope',  // オペ班 (修正: opera -> ope)
-  'admin-echo': 'echo', // エコー班
-  'admin-hhd': 'hhd',   // HHD班
-};
+// 管理者設定の表示順序定義
+const ADMIN_ROLE_ORDER = ['all', 'ope', 'echo', 'hhd'];
 
 const CATEGORY_DEFS = {
   'saka':    { label: '坂田',    color: 'bg-blue-50 text-blue-800' },
@@ -67,7 +62,7 @@ const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
 const TEAMS = [
   { id: 'all', label: '全体', role: null },
-  { id: 'ope', label: 'オペ班', role: 'オペ班' }, // 修正: opera -> ope
+  { id: 'ope', label: 'オペ班', role: 'オペ班' }, 
   { id: 'echo', label: 'エコー班', role: 'エコー班' },
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
@@ -84,7 +79,7 @@ const INITIAL_STAFF = [
 // 管理者設定の初期値
 const DEFAULT_ADMIN_SETTINGS = {
   'all':   { password: 'admin',       label: '全体管理者' },
-  'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, // 修正: opera -> ope
+  'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
@@ -254,8 +249,6 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       }
       if (password === staff.password) {
         // 職員はデフォルト設定でログイン
-        let initView = 'all';
-        // (旧ロジック削除済) 職員は常にall/personalのみ
         onLogin({ role: 'staff', ...staff });
       } else {
         setError('パスワードが違います (初期: 1234)');
@@ -344,7 +337,14 @@ export default function WorkScheduleApp() {
         const data = docSnap.data();
         setStaffList(data.staffList || []);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
-        setAdminSettings(data.adminSettings || DEFAULT_ADMIN_SETTINGS);
+        
+        // adminSettingsの読み込みとマイグレーション (opera -> ope)
+        let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
+        if (loadedAdminSettings['opera']) {
+           const { opera, ...rest } = loadedAdminSettings;
+           loadedAdminSettings = { ...rest, 'ope': opera };
+        }
+        setAdminSettings(loadedAdminSettings);
       } else {
         setDoc(masterDocRef, { staffList: INITIAL_STAFF, shiftDefs: DEFAULT_SHIFT_TYPES, adminSettings: DEFAULT_ADMIN_SETTINGS });
         setStaffList(INITIAL_STAFF);
@@ -389,7 +389,7 @@ export default function WorkScheduleApp() {
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
-      if (currentView === 'ope') { // 修正
+      if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
@@ -726,7 +726,7 @@ export default function WorkScheduleApp() {
   );
   
   const getPopupOptions = (type) => {
-    if (currentView === 'ope' && type === 'shift') { // 修正
+    if (currentView === 'ope' && type === 'shift') {
       const l = shiftDefs['L'];
       const g = shiftDefs['G'];
       const opts = [];
@@ -740,7 +740,7 @@ export default function WorkScheduleApp() {
       .map(code => shiftDefs[code])
       .filter(s => s && s.type === type);
 
-    if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') { // 修正
+    if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
       opts = opts.filter(s => s.category === 'req' || s.category === 'off');
     }
     return opts;
@@ -1164,8 +1164,10 @@ export default function WorkScheduleApp() {
                        value={targetAdminKey}
                        onChange={e => setTargetAdminKey(e.target.value)}
                      >
-                       {Object.keys(adminSettings).map(key => (
-                         <option key={key} value={key}>{adminSettings[key].label}</option>
+                       {ADMIN_ROLE_ORDER.map(key => (
+                         adminSettings[key] ? (
+                           <option key={key} value={key}>{adminSettings[key].label}</option>
+                         ) : null
                        ))}
                      </select>
                    </div>
