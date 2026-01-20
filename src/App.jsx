@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, Filter } from 'lucide-react';
 import { auth, db, appId } from './firebase'; // 作成したファイルからインポート
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -58,6 +58,14 @@ const DEFAULT_SHIFT_TYPES = {
 const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パート'];
 const STAFF_ROLES = ['リーダー', 'エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
+
+// チーム定義
+const TEAMS = [
+  { id: 'all', label: '全体', role: null },
+  { id: 'opera', label: 'オペ班', role: 'オペ班' },
+  { id: 'echo', label: 'エコー班', role: 'エコー班' },
+  { id: 'hhd', label: 'HHD班', role: 'HHD班' },
+];
 
 const INITIAL_STAFF = [
   { id: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], password: '1234' },
@@ -316,8 +324,9 @@ export default function WorkScheduleApp() {
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
   
-  // View Mode for Staff
+  // View Mode
   const [viewMode, setViewMode] = useState('personal'); 
+  const [currentView, setCurrentView] = useState('all'); // 'all', 'opera', 'echo', 'hhd'
 
   // Edit Buffer
   const [editingShift, setEditingShift] = useState(null);
@@ -394,13 +403,24 @@ export default function WorkScheduleApp() {
   // --- Actions ---
 
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
+    // 職員モードの制限チェック
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
-      const tool = shiftDefs[toolCode];
-      const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off'));
-      if (!isAllowed) {
-        alert('職員モードでは「希望」「休み」のみ入力できます。');
-        return;
+
+      // オペ班表示時はL, Gのみ許可 (職員でも入力可とする)
+      if (currentView === 'opera') {
+        if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
+           alert('オペ班ページではLとGのみ入力可能です。');
+           return;
+        }
+      } else {
+        // 通常は希望・休みのみ
+        const tool = shiftDefs[toolCode];
+        const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off'));
+        if (!isAllowed) {
+          alert('職員モードでは「希望」「休み」のみ入力できます。');
+          return;
+        }
       }
     }
 
@@ -694,18 +714,40 @@ export default function WorkScheduleApp() {
   // --- Render ---
   if (!appUser) return <LoginScreen onLogin={setAppUser} staffList={staffList} />;
   
-  const displayStaffList = appUser.role === 'admin' 
-    ? staffList 
-    : (viewMode === 'personal' ? staffList.filter(s => s.id === appUser.id) : staffList);
+  // 職員リストのフィルタリング
+  const displayStaffList = useMemo(() => {
+    let list = staffList;
+
+    // Viewによるフィルタ
+    if (currentView !== 'all') {
+      const team = TEAMS.find(t => t.id === currentView);
+      if (team && team.role) {
+        list = list.filter(s => s.roles && s.roles.includes(team.role));
+      }
+    }
+
+    // 職員個人の場合のフィルタ（全体モードでなければ適用）
+    if (appUser.role === 'staff' && viewMode === 'personal') {
+      list = list.filter(s => s.id === appUser.id);
+    }
+
+    return list;
+  }, [staffList, currentView, appUser, viewMode]);
 
   const getPopupOptions = (type) => {
+    // オペ班モードなら L, G のみ
+    if (currentView === 'opera' && type === 'shift') {
+      return [shiftDefs['L'], shiftDefs['G']].filter(Boolean);
+    }
+
     // Left palette order
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
     let opts = orderedCodes
       .map(code => shiftDefs[code])
       .filter(s => s && s.type === type);
 
-    if (appUser.role === 'staff') {
+    // 職員モードでの制限 (オペ班以外)
+    if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'opera') {
       opts = opts.filter(s => s.category === 'req' || s.category === 'off');
     }
     return opts;
@@ -722,9 +764,21 @@ export default function WorkScheduleApp() {
           </div>
           <span className={`px-2 py-1 rounded text-xs font-bold ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者モード' : `${appUser.name} (職員)`}</span>
           
+          <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
+            {TEAMS.map(team => (
+              <button 
+                key={team.id}
+                onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }}
+                className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}
+              >
+                {team.label}
+              </button>
+            ))}
+          </div>
+
           {appUser.role === 'staff' && (
             <div className="flex bg-gray-100 rounded p-1 ml-4 border">
-              <button onClick={() => setViewMode('personal')} className={`px-3 py-1 text-xs rounded transition ${viewMode==='personal' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>個人</button>
+              <button onClick={() => { setViewMode('personal'); setCurrentView('all'); }} className={`px-3 py-1 text-xs rounded transition ${viewMode==='personal' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>個人</button>
               <button onClick={() => setViewMode('all')} className={`px-3 py-1 text-xs rounded transition ${viewMode==='all' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>全体</button>
             </div>
           )}
