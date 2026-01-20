@@ -488,6 +488,22 @@ export default function WorkScheduleApp() {
     }
   };
 
+  const handleSortStaff = (dragId, dropId) => {
+    if (dragId === dropId) return;
+
+    const newStaffList = [...staffList];
+    const dragIndex = newStaffList.findIndex(s => s.id === dragId);
+    const dropIndex = newStaffList.findIndex(s => s.id === dropId);
+
+    if (dragIndex === -1 || dropIndex === -1) return;
+
+    const [dragItem] = newStaffList.splice(dragIndex, 1);
+    newStaffList.splice(dropIndex, 0, dragItem);
+
+    setStaffList(newStaffList);
+    saveMasterData(newStaffList, shiftDefs);
+  };
+
   // Shift Config
   const handleAddNewShift = () => {
     setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
@@ -558,19 +574,20 @@ export default function WorkScheduleApp() {
     const dropIdx = items.indexOf(dropCode);
     if (dragIdx === -1 || dropIdx === -1) return;
 
-    // 移動前のアイテムたちが持っているorder値を収集・ソートして確保しておく
-    // これにより、他のカテゴリのorder値（0, 1, 2...など）と重複しないようにする
+    // --- 修正: カテゴリ内の既存order値を維持するロジック ---
+    // 移動対象のカテゴリに含まれるアイテムが現在持っているorder値を収集・ソートして確保
     const currentOrders = items.map(code => shiftDefs[code]?.order || 0).sort((a, b) => a - b);
 
-    // 配列内で移動
+    // 配列内でアイテムを移動
     items.splice(dragIdx, 1);
     items.splice(dropIdx, 0, dragCode);
 
-    // order値を再割り当て
+    // 確保しておいたorder値を、新しい並び順に合わせて再配分
+    // これにより、他のカテゴリのorder値（0, 1, 2...等）と衝突しなくなります
     const newDefs = { ...shiftDefs };
     items.forEach((code, index) => {
       if (newDefs[code]) {
-        newDefs[code] = { ...newDefs[code], order: index };
+        newDefs[code] = { ...newDefs[code], order: currentOrders[index] };
       }
     });
 
@@ -834,9 +851,29 @@ export default function WorkScheduleApp() {
                     {displayStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
                       return (
-                        <tr key={staff.id} className="group hover:bg-gray-50">
+                        <tr 
+                          key={staff.id} 
+                          className="group hover:bg-gray-50"
+                          draggable={appUser.role === 'admin'}
+                          onDragStart={(e) => {
+                            if (appUser.role !== 'admin') return;
+                            e.dataTransfer.setData('text/plain', staff.id);
+                          }}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (appUser.role !== 'admin') return;
+                            const dragId = e.dataTransfer.getData('text/plain');
+                            handleSortStaff(dragId, staff.id);
+                          }}
+                        >
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r p-2 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
+                              {appUser.role === 'admin' && (
+                                <div className="cursor-grab active:cursor-grabbing text-gray-400 mr-2 hover:text-gray-600">
+                                  <GripVertical size={14} />
+                                </div>
+                              )}
                               <div className="cursor-pointer flex-1" onClick={(e) => { if(appUser.role === 'admin') { e.stopPropagation(); handleEditStaff(staff); } }}>
                                 <div className="text-sm font-bold text-gray-800 flex items-center gap-1">
                                   {staff.name}
