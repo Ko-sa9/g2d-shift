@@ -13,10 +13,10 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 // 管理者ログイン時のパスワードと表示モードの対応設定
 const ADMIN_VIEW_PASSWORDS = {
-  'admin': 'all',        // 全体
-  'admin-opera': 'opera', // オペ班
-  'admin-echo': 'echo',   // エコー班
-  'admin-hhd': 'hhd',     // HHD班
+  'admin': 'all',      // 全体
+  'admin-ope': 'ope',  // オペ班 (修正: opera -> ope)
+  'admin-echo': 'echo', // エコー班
+  'admin-hhd': 'hhd',   // HHD班
 };
 
 const CATEGORY_DEFS = {
@@ -67,7 +67,7 @@ const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
 const TEAMS = [
   { id: 'all', label: '全体', role: null },
-  { id: 'opera', label: 'オペ班', role: 'オペ班' },
+  { id: 'ope', label: 'オペ班', role: 'オペ班' }, // 修正: opera -> ope
   { id: 'echo', label: 'エコー班', role: 'エコー班' },
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
@@ -84,7 +84,7 @@ const INITIAL_STAFF = [
 // 管理者設定の初期値
 const DEFAULT_ADMIN_SETTINGS = {
   'all':   { password: 'admin',       label: '全体管理者' },
-  'opera': { password: 'admin-opera', label: 'オペ班管理者' },
+  'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, // 修正: opera -> ope
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
@@ -254,6 +254,8 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       }
       if (password === staff.password) {
         // 職員はデフォルト設定でログイン
+        let initView = 'all';
+        // (旧ロジック削除済) 職員は常にall/personalのみ
         onLogin({ role: 'staff', ...staff });
       } else {
         setError('パスワードが違います (初期: 1234)');
@@ -387,7 +389,7 @@ export default function WorkScheduleApp() {
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
-      if (currentView === 'opera') {
+      if (currentView === 'ope') { // 修正
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
@@ -724,7 +726,7 @@ export default function WorkScheduleApp() {
   );
   
   const getPopupOptions = (type) => {
-    if (currentView === 'opera' && type === 'shift') {
+    if (currentView === 'ope' && type === 'shift') { // 修正
       const l = shiftDefs['L'];
       const g = shiftDefs['G'];
       const opts = [];
@@ -738,7 +740,7 @@ export default function WorkScheduleApp() {
       .map(code => shiftDefs[code])
       .filter(s => s && s.type === type);
 
-    if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'opera') {
+    if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') { // 修正
       opts = opts.filter(s => s.category === 'req' || s.category === 'off');
     }
     return opts;
