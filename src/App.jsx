@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-// Filterを削除し、Settingsのみ残しました
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
@@ -24,7 +23,6 @@ const CATEGORY_DEFS = {
   'req':     { label: '希望',    color: 'bg-pink-50 text-pink-600' },
 };
 
-// 並び替え用のorderを追加
 const DEFAULT_SHIFT_TYPES = {
   'A': { order: 0, code: 'A', label: '坂3', color: 'bg-transparent', text: 'text-blue-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'saka', type: 'shift' },
   'P': { order: 1, code: 'P', label: '坂2', color: 'bg-transparent', text: 'text-blue-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'saka', type: 'shift' },
@@ -59,7 +57,6 @@ const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パ
 const STAFF_ROLES = ['リーダー', 'エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
-// チーム定義
 const TEAMS = [
   { id: 'all', label: '全体', role: null },
   { id: 'opera', label: 'オペ班', role: 'オペ班' },
@@ -101,15 +98,8 @@ const COLOR_OPTIONS = [
   { label: '薄赤', value: 'text-red-400' },
 ];
 
-/**
- * ------------------------------------------------------------------
- * ユーティリティ (祝日計算)
- * ------------------------------------------------------------------
- */
-
 const getHolidaysForYear = (year) => {
   const holidayMap = {}; 
-
   const fixed = {
     "1-1": "元日", "2-11": "建国記念の日", "2-23": "天皇誕生日", "4-29": "昭和の日",
     "5-3": "憲法記念日", "5-4": "みどりの日", "5-5": "こどもの日",
@@ -119,7 +109,6 @@ const getHolidaysForYear = (year) => {
     const [m, d] = md.split('-').map(Number);
     holidayMap[new Date(year, m - 1, d).getTime()] = true;
   });
-
   const happyMondays = [
     { m: 1, w: 2 }, { m: 7, w: 3 }, { m: 9, w: 3 }, { m: 10, w: 2 }
   ];
@@ -132,12 +121,10 @@ const getHolidaysForYear = (year) => {
     }
     holidayMap[new Date(year, m - 1, d).getTime()] = true;
   });
-
   const vernal = Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
   const autumnal = Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
   holidayMap[new Date(year, 2, vernal).getTime()] = true;
   holidayMap[new Date(year, 8, autumnal).getTime()] = true;
-
   const sortedHolidays = Object.keys(holidayMap).map(Number).sort((a, b) => a - b);
   sortedHolidays.forEach(time => {
     const date = new Date(time);
@@ -150,13 +137,11 @@ const getHolidaysForYear = (year) => {
       holidayMap[nextDate.getTime()] = true; 
     }
   });
-
   const finalHolidays = Object.keys(holidayMap).map(Number).sort((a, b) => a - b);
   for (let i = 0; i < finalHolidays.length - 1; i++) {
     const t1 = finalHolidays[i];
     const t2 = finalHolidays[i+1];
     const diffDays = (t2 - t1) / (1000 * 60 * 60 * 24);
-    
     if (diffDays === 2) {
        const middleDate = new Date(t1);
        middleDate.setDate(middleDate.getDate() + 1);
@@ -165,12 +150,10 @@ const getHolidaysForYear = (year) => {
        }
     }
   }
-
   return holidayMap;
 };
 
 const HOLIDAY_CACHE = {};
-
 const isHoliday = (year, month, day) => {
   if (!HOLIDAY_CACHE[year]) {
     HOLIDAY_CACHE[year] = getHolidaysForYear(year);
@@ -178,7 +161,6 @@ const isHoliday = (year, month, day) => {
   const date = new Date(year, month - 1, day);
   return !!HOLIDAY_CACHE[year][date.getTime()];
 };
-
 
 const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
 const getDayOfWeek = (year, month, day) => new Date(year, month - 1, day).getDay();
@@ -195,21 +177,17 @@ const generateCalendarDays = (year, month) => {
   const firstDay = new Date(year, month - 1, 1);
   const lastDay = new Date(year, month, 0);
   const days = [];
-
   const prevMonthDays = firstDay.getDay(); 
   for (let i = 0; i < prevMonthDays; i++) {
     days.unshift({ date: new Date(year, month - 1, 1 - (i + 1)), currentMonth: false });
   }
-
   for (let i = 1; i <= lastDay.getDate(); i++) {
     days.push({ date: new Date(year, month - 1, i), currentMonth: true, day: i });
   }
-
   const remaining = 42 - days.length;
   for (let i = 1; i <= remaining; i++) {
     days.push({ date: new Date(year, month, i), currentMonth: false });
   }
-
   return days;
 };
 
@@ -235,11 +213,6 @@ const callGemini = async (prompt, systemInstruction = "") => {
   }
 };
 
-/**
- * ------------------------------------------------------------------
- * コンポーネント: ログイン画面
- * ------------------------------------------------------------------
- */
 const LoginScreen = ({ onLogin, staffList }) => {
   const [selectedRole, setSelectedRole] = useState('staff');
   const [selectedStaffId, setSelectedStaffId] = useState('');
@@ -299,17 +272,10 @@ const LoginScreen = ({ onLogin, staffList }) => {
   );
 };
 
-/**
- * ------------------------------------------------------------------
- * メインコンポーネント: WorkScheduleApp
- * ------------------------------------------------------------------
- */
 export default function WorkScheduleApp() {
-  // Global State
   const [authUser, setAuthUser] = useState(null); 
   const [appUser, setAppUser] = useState(null); 
   
-  // Data State
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [staffList, setStaffList] = useState([]);
@@ -317,18 +283,15 @@ export default function WorkScheduleApp() {
   const [shiftData, setShiftData] = useState({});
   const [taskData, setTaskData] = useState({});
   
-  // UI State
   const [activePopup, setActivePopup] = useState(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
   
-  // View Mode
   const [viewMode, setViewMode] = useState('personal'); 
-  const [currentView, setCurrentView] = useState('all'); // 'all', 'opera', 'echo', 'hhd'
+  const [currentView, setCurrentView] = useState('all'); 
 
-  // Edit Buffer
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
   const [newPassword, setNewPassword] = useState('');
@@ -337,7 +300,6 @@ export default function WorkScheduleApp() {
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
 
-  // --- Firebase Authentication ---
   useEffect(() => {
     const initAuth = async () => {
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -351,10 +313,8 @@ export default function WorkScheduleApp() {
     return () => unsubscribe();
   }, []);
 
-  // --- Data Sync (Firestore) ---
   useEffect(() => {
     if (!authUser) return;
-
     const masterDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'general', 'masterData');
     const unsubMaster = onSnapshot(masterDocRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -366,7 +326,6 @@ export default function WorkScheduleApp() {
         setStaffList(INITIAL_STAFF);
       }
     });
-
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     const unsubSchedule = onSnapshot(scheduleDocRef, (docSnap) => {
@@ -379,14 +338,12 @@ export default function WorkScheduleApp() {
         setTaskData({});
       }
     });
-
     return () => {
       unsubMaster();
       unsubSchedule();
     };
   }, [authUser, year, month]);
 
-  // --- Data Persistance ---
   const saveSchedule = async (newShifts, newTasks) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
@@ -400,21 +357,15 @@ export default function WorkScheduleApp() {
     await setDoc(masterDocRef, { staffList: newStaffList, shiftDefs: newShiftDefs }, { merge: true });
   };
 
-  // --- Actions ---
-
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
-    // 職員モードの制限チェック
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
-
-      // オペ班表示時はL, Gのみ許可 (職員でも入力可とする)
       if (currentView === 'opera') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
         }
       } else {
-        // 通常は希望・休みのみ
         const tool = shiftDefs[toolCode];
         const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off'));
         if (!isAllowed) {
@@ -423,7 +374,6 @@ export default function WorkScheduleApp() {
         }
       }
     }
-
     if (type === 'shift') {
       const nextShifts = { ...shiftData };
       if (!nextShifts[staffId]) nextShifts[staffId] = {};
@@ -452,7 +402,6 @@ export default function WorkScheduleApp() {
     const rect = e.currentTarget.getBoundingClientRect();
     const left = Math.min(rect.left + window.scrollX, window.innerWidth - 270);
     const top = Math.min(rect.bottom + window.scrollY, window.innerHeight + window.scrollY - 150);
-
     setActivePopup({
       staffId,
       day,
@@ -475,7 +424,6 @@ export default function WorkScheduleApp() {
     setNewPassword('');
   };
 
-  // Staff Management
   const handleAddStaff = () => {
     setTargetStaff({ id: null, name: '', jobTitle: '一般', roles: [] });
     setShowStaffModal(true);
@@ -509,21 +457,16 @@ export default function WorkScheduleApp() {
 
   const handleSortStaff = (dragId, dropId) => {
     if (dragId === dropId) return;
-
     const newStaffList = [...staffList];
     const dragIndex = newStaffList.findIndex(s => s.id === dragId);
     const dropIndex = newStaffList.findIndex(s => s.id === dropId);
-
     if (dragIndex === -1 || dropIndex === -1) return;
-
     const [dragItem] = newStaffList.splice(dragIndex, 1);
     newStaffList.splice(dropIndex, 0, dragItem);
-
     setStaffList(newStaffList);
     saveMasterData(newStaffList, shiftDefs);
   };
 
-  // Shift Config
   const handleAddNewShift = () => {
     setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
     setShowShiftEditModal(true);
@@ -540,30 +483,20 @@ export default function WorkScheduleApp() {
       return;
     }
     const newDefs = { ...shiftDefs };
-    
-    // コード変更時の処理
     if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) {
       delete newDefs[editingShift.originalCode];
     }
-
     const { originalCode, ...cleanShift } = editingShift;
-
-    // 新規作成の場合、orderを自動付与
     if (newDefs[cleanShift.code]?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
     } else {
-      // 既存の場合はorderを維持（フォームには含まれていない可能性があるため念のため）
       cleanShift.order = newDefs[cleanShift.code].order;
     }
-
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
-    
-    // 修正: モーダルを閉じずにアラートを表示し、連続編集を可能にする
     alert('保存しました');
-    // コードが変更された場合、editingShiftのoriginalCodeも更新しておく
     setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
 
@@ -581,40 +514,26 @@ export default function WorkScheduleApp() {
     if (dragCode === dropCode) return;
     const dragShift = shiftDefs[dragCode];
     const dropShift = shiftDefs[dropCode];
-    // 同じカテゴリ内のみ移動可能とする
     if (dragShift.category !== dropShift.category) return;
-
-    // 現在の表示順（ソート済み）を取得
     const group = dynamicPaletteGroups.find(g => g.id === dragShift.category);
     if (!group) return;
-
     const items = [...group.items];
     const dragIdx = items.indexOf(dragCode);
     const dropIdx = items.indexOf(dropCode);
     if (dragIdx === -1 || dropIdx === -1) return;
-
-    // --- 修正: カテゴリ内の既存order値を維持するロジック ---
-    // 移動対象のカテゴリに含まれるアイテムが現在持っているorder値を収集・ソートして確保
     const currentOrders = items.map(code => shiftDefs[code]?.order || 0).sort((a, b) => a - b);
-
-    // 配列内でアイテムを移動
     items.splice(dragIdx, 1);
     items.splice(dropIdx, 0, dragCode);
-
-    // 確保しておいたorder値を、新しい並び順に合わせて再配分
-    // これにより、他のカテゴリのorder値（0, 1, 2...等）と衝突しなくなります
     const newDefs = { ...shiftDefs };
     items.forEach((code, index) => {
       if (newDefs[code]) {
         newDefs[code] = { ...newDefs[code], order: currentOrders[index] };
       }
     });
-
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
   };
 
-  // AI
   const prepareScheduleDataForAi = () => ({
     year, month,
     staff: staffList.map(s => ({ id: s.id, name: s.name, jobTitle: s.jobTitle, roles: s.roles })),
@@ -654,7 +573,6 @@ export default function WorkScheduleApp() {
     setIsAiLoading(false);
   };
 
-  // --- Derived Data ---
   const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month]);
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
   const calendarDays = useMemo(() => generateCalendarDays(year, month), [year, month]);
@@ -663,17 +581,17 @@ export default function WorkScheduleApp() {
     const groups = {};
     Object.keys(CATEGORY_DEFS).forEach(cat => groups[cat] = []);
     Object.values(shiftDefs)
-      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)) // orderでソート
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)) 
       .forEach(shift => {
         if (groups[shift.category]) groups[shift.category].push(shift.code);
         else { if (!groups['basic']) groups['basic'] = []; groups['basic'].push(shift.code); }
       });
     return Object.keys(CATEGORY_DEFS).map(key => ({ id: key, name: CATEGORY_DEFS[key].label, items: groups[key] })).filter(g => g.items.length > 0);
   }, [shiftDefs]);
+
   const dynamicSummaryGroups = useMemo(() => {
     const targetCategories = ['saka', 'kimi', 'moku', 'jinkuri', 'me'];
     return targetCategories.map(catKey => {
-      // 集計欄もorder順に表示するためソート
       const categoryItems = Object.values(shiftDefs)
         .filter(s => s.category === catKey && s.type === 'shift')
         .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
@@ -681,6 +599,7 @@ export default function WorkScheduleApp() {
       return { name: CATEGORY_DEFS[catKey].label, items: categoryItems, totalLabel: `${CATEGORY_DEFS[catKey].label} 計`, headerColor: CATEGORY_DEFS[catKey].color };
     });
   }, [shiftDefs]);
+
   const staffOvertimeStats = useMemo(() => {
     const stats = {};
     staffList.forEach(staff => {
@@ -693,6 +612,7 @@ export default function WorkScheduleApp() {
     });
     return stats;
   }, [staffList, shiftData, shiftDefs, daysArray]);
+
   const dailyStats = useMemo(() => {
     const stats = {};
     daysArray.forEach(day => {
@@ -711,14 +631,12 @@ export default function WorkScheduleApp() {
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
 
-  // --- Render ---
-  if (!appUser) return <LoginScreen onLogin={setAppUser} staffList={staffList} />;
-  
-  // 職員リストのフィルタリング
+  // ▼▼▼ 修正箇所: ここへ移動しました ▼▼▼
+  // ログインチェック(if (!appUser))よりも前にHooksを呼び出す必要があります
   const displayStaffList = useMemo(() => {
+    if (!appUser) return []; // ガード節: appUserがnullの場合は空配列を返す
     let list = staffList;
 
-    // Viewによるフィルタ
     if (currentView !== 'all') {
       const team = TEAMS.find(t => t.id === currentView);
       if (team && team.role) {
@@ -726,16 +644,18 @@ export default function WorkScheduleApp() {
       }
     }
 
-    // 職員個人の場合のフィルタ（全体モードでなければ適用）
     if (appUser.role === 'staff' && viewMode === 'personal') {
       list = list.filter(s => s.id === appUser.id);
     }
 
     return list;
   }, [staffList, currentView, appUser, viewMode]);
+  // ▲▲▲ 修正箇所ここまで ▲▲▲
 
+  // --- Render ---
+  if (!appUser) return <LoginScreen onLogin={setAppUser} staffList={staffList} />;
+  
   const getPopupOptions = (type) => {
-    // オペ班モードなら L, G のみ
     if (currentView === 'opera' && type === 'shift') {
       const l = shiftDefs['L'];
       const g = shiftDefs['G'];
@@ -745,13 +665,11 @@ export default function WorkScheduleApp() {
       return opts;
     }
 
-    // Left palette order
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
     let opts = orderedCodes
       .map(code => shiftDefs[code])
       .filter(s => s && s.type === type);
 
-    // 職員モードでの制限 (オペ班以外)
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'opera') {
       opts = opts.filter(s => s.category === 'req' || s.category === 'off');
     }
