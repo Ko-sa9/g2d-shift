@@ -11,6 +11,14 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
+// 管理者ログイン時のパスワードと表示モードの対応設定
+const ADMIN_VIEW_PASSWORDS = {
+  'admin': 'all',        // 全体
+  'admin-opera': 'opera', // オペ班
+  'admin-echo': 'echo',   // エコー班
+  'admin-hhd': 'hhd',     // HHD班
+};
+
 const CATEGORY_DEFS = {
   'saka':    { label: '坂田',    color: 'bg-blue-50 text-blue-800' },
   'kimi':    { label: '君津',    color: 'bg-green-50 text-green-800' },
@@ -221,8 +229,10 @@ const LoginScreen = ({ onLogin, staffList }) => {
 
   const handleLogin = () => {
     if (selectedRole === 'admin') {
-      if (password === 'admin') {
-        onLogin({ role: 'admin', name: '管理者' });
+      // パスワードマップをチェックして表示モードを決定
+      const viewMode = ADMIN_VIEW_PASSWORDS[password];
+      if (viewMode) {
+        onLogin({ role: 'admin', name: '管理者', initialView: viewMode });
       } else {
         setError('パスワードが違います (初期: admin)');
       }
@@ -233,6 +243,7 @@ const LoginScreen = ({ onLogin, staffList }) => {
         return;
       }
       if (password === staff.password) {
+        // 職員は自動振り分けを行わず、デフォルト設定でログイン
         onLogin({ role: 'staff', ...staff });
       } else {
         setError('パスワードが違います (初期: 1234)');
@@ -631,7 +642,6 @@ export default function WorkScheduleApp() {
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
 
-  // ▼▼▼ 修正箇所: ここへ移動しました ▼▼▼
   // ログインチェック(if (!appUser))よりも前にHooksを呼び出す必要があります
   const displayStaffList = useMemo(() => {
     if (!appUser) return []; // ガード節: appUserがnullの場合は空配列を返す
@@ -650,10 +660,20 @@ export default function WorkScheduleApp() {
 
     return list;
   }, [staffList, currentView, appUser, viewMode]);
-  // ▲▲▲ 修正箇所ここまで ▲▲▲
 
   // --- Render ---
-  if (!appUser) return <LoginScreen onLogin={setAppUser} staffList={staffList} />;
+  if (!appUser) return (
+    <LoginScreen 
+      onLogin={(user) => {
+        setAppUser(user);
+        // ログイン時に指定された初期ビューがあれば適用
+        if (user.initialView) setCurrentView(user.initialView);
+        // 職員の場合は自分のシフトのみ表示にする
+        if (user.role === 'staff') setViewMode('personal');
+      }} 
+      staffList={staffList} 
+    />
+  );
   
   const getPopupOptions = (type) => {
     if (currentView === 'opera' && type === 'shift') {
@@ -687,17 +707,19 @@ export default function WorkScheduleApp() {
           </div>
           <span className={`px-2 py-1 rounded text-xs font-bold ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者モード' : `${appUser.name} (職員)`}</span>
           
-          <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
-            {TEAMS.map(team => (
-              <button 
-                key={team.id}
-                onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }}
-                className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}
-              >
-                {team.label}
-              </button>
-            ))}
-          </div>
+          {appUser.role === 'admin' && (
+            <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
+              {TEAMS.map(team => (
+                <button 
+                  key={team.id}
+                  onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }}
+                  className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}
+                >
+                  {team.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {appUser.role === 'staff' && (
             <div className="flex bg-gray-100 rounded p-1 ml-4 border">
