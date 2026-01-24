@@ -89,33 +89,9 @@ const DEFAULT_ADMIN_SETTINGS = {
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
 
-// 管理者設定の表示順序定義
-const ADMIN_ROLE_ORDER = ['all', 'ope', 'echo', 'hhd'];
-
-const TIME_OPTIONS = (() => {
-  const times = [];
-  for (let h = 5; h < 24; h++) {
-    for (let m = 0; m < 60; m += 10) {
-       const str = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-       times.push(str);
-    }
-  }
-  return times;
-})();
-
-const COLOR_OPTIONS = [
-  { label: '黒', value: 'text-gray-800' },
-  { label: '灰', value: 'text-gray-500' }, 
-  { label: '青', value: 'text-blue-600' },
-  { label: '緑', value: 'text-green-600' },
-  { label: '黄', value: 'text-yellow-600' },
-  { label: '紫', value: 'text-purple-600' },
-  { label: '赤', value: 'text-red-600' },
-  { label: '橙', value: 'text-orange-600' },
-  { label: '桃', value: 'text-pink-600' },
-  { label: '水', value: 'text-cyan-600' },
-  { label: '薄赤', value: 'text-red-400' },
-];
+// ------------------------------------------------------------------
+// ヘルパー関数群
+// ------------------------------------------------------------------
 
 const getHolidaysForYear = (year) => {
   const holidayMap = {}; 
@@ -290,6 +266,35 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
   );
 };
 
+// ------------------------------------------------------------------
+// メインアプリコンポーネント
+// ------------------------------------------------------------------
+
+const TIME_OPTIONS = (() => {
+  const times = [];
+  for (let h = 5; h < 24; h++) {
+    for (let m = 0; m < 60; m += 10) {
+       const str = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+       times.push(str);
+    }
+  }
+  return times;
+})();
+
+const COLOR_OPTIONS = [
+  { label: '黒', value: 'text-gray-800' },
+  { label: '灰', value: 'text-gray-500' }, 
+  { label: '青', value: 'text-blue-600' },
+  { label: '緑', value: 'text-green-600' },
+  { label: '黄', value: 'text-yellow-600' },
+  { label: '紫', value: 'text-purple-600' },
+  { label: '赤', value: 'text-red-600' },
+  { label: '橙', value: 'text-orange-600' },
+  { label: '桃', value: 'text-pink-600' },
+  { label: '水', value: 'text-cyan-600' },
+  { label: '薄赤', value: 'text-red-400' },
+];
+
 export default function WorkScheduleApp() {
   const [authUser, setAuthUser] = useState(null); 
   const [appUser, setAppUser] = useState(null); 
@@ -299,6 +304,9 @@ export default function WorkScheduleApp() {
   const [staffList, setStaffList] = useState([]);
   const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_TYPES);
   const [adminSettings, setAdminSettings] = useState(DEFAULT_ADMIN_SETTINGS); 
+  // 各カテゴリ・曜日ごとの目標人数設定 { categoryId: { 0:2, 1:3, ..., 7:1 } } (0=Sun...6=Sat, 7=Hol)
+  const [targetCounts, setTargetCounts] = useState({});
+
   const [shiftData, setShiftData] = useState({});
   const [taskData, setTaskData] = useState({});
   
@@ -308,6 +316,7 @@ export default function WorkScheduleApp() {
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
+  const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
@@ -342,14 +351,14 @@ export default function WorkScheduleApp() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         
-        // 修正: 既存データのシステムIDを勝手にログインIDとして使わないようにする
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
-          loginId: s.loginId || '' // loginIdがない場合は空文字（未設定）
+          loginId: s.loginId || '' 
         }));
 
         setStaffList(loadedStaffList);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
+        setTargetCounts(data.targetCounts || {});
         
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
         if (loadedAdminSettings['opera']) {
@@ -358,9 +367,10 @@ export default function WorkScheduleApp() {
         }
         setAdminSettings(loadedAdminSettings);
       } else {
-        setDoc(masterDocRef, { staffList: INITIAL_STAFF, shiftDefs: DEFAULT_SHIFT_TYPES, adminSettings: DEFAULT_ADMIN_SETTINGS });
+        setDoc(masterDocRef, { staffList: INITIAL_STAFF, shiftDefs: DEFAULT_SHIFT_TYPES, adminSettings: DEFAULT_ADMIN_SETTINGS, targetCounts: {} });
         setStaffList(INITIAL_STAFF);
         setAdminSettings(DEFAULT_ADMIN_SETTINGS);
+        setTargetCounts({});
       }
     });
     const scheduleId = `schedule_${year}_${month}`;
@@ -388,13 +398,14 @@ export default function WorkScheduleApp() {
     await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks }, { merge: true });
   };
 
-  const saveMasterData = async (list = staffList, defs = shiftDefs, settings = adminSettings) => {
+  const saveMasterData = async (list = staffList, defs = shiftDefs, settings = adminSettings, targets = targetCounts) => {
     if (!authUser) return;
     const masterDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'general', 'masterData');
     await setDoc(masterDocRef, { 
       staffList: list, 
       shiftDefs: defs, 
-      adminSettings: settings 
+      adminSettings: settings,
+      targetCounts: targets
     }, { merge: true });
   };
 
@@ -464,12 +475,12 @@ export default function WorkScheduleApp() {
         newSettings[targetAdminKey] = { ...newSettings[targetAdminKey], password: newPassword };
       }
       setAdminSettings(newSettings);
-      saveMasterData(staffList, shiftDefs, newSettings);
+      saveMasterData(staffList, shiftDefs, newSettings, targetCounts);
       alert(`${newSettings[targetAdminKey].label}のパスワードを変更しました。`);
     } else {
       const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: newPassword } : s);
       setStaffList(newList);
-      saveMasterData(newList, shiftDefs, adminSettings);
+      saveMasterData(newList, shiftDefs, adminSettings, targetCounts);
       alert('パスワードを変更しました。次回ログイン時から有効です。');
     }
     
@@ -497,7 +508,6 @@ export default function WorkScheduleApp() {
       return;
     }
 
-    // ログインID重複チェック（自分自身以外の重複を探す）
     const duplicateStaff = staffList.find(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
     if (duplicateStaff) {
       alert(`そのログインID "${targetStaff.loginId}" は既に "${duplicateStaff.name}" さんに使用されています。\n別のIDを指定してください。`);
@@ -506,17 +516,14 @@ export default function WorkScheduleApp() {
 
     let newList = [...staffList];
     if (targetStaff.id) {
-      // 既存データの更新: システムIDが一致するものを探して更新
       newList = newList.map(s => s.id === targetStaff.id ? targetStaff : s);
     } else {
-      // 新規作成: システムIDを生成して追加
       const newStaff = { ...targetStaff, id: Date.now().toString() };
       newList.push(newStaff);
     }
 
     setStaffList(newList);
     saveMasterData(newList);
-    // 保存時は閉じない
     alert('保存しました。');
   };
 
@@ -617,6 +624,12 @@ export default function WorkScheduleApp() {
     saveMasterData(staffList, newDefs);
   };
 
+  const saveTargetCounts = () => {
+    saveMasterData(staffList, shiftDefs, adminSettings, targetCounts);
+    alert('必要人数設定を保存しました');
+    setShowTargetCountModal(false);
+  };
+
   const prepareScheduleDataForAi = () => ({
     year, month,
     staff: staffList.map(s => ({ id: s.id, name: s.name, jobTitle: s.jobTitle, roles: s.roles })),
@@ -679,7 +692,13 @@ export default function WorkScheduleApp() {
         .filter(s => s.category === catKey && s.type === 'shift')
         .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
         .map(s => s.code);
-      return { name: CATEGORY_DEFS[catKey].label, items: categoryItems, totalLabel: `${CATEGORY_DEFS[catKey].label} 計`, headerColor: CATEGORY_DEFS[catKey].color };
+      return { 
+        id: catKey,
+        name: CATEGORY_DEFS[catKey].label, 
+        items: categoryItems, 
+        totalLabel: `${CATEGORY_DEFS[catKey].label} 計`, 
+        headerColor: CATEGORY_DEFS[catKey].color 
+      };
     });
   }, [shiftDefs]);
 
@@ -714,9 +733,15 @@ export default function WorkScheduleApp() {
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
 
-  // ログインチェック(if (!appUser))よりも前にHooksを呼び出す必要があります
+  const getTargetCount = (categoryId, day) => {
+    if (!targetCounts[categoryId]) return 0;
+    if (isHoliday(year, month, day)) return targetCounts[categoryId]['7'] || 0; // 7 = Holiday
+    const dow = getDayOfWeek(year, month, day);
+    return targetCounts[categoryId][dow] || 0;
+  };
+
   const displayStaffList = useMemo(() => {
-    if (!appUser) return []; // ガード節: appUserがnullの場合は空配列を返す
+    if (!appUser) return [];
     let list = staffList;
 
     if (currentView !== 'all') {
@@ -738,13 +763,11 @@ export default function WorkScheduleApp() {
     <LoginScreen 
       onLogin={(user) => {
         setAppUser(user);
-        // ログイン時に指定された初期ビューがあれば適用
         if (user.initialView) setCurrentView(user.initialView);
-        // 職員の場合は自分のシフトのみ表示にする
         if (user.role === 'staff') setViewMode('personal');
       }} 
       staffList={staffList} 
-      adminSettings={adminSettings} // 管理者設定を渡す
+      adminSettings={adminSettings}
     />
   );
   
@@ -977,7 +1000,13 @@ export default function WorkScheduleApp() {
                     })}
                     {appUser.role === 'admin' && (
                       <>
-                        <tr><td className="p-2 bg-gray-100 border-r border-b font-bold text-gray-600 text-xs text-right sticky left-0 z-10">集計</td><td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td></tr>
+                        <tr>
+                          <td className="p-2 bg-gray-100 border-r border-b font-bold text-gray-600 text-xs text-right sticky left-0 z-10 flex justify-between items-center">
+                            <button onClick={(e) => { e.stopPropagation(); setShowTargetCountModal(true); }} className="text-gray-400 hover:text-blue-600"><Settings size={14}/></button>
+                            <span>集計</span>
+                          </td>
+                          <td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td>
+                        </tr>
                         <tr>
                           <td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>
                           {daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}
@@ -990,7 +1019,14 @@ export default function WorkScheduleApp() {
                                 <td className={`sticky left-0 border-r border-b p-2 text-xs font-bold text-right ${group.headerColor}`}>{group.totalLabel}</td>
                                 {daysArray.map(day => {
                                   const total = group.items.reduce((sum, code) => sum + (dailyStats[day][code] || 0), 0);
-                                  return <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{total > 0 ? total : '-'}</td>;
+                                  const target = getTargetCount(group.id, day);
+                                  const isAlert = target > 0 && total < target;
+                                  
+                                  return (
+                                    <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>
+                                      {total > 0 ? total : '-'}
+                                    </td>
+                                  );
                                 })}
                                 <td className="bg-gray-50 border-b"></td>
                               </tr>
@@ -1200,6 +1236,67 @@ export default function WorkScheduleApp() {
                  <button onClick={handleChangePassword} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">変更する</button>
                </div>
              </div>
+          </div>
+        )}
+
+        {/* 必要人数設定モーダル */}
+        {showTargetCountModal && (
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users size={18}/> 必要人数設定</h3>
+                 <button onClick={() => setShowTargetCountModal(false)}><X size={20} className="text-gray-400"/></button>
+               </div>
+               <div className="p-4 overflow-y-auto">
+                 <p className="text-xs text-gray-500 mb-4">
+                   各曜日ごとの必要人数を設定してください。設定値を下回ると集計欄が赤く表示されます。<br/>
+                   日曜を0に設定すれば、日曜日の人数不足アラートは出ません。
+                 </p>
+                 <table className="w-full text-center text-xs border-collapse">
+                   <thead>
+                     <tr className="bg-gray-100 text-gray-600">
+                       <th className="p-2 border">施設</th>
+                       <th className="p-2 border">月</th>
+                       <th className="p-2 border">火</th>
+                       <th className="p-2 border">水</th>
+                       <th className="p-2 border">木</th>
+                       <th className="p-2 border">金</th>
+                       <th className="p-2 border text-blue-600">土</th>
+                       <th className="p-2 border text-red-600">日</th>
+                       <th className="p-2 border text-red-600">祝</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {dynamicSummaryGroups.map(group => (
+                       <tr key={group.id} className="border-b">
+                         <td className={`p-2 border font-bold text-left ${group.headerColor}`}>{group.name}</td>
+                         {[1,2,3,4,5,6,0,7].map(dayIndex => (
+                           <td key={dayIndex} className="p-1 border">
+                             <input 
+                               type="number" 
+                               min="0"
+                               className="w-12 p-1 border rounded text-center"
+                               value={targetCounts[group.id]?.[dayIndex] ?? 0}
+                               onChange={(e) => {
+                                 const val = parseInt(e.target.value) || 0;
+                                 setTargetCounts(prev => ({
+                                   ...prev,
+                                   [group.id]: { ...(prev[group.id] || {}), [dayIndex]: val }
+                                 }));
+                               }}
+                             />
+                           </td>
+                         ))}
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
+               </div>
+               <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
+                 <button onClick={() => setShowTargetCountModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
+                 <button onClick={saveTargetCounts} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
+               </div>
+            </div>
           </div>
         )}
 
