@@ -304,7 +304,7 @@ export default function WorkScheduleApp() {
   const [staffList, setStaffList] = useState([]);
   const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_TYPES);
   const [adminSettings, setAdminSettings] = useState(DEFAULT_ADMIN_SETTINGS); 
-  // 各カテゴリ・曜日ごとの目標人数設定 { categoryId: { 0:2, 1:3, ..., 7:1 } } (0=Sun...6=Sat, 7=Hol)
+  // 各シフトごとの目標人数設定 { shiftCode: { 0:2, 1:3, ..., 7:1 } } (0=Sun...6=Sat, 7=Hol)
   const [targetCounts, setTargetCounts] = useState({});
 
   const [shiftData, setShiftData] = useState({});
@@ -733,11 +733,11 @@ export default function WorkScheduleApp() {
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
 
-  const getTargetCount = (categoryId, day) => {
-    if (!targetCounts[categoryId]) return 0;
-    if (isHoliday(year, month, day)) return targetCounts[categoryId]['7'] || 0; // 7 = Holiday
+  const getTargetCount = (shiftCode, day) => {
+    if (!targetCounts[shiftCode]) return 0;
+    if (isHoliday(year, month, day)) return targetCounts[shiftCode]['7'] || 0; // 7 = Holiday
     const dow = getDayOfWeek(year, month, day);
-    return targetCounts[categoryId][dow] || 0;
+    return targetCounts[shiftCode][dow] || 0;
   };
 
   const displayStaffList = useMemo(() => {
@@ -1019,8 +1019,8 @@ export default function WorkScheduleApp() {
                                 <td className={`sticky left-0 border-r border-b p-2 text-xs font-bold text-right ${group.headerColor}`}>{group.totalLabel}</td>
                                 {daysArray.map(day => {
                                   const total = group.items.reduce((sum, code) => sum + (dailyStats[day][code] || 0), 0);
-                                  const target = getTargetCount(group.id, day);
-                                  const isAlert = target > 0 && total < target;
+                                  const targetTotal = group.items.reduce((sum, code) => sum + getTargetCount(code, day), 0);
+                                  const isAlert = targetTotal > 0 && total < targetTotal;
                                   
                                   return (
                                     <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>
@@ -1038,8 +1038,15 @@ export default function WorkScheduleApp() {
                                   <td className="sticky left-0 bg-white border-r border-b p-2 text-xs text-right text-gray-500"><span className={shift.text}>{shift.label}</span> ({shift.code})</td>
                                   {daysArray.map(day => {
                                     const count = dailyStats[day][code] || 0;
+                                    const target = getTargetCount(code, day);
                                     let isAlert = false;
-                                    if (code === 'L') isAlert = (!isHoliday(year, month, day) && !isSunday(year, month, day) && count === 0);
+                                    if (target > 0) {
+                                      isAlert = count < target;
+                                    } else if (code === 'L') {
+                                       // Lシフトのデフォルト警告（ターゲット未設定時用）
+                                       isAlert = (!isHoliday(year, month, day) && !isSunday(year, month, day) && count === 0);
+                                    }
+
                                     return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{count > 0 ? count : '-'}</td>;
                                   })}
                                   <td className="bg-gray-50 border-b"></td>
@@ -1249,48 +1256,108 @@ export default function WorkScheduleApp() {
                </div>
                <div className="p-4 overflow-y-auto">
                  <p className="text-xs text-gray-500 mb-4">
-                   各曜日ごとの必要人数を設定してください。設定値を下回ると集計欄が赤く表示されます。<br/>
-                   日曜を0に設定すれば、日曜日の人数不足アラートは出ません。
+                   各シフト・曜日ごとの必要人数を設定してください。<br/>
+                   日曜日は設定不要です。設定値を下回ると集計欄が赤く表示されます。
                  </p>
-                 <table className="w-full text-center text-xs border-collapse">
-                   <thead>
-                     <tr className="bg-gray-100 text-gray-600">
-                       <th className="p-2 border">施設</th>
-                       <th className="p-2 border">月</th>
-                       <th className="p-2 border">火</th>
-                       <th className="p-2 border">水</th>
-                       <th className="p-2 border">木</th>
-                       <th className="p-2 border">金</th>
-                       <th className="p-2 border text-blue-600">土</th>
-                       <th className="p-2 border text-red-600">日</th>
-                       <th className="p-2 border text-red-600">祝</th>
-                     </tr>
-                   </thead>
-                   <tbody>
-                     {dynamicSummaryGroups.map(group => (
-                       <tr key={group.id} className="border-b">
-                         <td className={`p-2 border font-bold text-left ${group.headerColor}`}>{group.name}</td>
-                         {[1,2,3,4,5,6,0,7].map(dayIndex => (
-                           <td key={dayIndex} className="p-1 border">
-                             <input 
-                               type="number" 
-                               min="0"
-                               className="w-12 p-1 border rounded text-center"
-                               value={targetCounts[group.id]?.[dayIndex] ?? 0}
-                               onChange={(e) => {
-                                 const val = parseInt(e.target.value) || 0;
-                                 setTargetCounts(prev => ({
-                                   ...prev,
-                                   [group.id]: { ...(prev[group.id] || {}), [dayIndex]: val }
-                                 }));
-                               }}
-                             />
-                           </td>
-                         ))}
-                       </tr>
-                     ))}
-                   </tbody>
-                 </table>
+                 <div className="space-y-6">
+                   {dynamicSummaryGroups.map(group => (
+                     <div key={group.id} className="border rounded-lg overflow-hidden">
+                       <div className={`px-4 py-2 font-bold text-sm ${group.headerColor}`}>{group.name}</div>
+                       <table className="w-full text-center text-xs border-collapse">
+                         <thead>
+                           <tr className="bg-gray-100 text-gray-600">
+                             <th className="p-2 border text-left w-32">シフト</th>
+                             {group.id === 'jinkuri' ? (
+                               <>
+                                 <th className="p-2 border w-24">月・水・金</th>
+                                 <th className="p-2 border w-24">火・木・土</th>
+                               </>
+                             ) : (
+                               <th className="p-2 border w-32">通常 (月～土)</th>
+                             )}
+                             <th className="p-2 border w-24 text-red-600">祝</th>
+                           </tr>
+                         </thead>
+                         <tbody>
+                           {group.items.map(code => {
+                             const shift = shiftDefs[code];
+                             // じんクリ: 月(1)の値を代表として表示
+                             const val1 = targetCounts[code]?.[1] ?? 0;
+                             // じんクリ: 火(2)の値を代表として表示
+                             const val2 = targetCounts[code]?.[2] ?? 0;
+                             // 祝(7)
+                             const valHol = targetCounts[code]?.[7] ?? 0;
+
+                             return (
+                               <tr key={code} className="border-b last:border-b-0">
+                                 <td className="p-2 border text-left font-bold text-gray-700">
+                                    <span className={shift.text}>{shift.label}</span>
+                                 </td>
+                                 {group.id === 'jinkuri' ? (
+                                   <>
+                                     <td className="p-1 border">
+                                       <input 
+                                         type="number" min="0" className="w-16 p-1 border rounded text-center"
+                                         value={val1}
+                                         onChange={(e) => {
+                                           const v = parseInt(e.target.value) || 0;
+                                           setTargetCounts(prev => ({
+                                             ...prev,
+                                             [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } // 月水金
+                                           }));
+                                         }}
+                                       />
+                                     </td>
+                                     <td className="p-1 border">
+                                       <input 
+                                         type="number" min="0" className="w-16 p-1 border rounded text-center"
+                                         value={val2}
+                                         onChange={(e) => {
+                                           const v = parseInt(e.target.value) || 0;
+                                           setTargetCounts(prev => ({
+                                             ...prev,
+                                             [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } // 火木土
+                                           }));
+                                         }}
+                                       />
+                                     </td>
+                                   </>
+                                 ) : (
+                                   <td className="p-1 border">
+                                     <input 
+                                       type="number" min="0" className="w-16 p-1 border rounded text-center"
+                                       value={val1}
+                                       onChange={(e) => {
+                                         const v = parseInt(e.target.value) || 0;
+                                         setTargetCounts(prev => ({
+                                           ...prev,
+                                           [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } // 月～土
+                                         }));
+                                       }}
+                                     />
+                                   </td>
+                                 )}
+                                 <td className="p-1 border">
+                                   <input 
+                                     type="number" min="0" className="w-16 p-1 border rounded text-center"
+                                     value={valHol}
+                                     onChange={(e) => {
+                                       const v = parseInt(e.target.value) || 0;
+                                       setTargetCounts(prev => ({
+                                         ...prev,
+                                         [code]: { ...(prev[code] || {}), 7:v } // 祝
+                                       }));
+                                     }}
+                                   />
+                                 </td>
+                               </tr>
+                             );
+                           })}
+                         </tbody>
+                       </table>
+                     </div>
+                   ))}
+                 </div>
                </div>
                <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
                  <button onClick={() => setShowTargetCountModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
