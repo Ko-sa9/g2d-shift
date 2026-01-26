@@ -22,7 +22,7 @@ const ADMIN_VIEW_PASSWORDS = {
 const CATEGORY_DEFS = {
   'saka':    { label: '坂田',    color: 'bg-blue-50 text-blue-800' },
   'kimi':    { label: '君津',    color: 'bg-green-50 text-green-800' },
-  'moku':    { label: '木クリ',  color: 'bg-yellow-50 text-yellow-800' },
+  'kikuri':  { label: '木クリ',  color: 'bg-yellow-50 text-yellow-800' }, // moku -> kikuri
   'jinkuri': { label: 'じんクリ', color: 'bg-purple-50 text-purple-800' },
   'me':      { label: 'ME室',    color: 'bg-red-50 text-red-800' },
   'basic':   { label: 'その他',   color: 'bg-gray-50 text-gray-800' },
@@ -38,8 +38,8 @@ const DEFAULT_SHIFT_TYPES = {
   'F': { order: 3, code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift' },
   'B': { order: 4, code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift' },
   'D': { order: 5, code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift' },
-  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
-  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'moku', type: 'shift' },
+  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' }, // moku -> kikuri
+  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' }, // moku -> kikuri
   'Z2': { order: 8, code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift' },
   'Z1': { order: 9, code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift' },
   'L':  { order: 10, code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
@@ -62,7 +62,8 @@ const DEFAULT_SHIFT_TYPES = {
 };
 
 const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パート'];
-const STAFF_ROLES = ['リーダー', 'エコー班', 'オペ班', 'HHD班'];
+// 修正: ロールから「リーダー」を削除
+const STAFF_ROLES = ['エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
 // スキル評価項目の定義
@@ -82,8 +83,9 @@ const TEAMS = [
 ];
 
 const INITIAL_STAFF = [
-  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234' },
-  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['リーダー', 'エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234' },
+  // 修正: rolesからリーダーを削除し、skills.isLeaderで管理
+  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234' },
+  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234' },
   { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], skills: { canMachine: true }, password: '1234' },
   { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], skills: { canFollow: true }, password: '1234' },
   { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], skills: {}, password: '1234' },
@@ -651,6 +653,7 @@ export default function WorkScheduleApp() {
     })),
     shifts: shiftData, 
     tasks: taskData,
+    targetCounts, // AIに必要人数設定を渡す
     definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
   });
 
@@ -668,11 +671,26 @@ export default function WorkScheduleApp() {
     
     // 制約条件の追加
     const constraintPrompt = `
-    【自動作成ルール】
-    1. 絶対条件: 「坂田(saka)」「君津(kimi)」「木クリ(moku)」の各シフト区分において、必ずスキル「①リーダー可(isLeader)」がTrueの職員を1名以上配置してください。
-    2. バランス調整: 上記3施設において、各日の配置職員の「スキルスコア（5項目のTrueの数）」の合計ができるだけ均等になるように組み合わせてください。
-       - 対象外施設: じんクリ(jinkuri)、ME室(me)
-    3. 指示: ${aiInput}
+    【自動作成・調整ルール】
+    あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフトを作成・修正してください。
+
+    1. **絶対遵守条件 (Hard Constraints)**:
+       - **希望休の維持**: シフト区分が「希望(req)」または「休み(off)」として既に入力されている箇所は絶対に変更しないでください。
+       - **固定シフトの維持**: 役割(roles)に「オペ班」「エコー班」「HHD班」が含まれる職員のシフト、および既に割り当てられている特殊シフト（これらの班に関連する業務）は基本的に変更しないでください。
+       - **必要人数の充足**: 提供された「必要人数設定(targetCounts)」に基づき、各施設(saka, kimi, kikuri)・各日の目標人数を満たすように配置してください。
+       - **リーダー配置**: 各施設(saka, kimi, kikuri)には、スキル「リーダー可(isLeader)」を持つ職員を必ず1名以上配置してください。
+
+    2. **勤務条件 (Work Rules)**:
+       - **3クール連続禁止**: 名称(label)に「3」を含むシフト（例: 坂3, 君3 など）が、同一職員で2日以上連続しないようにしてください。
+
+    3. **バランス調整**:
+       - 上記を満たした上で、スキルスコア（5項目のTrueの数）に基づく戦力の均等化を行ってください。
+       - 施設ID "kikuri" は "木クリ" です。
+
+    4. **例外処理**:
+       - どうしても条件を満たせない（人が足りない等）場合は、無理に埋めずに空欄にするか、実現不可能な箇所を無視して最適解を出してください。
+    
+    指示: ${aiInput}
     `;
 
     try {
@@ -695,7 +713,7 @@ export default function WorkScheduleApp() {
     } catch (e) { console.error(e); setAiResponse("⚠️ エラー"); }
     setIsAiLoading(false);
   };
-
+  
   const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month]);
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
   const calendarDays = useMemo(() => generateCalendarDays(year, month), [year, month]);
@@ -713,7 +731,7 @@ export default function WorkScheduleApp() {
   }, [shiftDefs]);
 
   const dynamicSummaryGroups = useMemo(() => {
-    const targetCategories = ['saka', 'kimi', 'moku', 'jinkuri', 'me'];
+    const targetCategories = ['saka', 'kimi', 'kikuri', 'jinkuri', 'me'];
     return targetCategories.map(catKey => {
       const categoryItems = Object.values(shiftDefs)
         .filter(s => s.category === catKey && s.type === 'shift')
@@ -1218,9 +1236,10 @@ export default function WorkScheduleApp() {
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label>
                   <select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => {
                     const newTitle = e.target.value;
-                    let newRoles = targetStaff.roles ? [...targetStaff.roles] : [];
-                    if(LEADER_FORCE_TITLES.includes(newTitle) && !newRoles.includes('リーダー')) newRoles.push('リーダー');
-                    setTargetStaff({...targetStaff, jobTitle: newTitle, roles: newRoles});
+                    let newSkills = targetStaff.skills ? { ...targetStaff.skills } : {};
+                    // 修正: 役職に応じてスキル「リーダー可」を自動チェック
+                    if(LEADER_FORCE_TITLES.includes(newTitle)) newSkills.isLeader = true;
+                    setTargetStaff({...targetStaff, jobTitle: newTitle, skills: newSkills});
                   }}>
                     {JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
