@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -65,6 +65,15 @@ const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パ
 const STAFF_ROLES = ['リーダー', 'エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
+// スキル評価項目の定義
+const STAFF_SKILLS = [
+  { key: 'isLeader', label: '①リーダー可', icon: ShieldCheck, desc: '責任者・指示出し【必須】' },
+  { key: 'canEcho', label: '②エコー穿刺', icon: Activity, desc: '難渋例の穿刺【技術】' },
+  { key: 'canMachine', label: '③機器対応', icon: Zap, desc: 'トラブル対応【安全】' },
+  { key: 'canFollow', label: '④フォロー', icon: Heart, desc: '自発的ヘルプ【潤滑】' },
+  { key: 'isVeteran', label: '⑤ベテラン', icon: Star, desc: '5年以上・指導役【安定】' },
+];
+
 const TEAMS = [
   { id: 'all', label: '全体', role: null },
   { id: 'ope', label: 'オペ班', role: 'オペ班' }, 
@@ -73,12 +82,12 @@ const TEAMS = [
 ];
 
 const INITIAL_STAFF = [
-  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], password: '1234' },
-  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['リーダー', 'エコー班'], password: '1234' },
-  { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], password: '1234' },
-  { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], password: '1234' },
+  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['リーダー', 'オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234' },
+  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['リーダー', 'エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234' },
+  { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], skills: { canMachine: true }, password: '1234' },
+  { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], skills: { canFollow: true }, password: '1234' },
+  { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], skills: {}, password: '1234' },
+  { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], skills: {}, password: '1234' },
 ];
 
 // 管理者設定の初期値
@@ -353,7 +362,8 @@ export default function WorkScheduleApp() {
         
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
-          loginId: s.loginId || '' 
+          loginId: s.loginId || '',
+          skills: s.skills || {} // スキル情報の初期化
         }));
 
         setStaffList(loadedStaffList);
@@ -489,12 +499,12 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddStaff = () => {
-    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [] });
+    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [], skills: {} });
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
-    setTargetStaff({ ...staff });
+    setTargetStaff({ ...staff, skills: staff.skills || {} });
     setShowStaffModal(true);
   };
 
@@ -632,9 +642,16 @@ export default function WorkScheduleApp() {
 
   const prepareScheduleDataForAi = () => ({
     year, month,
-    staff: staffList.map(s => ({ id: s.id, name: s.name, jobTitle: s.jobTitle, roles: s.roles })),
-    shifts: shiftData, tasks: taskData,
-    definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type }; return acc; }, {})
+    staff: staffList.map(s => ({ 
+      id: s.id, 
+      name: s.name, 
+      jobTitle: s.jobTitle, 
+      roles: s.roles,
+      skills: s.skills // AIにスキル情報を渡す
+    })),
+    shifts: shiftData, 
+    tasks: taskData,
+    definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
   });
 
   const handleAiAnalyze = async () => {
@@ -648,8 +665,18 @@ export default function WorkScheduleApp() {
     if (!aiInput.trim()) return;
     setIsAiLoading(true);
     const data = prepareScheduleDataForAi();
+    
+    // 制約条件の追加
+    const constraintPrompt = `
+    【自動作成ルール】
+    1. 絶対条件: 「坂田(saka)」「君津(kimi)」「木クリ(moku)」の各シフト区分において、必ずスキル「①リーダー可(isLeader)」がTrueの職員を1名以上配置してください。
+    2. バランス調整: 上記3施設において、各日の配置職員の「スキルスコア（5項目のTrueの数）」の合計ができるだけ均等になるように組み合わせてください。
+       - 対象外施設: じんクリ(jinkuri)、ME室(me)
+    3. 指示: ${aiInput}
+    `;
+
     try {
-      const result = await callGemini(`現状:${JSON.stringify(data)} 指示:${aiInput} JSON({shift:{staffId:{day:code}},task:{...}})のみ出力`, "JSON出力マシーン");
+      const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt} JSON({shift:{staffId:{day:code}},task:{...}})のみ出力`, "JSON出力マシーン");
       const match = result.match(/\{[\s\S]*\}/);
       if (match) {
         const changes = JSON.parse(match[0]);
@@ -952,7 +979,12 @@ export default function WorkScheduleApp() {
                                   {staff.name}
                                   {appUser.role === 'admin' && <Edit2 size={10} className="text-gray-300 opacity-0 group-hover/cell:opacity-100 transition"/>}
                                 </div>
-                                <div className="text-[10px] text-gray-500">{staff.jobTitle}</div>
+                                <div className="text-[10px] text-gray-500 flex items-center gap-2">
+                                  {staff.jobTitle}
+                                  {/* スキルバッジの表示 */}
+                                  {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
+                                  {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
+                                </div>
                               </div>
                               {appUser.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); removeStaff(staff.id); }} className="text-gray-300 hover:text-red-500 opacity-0 group-hover/cell:opacity-100 px-1"><Trash2 size={12}/></button>}
                             </div>
@@ -1176,7 +1208,7 @@ export default function WorkScheduleApp() {
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
                 <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
               </div>
-              <div className="p-6 space-y-4">
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label>
                   <input type="text" className="w-full border p-2 rounded" placeholder="任意のIDを入力" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} />
@@ -1193,7 +1225,7 @@ export default function WorkScheduleApp() {
                     {JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール</label>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label>
                   <div className="space-y-2">{STAFF_ROLES.map(r => (
                     <label key={r} className="flex items-center gap-2"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => {
                       const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r];
@@ -1201,6 +1233,34 @@ export default function WorkScheduleApp() {
                     }}/> <span className="text-sm">{r}</span></label>
                   ))}</div>
                 </div>
+
+                {/* スキル評価設定（管理者のみ） */}
+                {appUser.role === 'admin' && (
+                  <div className="border-t pt-4 mt-2">
+                    <label className="block text-xs font-bold text-blue-600 mb-2 flex items-center gap-1"><ShieldCheck size={14}/> スキル評価 (管理者のみ)</label>
+                    <div className="space-y-3 bg-blue-50 p-3 rounded-lg">
+                      {STAFF_SKILLS.map(skill => (
+                        <div key={skill.key} className="flex items-start gap-2">
+                          <input 
+                            type="checkbox" 
+                            id={`skill-${skill.key}`}
+                            className="mt-1"
+                            checked={targetStaff.skills?.[skill.key] || false} 
+                            onChange={(e) => {
+                              const newSkills = { ...targetStaff.skills, [skill.key]: e.target.checked };
+                              setTargetStaff({ ...targetStaff, skills: newSkills });
+                            }}
+                          />
+                          <label htmlFor={`skill-${skill.key}`} className="text-sm cursor-pointer">
+                            <div className="font-bold flex items-center gap-1">{skill.label}</div>
+                            <div className="text-[10px] text-gray-500">{skill.desc}</div>
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
               </div>
               <div className="p-4 border-t flex justify-end gap-2">
