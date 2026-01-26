@@ -735,7 +735,6 @@ export default function WorkScheduleApp() {
 
   const getTargetCount = (shiftCode, day) => {
     if (!targetCounts[shiftCode]) return 0;
-    if (isHoliday(year, month, day)) return targetCounts[shiftCode]['7'] || 0; // 7 = Holiday
     const dow = getDayOfWeek(year, month, day);
     return targetCounts[shiftCode][dow] || 0;
   };
@@ -1042,9 +1041,6 @@ export default function WorkScheduleApp() {
                                     let isAlert = false;
                                     if (target > 0) {
                                       isAlert = count < target;
-                                    } else if (code === 'L') {
-                                       // Lシフトのデフォルト警告（ターゲット未設定時用）
-                                       isAlert = (!isHoliday(year, month, day) && !isSunday(year, month, day) && count === 0);
                                     }
 
                                     return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{count > 0 ? count : '-'}</td>;
@@ -1257,7 +1253,7 @@ export default function WorkScheduleApp() {
                <div className="p-4 overflow-y-auto">
                  <p className="text-xs text-gray-500 mb-4">
                    各シフト・曜日ごとの必要人数を設定してください。<br/>
-                   日曜日は設定不要です。設定値を下回ると集計欄が赤く表示されます。
+                   設定値を下回ると集計欄が赤く表示されます。
                  </p>
                  <div className="space-y-6">
                    {dynamicSummaryGroups.map(group => (
@@ -1275,7 +1271,6 @@ export default function WorkScheduleApp() {
                              ) : (
                                <th className="p-2 border w-32">通常 (月～土)</th>
                              )}
-                             <th className="p-2 border w-24 text-red-600">祝</th>
                            </tr>
                          </thead>
                          <tbody>
@@ -1285,9 +1280,7 @@ export default function WorkScheduleApp() {
                              const val1 = targetCounts[code]?.[1] ?? 0;
                              // じんクリ: 火(2)の値を代表として表示
                              const val2 = targetCounts[code]?.[2] ?? 0;
-                             // 祝(7)
-                             const valHol = targetCounts[code]?.[7] ?? 0;
-
+                             
                              return (
                                <tr key={code} className="border-b last:border-b-0">
                                  <td className="p-2 border text-left font-bold text-gray-700">
@@ -1337,19 +1330,6 @@ export default function WorkScheduleApp() {
                                      />
                                    </td>
                                  )}
-                                 <td className="p-1 border">
-                                   <input 
-                                     type="number" min="0" className="w-16 p-1 border rounded text-center"
-                                     value={valHol}
-                                     onChange={(e) => {
-                                       const v = parseInt(e.target.value) || 0;
-                                       setTargetCounts(prev => ({
-                                         ...prev,
-                                         [code]: { ...(prev[code] || {}), 7:v } // 祝
-                                       }));
-                                     }}
-                                   />
-                                 </td>
                                </tr>
                              );
                            })}
