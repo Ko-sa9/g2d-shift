@@ -196,6 +196,9 @@ const generateCalendarDays = (year, month) => {
 };
 
 const callGemini = async (prompt, systemInstruction = "") => {
+  // --- 追加: デバッグ用ログ ---
+  console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded");
+  // -------------------------
   if (!apiKey) {
     return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
   }
