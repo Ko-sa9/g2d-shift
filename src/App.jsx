@@ -11,7 +11,7 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// 管理者ログイン時のパスワードと表示モードの対応設定
+// ... (定数定義は変更なし)
 const ADMIN_VIEW_PASSWORDS = {
   'admin': 'all',        // 全体
   'admin-ope': 'ope',    // オペ班
@@ -197,10 +197,11 @@ const generateCalendarDays = (year, month) => {
   return days;
 };
 
+// 修正: モデル名を安定版の gemini-1.5-flash に変更
 const callGemini = async (prompt, systemInstruction = "") => {
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -210,12 +211,16 @@ const callGemini = async (prompt, systemInstruction = "") => {
         })
       }
     );
-    if (!response.ok) throw new Error('API Request Failed');
+    if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Gemini API Error Detail:", errorData);
+        throw new Error(`API Request Failed: ${response.status}`);
+    }
     const data = await response.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response";
   } catch (error) {
     console.error("Gemini Error:", error);
-    return "Error: AIの呼び出しに失敗しました。";
+    return `Error: AIの呼び出しに失敗しました。\n詳細: ${error.message}`;
   }
 };
 
@@ -280,31 +285,6 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 // ------------------------------------------------------------------
 // メインアプリコンポーネント
 // ------------------------------------------------------------------
-
-const TIME_OPTIONS = (() => {
-  const times = [];
-  for (let h = 5; h < 24; h++) {
-    for (let m = 0; m < 60; m += 10) {
-       const str = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-       times.push(str);
-    }
-  }
-  return times;
-})();
-
-const COLOR_OPTIONS = [
-  { label: '黒', value: 'text-gray-800' },
-  { label: '灰', value: 'text-gray-500' }, 
-  { label: '青', value: 'text-blue-600' },
-  { label: '緑', value: 'text-green-600' },
-  { label: '黄', value: 'text-yellow-600' },
-  { label: '紫', value: 'text-purple-600' },
-  { label: '赤', value: 'text-red-600' },
-  { label: '橙', value: 'text-orange-600' },
-  { label: '桃', value: 'text-pink-600' },
-  { label: '水', value: 'text-cyan-600' },
-  { label: '薄赤', value: 'text-red-400' },
-];
 
 export default function WorkScheduleApp() {
   const [authUser, setAuthUser] = useState(null); 
