@@ -11,7 +11,7 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// ... (定数定義は変更なし)
+// 管理者ログイン時のパスワードと表示モードの対応設定
 const ADMIN_VIEW_PASSWORDS = {
   'admin': 'all',        // 全体
   'admin-ope': 'ope',    // オペ班
@@ -22,7 +22,7 @@ const ADMIN_VIEW_PASSWORDS = {
 const CATEGORY_DEFS = {
   'saka':    { label: '坂田',    color: 'bg-blue-50 text-blue-800' },
   'kimi':    { label: '君津',    color: 'bg-green-50 text-green-800' },
-  'kikuri':  { label: '木クリ',  color: 'bg-yellow-50 text-yellow-800' }, // moku -> kikuri
+  'kikuri':  { label: '木クリ',  color: 'bg-yellow-50 text-yellow-800' }, 
   'jinkuri': { label: 'じんクリ', color: 'bg-purple-50 text-purple-800' },
   'me':      { label: 'ME室',    color: 'bg-red-50 text-red-800' },
   'basic':   { label: 'その他',   color: 'bg-gray-50 text-gray-800' },
@@ -38,8 +38,8 @@ const DEFAULT_SHIFT_TYPES = {
   'F': { order: 3, code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift' },
   'B': { order: 4, code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift' },
   'D': { order: 5, code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift' },
-  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' }, // moku -> kikuri
-  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' }, // moku -> kikuri
+  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' },
+  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' },
   'Z2': { order: 8, code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift' },
   'Z1': { order: 9, code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift' },
   'L':  { order: 10, code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
@@ -62,7 +62,6 @@ const DEFAULT_SHIFT_TYPES = {
 };
 
 const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パート'];
-// 修正: ロールから「リーダー」を削除
 const STAFF_ROLES = ['エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
@@ -83,7 +82,6 @@ const TEAMS = [
 ];
 
 const INITIAL_STAFF = [
-  // 修正: rolesからリーダーを削除し、skills.isLeaderで管理
   { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234' },
   { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234' },
   { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], skills: { canMachine: true }, password: '1234' },
@@ -197,8 +195,11 @@ const generateCalendarDays = (year, month) => {
   return days;
 };
 
-// 修正: モデル名を安定版の gemini-1.5-flash に変更
 const callGemini = async (prompt, systemInstruction = "") => {
+  if (!apiKey) {
+    return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
+  }
+
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
@@ -212,15 +213,16 @@ const callGemini = async (prompt, systemInstruction = "") => {
       }
     );
     if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         console.error("Gemini API Error Detail:", errorData);
-        throw new Error(`API Request Failed: ${response.status}`);
+        const errorMsg = errorData.error?.message || response.statusText;
+        throw new Error(`${response.status} ${errorMsg}`);
     }
     const data = await response.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response";
   } catch (error) {
     console.error("Gemini Error:", error);
-    return `Error: AIの呼び出しに失敗しました。\n詳細: ${error.message}`;
+    return `⚠️ エラー: AIの呼び出しに失敗しました。\n詳細: ${error.message}\n\n※APIキーが有効か、Google CloudでGemini APIが有効化されているか確認してください。`;
   }
 };
 
