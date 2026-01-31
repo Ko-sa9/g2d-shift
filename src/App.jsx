@@ -221,8 +221,9 @@ const callGemini = async (prompt, systemInstruction = "") => {
   }
 
   try {
+    // 修正箇所: gemini-1.5-flash -> gemini-2.0-flash
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -235,6 +236,7 @@ const callGemini = async (prompt, systemInstruction = "") => {
     if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         console.error("Gemini API Error Detail:", errorData);
+        // エラー詳細を見やすく表示
         const errorMsg = errorData.error?.message || response.statusText;
         throw new Error(`${response.status} ${errorMsg}`);
     }
