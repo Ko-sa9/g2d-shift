@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -67,11 +67,30 @@ const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
 // スキル評価項目の定義
 const STAFF_SKILLS = [
-  { key: 'isLeader', label: '①リーダー可', icon: ShieldCheck, desc: '責任者・指示出し【必須】' },
-  { key: 'canEcho', label: '②エコー穿刺', icon: Activity, desc: '難渋例の穿刺【技術】' },
-  { key: 'canMachine', label: '③機器対応', icon: Zap, desc: 'トラブル対応【安全】' },
-  { key: 'canFollow', label: '④フォロー', icon: Heart, desc: '自発的ヘルプ【潤滑】' },
-  { key: 'isVeteran', label: '⑤ベテラン', icon: Star, desc: '5年以上・指導役【安定】' },
+  { key: 'isLeader', label: 'リーダー', icon: ShieldCheck, desc: '責任者・指示出し' },
+  { key: 'canEcho', label: 'エコー', icon: Activity, desc: '難渋例の穿刺' },
+  { key: 'canMachine', label: '機器', icon: Zap, desc: 'トラブル対応' },
+  { key: 'canFollow', label: 'フォロー', icon: Heart, desc: '自発的ヘルプ' },
+  { key: 'isVeteran', label: 'ベテラン', icon: Star, desc: '5年以上・指導役' },
+];
+
+// 時間選択肢
+const TIME_OPTIONS = [];
+for (let h = 7; h <= 23; h++) {
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:00`);
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:30`);
+}
+
+// カラーパレット
+const COLOR_OPTIONS = [
+  { value: 'text-gray-800', label: '黒' },
+  { value: 'text-red-600', label: '赤' },
+  { value: 'text-blue-600', label: '青' },
+  { value: 'text-green-600', label: '緑' },
+  { value: 'text-yellow-600', label: '黄' },
+  { value: 'text-purple-600', label: '紫' },
+  { value: 'text-pink-600', label: 'ピンク' },
+  { value: 'text-orange-600', label: 'オレンジ' },
 ];
 
 const TEAMS = [
@@ -82,12 +101,12 @@ const TEAMS = [
 ];
 
 const INITIAL_STAFF = [
-  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234' },
-  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234' },
-  { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], skills: { canMachine: true }, password: '1234' },
-  { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], skills: { canFollow: true }, password: '1234' },
-  { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], skills: {}, password: '1234' },
-  { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], skills: {}, password: '1234' },
+  { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234', maxCool3: 5 },
+  { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234', maxCool3: 5 },
+  { id: '3', loginId: '3', name: '職員C', jobTitle: '一般', roles: [], skills: { canMachine: true }, password: '1234', maxCool3: 5 },
+  { id: '4', loginId: '4', name: '職員D', jobTitle: '一般', roles: [], skills: { canFollow: true }, password: '1234', maxCool3: 5 },
+  { id: '5', loginId: '5', name: '職員E', jobTitle: '一般', roles: [], skills: {}, password: '1234', maxCool3: 5 },
+  { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], skills: {}, password: '1234', maxCool3: 0, excludeFromAi: true },
 ];
 
 // 管理者設定の初期値
@@ -196,9 +215,7 @@ const generateCalendarDays = (year, month) => {
 };
 
 const callGemini = async (prompt, systemInstruction = "") => {
-  // --- 追加: デバッグ用ログ ---
   console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded");
-  // -------------------------
   if (!apiKey) {
     return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
   }
@@ -300,7 +317,6 @@ export default function WorkScheduleApp() {
   const [staffList, setStaffList] = useState([]);
   const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_TYPES);
   const [adminSettings, setAdminSettings] = useState(DEFAULT_ADMIN_SETTINGS); 
-  // 各シフトごとの目標人数設定 { shiftCode: { 0:2, 1:3, ..., 7:1 } } (0=Sun...6=Sat, 7=Hol)
   const [targetCounts, setTargetCounts] = useState({});
 
   const [shiftData, setShiftData] = useState({});
@@ -311,6 +327,7 @@ export default function WorkScheduleApp() {
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
+  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false); // 新規追加: 職員設定モーダル
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
@@ -350,7 +367,9 @@ export default function WorkScheduleApp() {
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
           loginId: s.loginId || '',
-          skills: s.skills || {} // スキル情報の初期化
+          skills: s.skills || {},
+          maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, // デフォルト値5
+          excludeFromAi: s.excludeFromAi || false // デフォルトfalse
         }));
 
         setStaffList(loadedStaffList);
@@ -486,12 +505,17 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddStaff = () => {
-    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [], skills: {} });
+    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [], skills: {}, maxCool3: 5, excludeFromAi: false });
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
-    setTargetStaff({ ...staff, skills: staff.skills || {} });
+    setTargetStaff({ 
+      ...staff, 
+      skills: staff.skills || {}, 
+      maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
+      excludeFromAi: staff.excludeFromAi || false
+    });
     setShowStaffModal(true);
   };
 
@@ -522,6 +546,14 @@ export default function WorkScheduleApp() {
     setStaffList(newList);
     saveMasterData(newList);
     alert('保存しました。');
+  };
+
+  // 一括設定モーダル用の保存処理
+  const saveAllStaffSettings = (updatedStaffList) => {
+    setStaffList(updatedStaffList);
+    saveMasterData(updatedStaffList);
+    alert('全職員の設定を保存しました。');
+    setShowStaffSettingsModal(false);
   };
 
   const removeStaff = (id) => {
@@ -634,11 +666,13 @@ export default function WorkScheduleApp() {
       name: s.name, 
       jobTitle: s.jobTitle, 
       roles: s.roles,
-      skills: s.skills // AIにスキル情報を渡す
+      skills: s.skills,
+      maxCool3: s.maxCool3, // AIに3クール上限を渡す
+      excludeFromAi: s.excludeFromAi // AIに除外フラグを渡す
     })),
     shifts: shiftData, 
     tasks: taskData,
-    targetCounts, // AIに必要人数設定を渡す
+    targetCounts,
     definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
   });
 
@@ -660,13 +694,15 @@ export default function WorkScheduleApp() {
     あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフトを作成・修正してください。
 
     1. **絶対遵守条件 (Hard Constraints)**:
+       - **AI除外職員の保護**: 職員データの 'excludeFromAi' が true の場合、その職員のシフトは一切変更せず、空欄であっても埋めないでください。これは絶対です。
        - **希望休の維持**: シフト区分が「希望(req)」または「休み(off)」として既に入力されている箇所は絶対に変更しないでください。
        - **固定シフトの維持**: 役割(roles)に「オペ班」「エコー班」「HHD班」が含まれる職員のシフト、および既に割り当てられている特殊シフト（これらの班に関連する業務）は基本的に変更しないでください。
        - **必要人数の充足**: 提供された「必要人数設定(targetCounts)」に基づき、各施設(saka, kimi, kikuri)・各日の目標人数を満たすように配置してください。
        - **リーダー配置**: 各施設(saka, kimi, kikuri)には、スキル「リーダー可(isLeader)」を持つ職員を必ず1名以上配置してください。
 
     2. **勤務条件 (Work Rules)**:
-       - **3クール連続禁止**: 名称(label)に「3」を含むシフト（例: 坂3, 君3 など）が、同一職員で2日以上連続しないようにしてください。
+       - **3クール制限**: 各職員の 'maxCool3' プロパティが設定されている場合、その月内で名称(label)に「3」を含むシフト（例: 坂3, 君3 など）の合計回数がその値を超えないようにしてください。
+       - **3クール連続禁止**: 名称(label)に「3」を含むシフトが、同一職員で2日以上連続しないようにしてください。
 
     3. **バランス調整**:
        - 上記を満たした上で、スキルスコア（5項目のTrueの数）に基づく戦力の均等化を行ってください。
@@ -855,9 +891,15 @@ export default function WorkScheduleApp() {
         </div>
         <div className="flex items-center gap-2">
            {appUser.role === 'admin' && (
-             <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
-               <Settings size={16} /> <span className="hidden sm:inline">シフト設定</span>
-             </button>
+             <>
+               <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
+                 <Settings size={16} /> <span className="hidden sm:inline">シフト設定</span>
+               </button>
+               {/* 職員設定ボタンの追加 */}
+               <button onClick={() => setShowStaffSettingsModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
+                 <ListFilter size={16} /> <span className="hidden sm:inline">職員設定一覧</span>
+               </button>
+             </>
            )}
            <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
              <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
@@ -987,6 +1029,8 @@ export default function WorkScheduleApp() {
                                   {/* スキルバッジの表示 */}
                                   {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
                                   {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
+                                  {/* AI除外マーク */}
+                                  {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
                                 </div>
                               </div>
                               {appUser.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); removeStaff(staff.id); }} className="text-gray-300 hover:text-red-500 opacity-0 group-hover/cell:opacity-100 px-1"><Trash2 size={12}/></button>}
@@ -1204,6 +1248,87 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
+        {/* 職員設定一括モーダル (New) */}
+        {showStaffSettingsModal && (
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><ListFilter size={18}/> 職員設定一覧 (スキル・制限・AI設定)</h3>
+                <button onClick={() => setShowStaffSettingsModal(false)}><X size={20} className="text-gray-400"/></button>
+              </div>
+              <div className="flex-1 overflow-auto p-4">
+                 <table className="w-full border-collapse text-xs">
+                   <thead className="bg-gray-100 sticky top-0 z-10 shadow-sm">
+                     <tr>
+                       <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
+                       <th className="p-2 border text-center w-20">AI除外</th>
+                       <th className="p-2 border text-center w-24">3クール上限</th>
+                       {STAFF_SKILLS.map(skill => (
+                         <th key={skill.key} className="p-2 border text-center w-20">
+                           <div className="flex flex-col items-center">
+                             <skill.icon size={16} className="text-gray-600 mb-1"/>
+                             <span>{skill.label}</span>
+                           </div>
+                         </th>
+                       ))}
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {staffList.map((staff, index) => (
+                       <tr key={staff.id} className="hover:bg-gray-50 border-b">
+                         <td className="p-2 border font-bold text-gray-700">
+                           <div>{staff.name}</div>
+                           <div className="text-[10px] text-gray-400">{staff.jobTitle}</div>
+                         </td>
+                         <td className="p-2 border text-center bg-red-50">
+                           <input 
+                             type="checkbox" 
+                             className="w-4 h-4"
+                             checked={staff.excludeFromAi || false}
+                             onChange={(e) => {
+                               const newList = [...staffList];
+                               newList[index] = { ...staff, excludeFromAi: e.target.checked };
+                               setStaffList(newList);
+                             }}
+                           />
+                           {staff.excludeFromAi && <div className="text-[9px] text-red-500 font-bold">除外</div>}
+                         </td>
+                         <td className="p-2 border text-center">
+                           <input 
+                             type="number" 
+                             min="0"
+                             className="w-16 p-1 border rounded text-center"
+                             value={staff.maxCool3 ?? 5}
+                             onChange={(e) => {
+                               const newList = [...staffList];
+                               newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 };
+                               setStaffList(newList);
+                             }}
+                           />
+                         </td>
+                         {STAFF_SKILLS.map(skill => (
+                           <td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => {
+                              const newList = [...staffList];
+                              const currentVal = staff.skills?.[skill.key] || false;
+                              newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } };
+                              setStaffList(newList);
+                           }}>
+                             {staff.skills?.[skill.key] ? <Check size={18} className="text-green-600 mx-auto"/> : <div className="w-4 h-4 mx-auto border rounded-sm border-gray-300"></div>}
+                           </td>
+                         ))}
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
+              </div>
+              <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
+                 <button onClick={() => setShowStaffSettingsModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
+                 <button onClick={() => saveAllStaffSettings(staffList)} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showStaffModal && (
           <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1222,7 +1347,7 @@ export default function WorkScheduleApp() {
                   <select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => {
                     const newTitle = e.target.value;
                     let newSkills = targetStaff.skills ? { ...targetStaff.skills } : {};
-                    // 修正: 役職に応じてスキル「リーダー可」を自動チェック
+                    // 役職に応じてスキル「リーダー可」を自動チェック
                     if(LEADER_FORCE_TITLES.includes(newTitle)) newSkills.isLeader = true;
                     setTargetStaff({...targetStaff, jobTitle: newTitle, skills: newSkills});
                   }}>
@@ -1240,29 +1365,46 @@ export default function WorkScheduleApp() {
 
                 {/* スキル評価設定（管理者のみ） */}
                 {appUser.role === 'admin' && (
-                  <div className="border-t pt-4 mt-2">
-                    <label className="block text-xs font-bold text-blue-600 mb-2 flex items-center gap-1"><ShieldCheck size={14}/> スキル評価 (管理者のみ)</label>
-                    <div className="space-y-3 bg-blue-50 p-3 rounded-lg">
-                      {STAFF_SKILLS.map(skill => (
-                        <div key={skill.key} className="flex items-start gap-2">
-                          <input 
-                            type="checkbox" 
-                            id={`skill-${skill.key}`}
-                            className="mt-1"
-                            checked={targetStaff.skills?.[skill.key] || false} 
-                            onChange={(e) => {
-                              const newSkills = { ...targetStaff.skills, [skill.key]: e.target.checked };
-                              setTargetStaff({ ...targetStaff, skills: newSkills });
-                            }}
-                          />
-                          <label htmlFor={`skill-${skill.key}`} className="text-sm cursor-pointer">
-                            <div className="font-bold flex items-center gap-1">{skill.label}</div>
-                            <div className="text-[10px] text-gray-500">{skill.desc}</div>
-                          </label>
-                        </div>
-                      ))}
+                  <>
+                    <div className="border-t pt-4 mt-2">
+                      <label className="block text-xs font-bold text-blue-600 mb-2 flex items-center gap-1"><ShieldCheck size={14}/> スキル評価 (管理者のみ)</label>
+                      <div className="space-y-3 bg-blue-50 p-3 rounded-lg">
+                        {STAFF_SKILLS.map(skill => (
+                          <div key={skill.key} className="flex items-start gap-2">
+                            <input 
+                              type="checkbox" 
+                              id={`skill-${skill.key}`}
+                              className="mt-1"
+                              checked={targetStaff.skills?.[skill.key] || false} 
+                              onChange={(e) => {
+                                const newSkills = { ...targetStaff.skills, [skill.key]: e.target.checked };
+                                setTargetStaff({ ...targetStaff, skills: newSkills });
+                              }}
+                            />
+                            <label htmlFor={`skill-${skill.key}`} className="text-sm cursor-pointer">
+                              <div className="font-bold flex items-center gap-1">{skill.label}</div>
+                              <div className="text-[10px] text-gray-500">{skill.desc}</div>
+                            </label>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                    
+                    {/* 詳細設定 */}
+                    <div className="border-t pt-4 mt-2">
+                      <label className="block text-xs font-bold text-gray-600 mb-2">詳細設定</label>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 mb-1">3クール上限回数 (月間)</label>
+                          <input type="number" className="w-full border p-2 rounded" value={targetStaff.maxCool3 ?? 5} onChange={e => setTargetStaff({...targetStaff, maxCool3: parseInt(e.target.value)||0})} />
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <input type="checkbox" id="excludeFromAi" className="w-4 h-4" checked={targetStaff.excludeFromAi || false} onChange={e => setTargetStaff({...targetStaff, excludeFromAi: e.target.checked})}/>
+                          <label htmlFor="excludeFromAi" className="text-xs font-bold text-red-600 cursor-pointer">AI自動生成から除外する (シフトを固定)</label>
+                        </div>
+                      </div>
+                    </div>
+                  </>
                 )}
 
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
