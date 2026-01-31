@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -98,6 +98,12 @@ const TEAMS = [
   { id: 'ope', label: 'オペ班', role: 'オペ班' }, 
   { id: 'echo', label: 'エコー班', role: 'エコー班' },
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
+];
+
+// AIモデルの定義
+const AI_MODELS = [
+  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (高速・推奨)' },
+  { value: 'gemini-2.0-pro-exp-02-05', label: 'Gemini 2.0 Pro (高性能・実験的)' },
 ];
 
 const INITIAL_STAFF = [
@@ -214,16 +220,15 @@ const generateCalendarDays = (year, month) => {
   return days;
 };
 
-const callGemini = async (prompt, systemInstruction = "") => {
-  console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded");
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-2.0-flash") => {
+  console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded", "Model:", model);
   if (!apiKey) {
     return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
   }
 
   try {
-    // 修正箇所: gemini-1.5-flash -> gemini-2.0-flash
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -236,7 +241,6 @@ const callGemini = async (prompt, systemInstruction = "") => {
     if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         console.error("Gemini API Error Detail:", errorData);
-        // エラー詳細を見やすく表示
         const errorMsg = errorData.error?.message || response.statusText;
         throw new Error(`${response.status} ${errorMsg}`);
     }
@@ -329,7 +333,7 @@ export default function WorkScheduleApp() {
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
-  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false); // 新規追加: 職員設定モーダル
+  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
@@ -341,10 +345,13 @@ export default function WorkScheduleApp() {
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
   const [newPassword, setNewPassword] = useState('');
+  
+  // AI関連のステート
   const [aiMode, setAiMode] = useState('chat');
   const [aiInput, setAiInput] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiModel, setAiModel] = useState('gemini-2.0-flash'); // デフォルトモデル
 
   useEffect(() => {
     const initAuth = async () => {
@@ -550,7 +557,6 @@ export default function WorkScheduleApp() {
     alert('保存しました。');
   };
 
-  // 一括設定モーダル用の保存処理
   const saveAllStaffSettings = (updatedStaffList) => {
     setStaffList(updatedStaffList);
     saveMasterData(updatedStaffList);
@@ -661,6 +667,21 @@ export default function WorkScheduleApp() {
     setShowTargetCountModal(false);
   };
 
+  // 全消去（リセット）機能
+  const handleResetSchedule = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: '勤務表の全消去',
+      message: `${year}年${month}月のシフトとタスクを全て削除しますか？\nこの操作は取り消せません。`,
+      onConfirm: () => {
+        setShiftData({});
+        setTaskData({});
+        saveSchedule({}, {});
+        alert('全てのシフトデータをリセットしました。');
+      }
+    });
+  };
+
   const prepareScheduleDataForAi = () => ({
     year, month,
     staff: staffList.map(s => ({ 
@@ -669,8 +690,8 @@ export default function WorkScheduleApp() {
       jobTitle: s.jobTitle, 
       roles: s.roles,
       skills: s.skills,
-      maxCool3: s.maxCool3, // AIに3クール上限を渡す
-      excludeFromAi: s.excludeFromAi // AIに除外フラグを渡す
+      maxCool3: s.maxCool3, 
+      excludeFromAi: s.excludeFromAi 
     })),
     shifts: shiftData, 
     tasks: taskData,
@@ -681,7 +702,8 @@ export default function WorkScheduleApp() {
   const handleAiAnalyze = async () => {
     setAiMode('analyze'); setShowAiModal(true); setIsAiLoading(true); setAiResponse('');
     const data = prepareScheduleDataForAi();
-    const result = await callGemini(`勤務表分析: ${JSON.stringify(data)}`, "プロの勤務表管理者として分析・改善案を日本語で提示");
+    // 選択されたモデルを使用
+    const result = await callGemini(`勤務表分析: ${JSON.stringify(data)}`, "プロの勤務表管理者として分析・改善案を日本語で提示", aiModel);
     setAiResponse(result); setIsAiLoading(false);
   };
 
@@ -717,7 +739,8 @@ export default function WorkScheduleApp() {
     `;
 
     try {
-      const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt} JSON({shift:{staffId:{day:code}},task:{...}})のみ出力`, "JSON出力マシーン");
+      // 選択されたモデルを使用
+      const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt} JSON({shift:{staffId:{day:code}},task:{...}})のみ出力`, "JSON出力マシーン", aiModel);
       const match = result.match(/\{[\s\S]*\}/);
       if (match) {
         const changes = JSON.parse(match[0]);
@@ -897,7 +920,7 @@ export default function WorkScheduleApp() {
                <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
                  <Settings size={16} /> <span className="hidden sm:inline">シフト設定</span>
                </button>
-               {/* 職員設定ボタンの追加 */}
+               {/* 職員設定ボタン */}
                <button onClick={() => setShowStaffSettingsModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
                  <ListFilter size={16} /> <span className="hidden sm:inline">職員設定一覧</span>
                </button>
@@ -906,14 +929,22 @@ export default function WorkScheduleApp() {
            <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
              <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
            </button>
+           
+           {/* 全消去ボタン (管理者のみ) */}
+           {appUser.role === 'admin' && (
+             <button onClick={handleResetSchedule} className="flex items-center gap-1 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200" title="現在の月のシフトを全て消去">
+               <Eraser size={16} /> <span className="hidden sm:inline">全消去</span>
+             </button>
+           )}
           
           {appUser.role === 'admin' && (
             <>
+              <div className="h-6 w-px bg-gray-300 mx-2"></div>
               <button onClick={() => { setAiMode('analyze'); setShowAiModal(true); }} className="flex items-center gap-1 px-3 py-2 bg-purple-100 text-purple-700 rounded font-bold border border-purple-300"><Sparkles size={16} /> AI分析</button>
               <button onClick={() => { setAiMode('chat'); setShowAiModal(true); }} className="flex items-center gap-1 px-3 py-2 bg-indigo-100 text-indigo-700 rounded font-bold border border-indigo-300"><MessageSquare size={16} /> AI入力</button>
-              <div className="h-6 w-px bg-gray-300 mx-2"></div>
             </>
           )}
+          <div className="h-6 w-px bg-gray-300 mx-2"></div>
           <button onClick={() => setAppUser(null)} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
         </div>
       </header>
@@ -1250,7 +1281,7 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* 職員設定一括モーダル (New) */}
+        {/* 職員設定一括モーダル */}
         {showStaffSettingsModal && (
           <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
@@ -1563,11 +1594,11 @@ export default function WorkScheduleApp() {
                  <button onClick={() => setConfirmModal({...confirmModal, isOpen: false})}><X size={20} className="text-gray-400"/></button>
                </div>
                <div className="p-6">
-                 <p className="text-sm text-gray-700 font-bold">{confirmModal.message}</p>
+                 <p className="text-sm text-gray-700 font-bold whitespace-pre-wrap">{confirmModal.message}</p>
                </div>
                <div className="p-4 border-t flex justify-end gap-2">
                  <button onClick={() => setConfirmModal({...confirmModal, isOpen: false})} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
-                 <button onClick={() => { confirmModal.onConfirm(); setConfirmModal({...confirmModal, isOpen: false}); }} className="px-4 py-2 bg-red-600 text-white rounded font-bold">削除する</button>
+                 <button onClick={() => { confirmModal.onConfirm(); setConfirmModal({...confirmModal, isOpen: false}); }} className="px-4 py-2 bg-red-600 text-white rounded font-bold">実行する</button>
                </div>
             </div>
           </div>
@@ -1581,6 +1612,21 @@ export default function WorkScheduleApp() {
                 <button onClick={() => setShowAiModal(false)}><X size={20} className="text-gray-400"/></button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
+                
+                {/* モデル選択エリア */}
+                <div className="mb-4">
+                  <label className="block text-xs font-bold text-gray-500 mb-1">使用モデル</label>
+                  <select 
+                    className="w-full border p-2 rounded text-sm bg-white"
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                  >
+                    {AI_MODELS.map(model => (
+                      <option key={model.value} value={model.value}>{model.label}</option>
+                    ))}
+                  </select>
+                </div>
+
                 {isAiLoading ? <div className="flex justify-center p-8"><Loader2 className="animate-spin text-blue-500"/></div> : (
                   <div className="space-y-4">
                     {aiMode === 'chat' && <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">💡 例: 「Aさんの土日を休みに」「Bさんの空きをPで埋めて」</div>}
