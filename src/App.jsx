@@ -816,16 +816,12 @@ export default function WorkScheduleApp() {
 
     try {
       const data = prepareScheduleDataForAi();
-      let prompt = "";
       
-      if (aiChatMode === 'analyze') {
-        prompt = `
-        あなたはプロの勤務表管理者です。以下の勤務表データを分析し、改善点や問題点（人員不足、特定職員への負荷集中など）を指摘してください。
-        データ: ${JSON.stringify(data)}
-        ユーザーの指示: ${userMsg.text}
-        `;
-      } else {
-        // Create Mode
+      let systemInstruction = "あなたはプロの勤務表管理者です。";
+      let prompt = "";
+
+      if (aiChatMode === 'create') {
+        systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。挨拶や解説は不要です。必ずvalidなJSONを返してください。";
         prompt = `
         【役割】
         あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフト表(JSON)を作成・修正してください。
@@ -848,16 +844,24 @@ export default function WorkScheduleApp() {
         データ: ${JSON.stringify(data)}
         指示: ${userMsg.text}
         `;
+      } else {
+        prompt = `
+        以下の勤務表データを分析し、改善点や問題点（人員不足、特定職員への負荷集中など）を指摘してください。
+        データ: ${JSON.stringify(data)}
+        ユーザーの指示: ${userMsg.text}
+        `;
       }
 
-      const result = await callGemini(prompt, aiChatMode === 'analyze' ? "" : "JSON出力マシーン", aiModel);
+      const result = await callGemini(prompt, systemInstruction, aiModel);
       
       let aiText = result;
+      
       if (aiChatMode === 'create') {
         // JSON抽出と反映
         let jsonStr = result.replace(/```json/g, '').replace(/```/g, '');
         const firstBrace = jsonStr.indexOf('{');
         const lastBrace = jsonStr.lastIndexOf('}');
+        
         if (firstBrace !== -1 && lastBrace !== -1) {
           jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
           try {
@@ -870,7 +874,7 @@ export default function WorkScheduleApp() {
               const ns = { ...shiftData };
               Object.keys(changes.shift).forEach(key => {
                 let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
-                if (staffId) { 
+                if (staffId && staffList.find(s => s.id === staffId)) { 
                    if (!ns[staffId]) ns[staffId] = {};
                    Object.keys(changes.shift[key]).forEach(day => {
                       if (shiftDefs[changes.shift[key][day]]) {
@@ -886,7 +890,7 @@ export default function WorkScheduleApp() {
               const nt = { ...taskData };
               Object.keys(changes.task).forEach(key => {
                 let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
-                if (staffId) {
+                if (staffId && staffList.find(s => s.id === staffId)) {
                    if (!nt[staffId]) nt[staffId] = {};
                    Object.keys(changes.task[key]).forEach(day => {
                       if (shiftDefs[changes.task[key][day]]) {
@@ -898,10 +902,14 @@ export default function WorkScheduleApp() {
               });
               setTaskData(nt); saveSchedule(shiftData, nt);
             }
-            aiText = `✅ ${updatedCount}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`;
+            aiText = updatedCount > 0 
+              ? `✅ ${updatedCount}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`
+              : `⚠️ 変更箇所が見つかりませんでした。\n(AIの応答)\n${result}`;
           } catch (e) {
-            aiText = `⚠️ JSONの解析に失敗しました。\n${result}`;
+            aiText = `⚠️ JSONの解析に失敗しました。\n(AIの応答)\n${result}`;
           }
+        } else {
+           aiText = `⚠️ AIがJSONデータを返しませんでした。\n(AIの応答)\n${result}`;
         }
       }
 
@@ -1007,7 +1015,7 @@ export default function WorkScheduleApp() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 text-sm font-sans" onClick={() => setActivePopup(null)}>
-      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-50">
+      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60]">
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-gray-50 rounded-lg p-1 border">
             <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={20} /></button>
@@ -1033,9 +1041,6 @@ export default function WorkScheduleApp() {
         <div className="flex items-center gap-3">
            {appUser.role === 'admin' && (
              <>
-               <button onClick={() => setShowCategoryModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
-                 <Palette size={18} /> <span className="hidden sm:inline">カテゴリ設定</span>
-               </button>
                <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
                  <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
@@ -1047,7 +1052,7 @@ export default function WorkScheduleApp() {
            {appUser.role === 'staff' && (
              <button 
                onClick={(e) => { e.stopPropagation(); setShowPasswordChangeModal(true); }} 
-               className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 relative z-50 shadow-sm"
+               className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm cursor-pointer z-50 relative"
              >
                <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
              </button>
