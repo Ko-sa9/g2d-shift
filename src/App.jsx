@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -19,7 +19,7 @@ const ADMIN_VIEW_PASSWORDS = {
   'admin-hhd': 'hhd',    // HHD班
 };
 
-// 初期のカテゴリ定義（DBがない場合に使用）
+// 初期のカテゴリ定義
 const DEFAULT_CATEGORY_DEFS = {
   'saka':    { id: 'saka',    label: '坂田',    color: 'bg-blue-50 text-blue-800', order: 1 },
   'kimi':    { id: 'kimi',    label: '君津',    color: 'bg-green-50 text-green-800', order: 2 },
@@ -75,7 +75,6 @@ const STAFF_SKILLS = [
   { key: 'isVeteran', label: 'ベテラン', icon: Star, desc: '5年以上・指導役' },
 ];
 
-// カラーパレット
 const COLOR_OPTIONS = [
   { value: 'text-gray-800', label: '黒' },
   { value: 'text-red-600', label: '赤' },
@@ -119,13 +118,19 @@ const INITIAL_STAFF = [
   { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], skills: {}, password: '1234', maxCool3: 0, excludeFromAi: true },
 ];
 
-// 管理者設定の初期値
 const DEFAULT_ADMIN_SETTINGS = {
   'all':   { password: 'admin',       label: '全体管理者' },
   'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
+
+// 時間選択肢
+const TIME_OPTIONS = [];
+for (let h = 7; h <= 23; h++) {
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:00`);
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:30`);
+}
 
 // ------------------------------------------------------------------
 // ヘルパー関数群
@@ -335,29 +340,30 @@ export default function WorkScheduleApp() {
   
   const [activePopup, setActivePopup] = useState(null);
   const [showAiModal, setShowAiModal] = useState(false);
-  const [showShiftEditModal, setShowShiftEditModal] = useState(false);
-  const [showStaffModal, setShowStaffModal] = useState(false);
-  const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
-  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false);
-  const [showCategoryModal, setShowCategoryModal] = useState(false); 
-  const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
+  const [showSettingsModal, setShowSettingsModal] = useState(false); // 統合設定モーダル
+  const [showStaffModal, setShowStaffModal] = useState(false); // 個別職員編集（サブモーダル）
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
 
-  const [targetAdminKey, setTargetAdminKey] = useState('all');
+  // 設定モーダル内のタブ管理
+  const [activeSettingsTab, setActiveSettingsTab] = useState('category'); 
 
+  const [targetAdminKey, setTargetAdminKey] = useState('all');
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
   const [targetCategory, setTargetCategory] = useState(null); 
   const [newPassword, setNewPassword] = useState('');
   
-  const [aiMode, setAiMode] = useState('chat');
+  // AIチャット関連
+  const [aiChatMode, setAiChatMode] = useState('create'); // 'create' or 'analyze'
   const [aiInput, setAiInput] = useState('');
-  const [aiResponse, setAiResponse] = useState('');
+  const [aiMessages, setAiMessages] = useState([]); // { role: 'user'|'model', text: string }
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiModel, setAiModel] = useState('gemini-2.0-flash'); 
+  const chatEndRef = useRef(null);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -378,7 +384,6 @@ export default function WorkScheduleApp() {
     const unsubMaster = onSnapshot(masterDocRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
           loginId: s.loginId || '',
@@ -386,12 +391,10 @@ export default function WorkScheduleApp() {
           maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
           excludeFromAi: s.excludeFromAi || false 
         }));
-
         setStaffList(loadedStaffList);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
         setCategoryDefs(data.categoryDefs || DEFAULT_CATEGORY_DEFS); 
         setTargetCounts(data.targetCounts || {});
-        
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
         if (loadedAdminSettings['opera']) {
            const { opera, ...rest } = loadedAdminSettings;
@@ -430,6 +433,11 @@ export default function WorkScheduleApp() {
     };
   }, [authUser, year, month]);
 
+  // AIチャット自動スクロール
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [aiMessages]);
+
   const saveSchedule = async (newShifts, newTasks) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
@@ -449,6 +457,7 @@ export default function WorkScheduleApp() {
     }, { merge: true });
   };
 
+  // ... (Cell Click Handlers kept same) ...
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
@@ -503,12 +512,13 @@ export default function WorkScheduleApp() {
     });
   };
 
+  // --- 設定関連ハンドラ ---
+
   const handleChangePassword = () => {
     if (!newPassword.trim()) {
       alert('新しいパスワードを入力してください');
       return;
     }
-
     if (appUser.role === 'admin') {
       const newSettings = { ...adminSettings };
       if (newSettings[targetAdminKey]) {
@@ -523,8 +533,6 @@ export default function WorkScheduleApp() {
       saveMasterData(newList, shiftDefs, categoryDefs, adminSettings, targetCounts);
       alert('パスワードを変更しました。次回ログイン時から有効です。');
     }
-    
-    setShowPasswordChangeModal(false);
     setNewPassword('');
   };
 
@@ -544,20 +552,10 @@ export default function WorkScheduleApp() {
   };
 
   const saveStaff = () => {
-    if (!targetStaff.name.trim()) {
-      alert('名前を入力してください');
-      return;
-    }
-    if (!targetStaff.loginId.trim()) {
-      alert('ログインIDを入力してください');
-      return;
-    }
-
+    if (!targetStaff.name.trim()) { alert('名前を入力してください'); return; }
+    if (!targetStaff.loginId.trim()) { alert('ログインIDを入力してください'); return; }
     const duplicateStaff = staffList.find(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
-    if (duplicateStaff) {
-      alert(`そのログインID "${targetStaff.loginId}" は既に "${duplicateStaff.name}" さんに使用されています。\n別のIDを指定してください。`);
-      return;
-    }
+    if (duplicateStaff) { alert(`そのログインIDは既に使用されています。`); return; }
 
     let newList = [...staffList];
     if (targetStaff.id) {
@@ -566,17 +564,9 @@ export default function WorkScheduleApp() {
       const newStaff = { ...targetStaff, id: Date.now().toString() };
       newList.push(newStaff);
     }
-
     setStaffList(newList);
     saveMasterData(newList);
-    alert('保存しました。');
-  };
-
-  const saveAllStaffSettings = (updatedStaffList) => {
-    setStaffList(updatedStaffList);
-    saveMasterData(updatedStaffList);
-    alert('全職員の設定を保存しました。');
-    setShowStaffSettingsModal(false);
+    setShowStaffModal(false);
   };
 
   const removeStaff = (id) => {
@@ -604,112 +594,58 @@ export default function WorkScheduleApp() {
     saveMasterData(newStaffList);
   };
 
-  // --- カテゴリ編集関連 ---
-  const handleEditCategory = (catId) => {
-    const cat = categoryDefs[catId];
-    setTargetCategory({ ...cat, originalId: catId });
-  };
-
-  const handleAddCategory = () => {
-    setTargetCategory({ id: '', label: '', color: 'bg-gray-50 text-gray-800', order: Object.keys(categoryDefs).length + 1, originalId: null });
-  };
-
+  // カテゴリ編集ハンドラ
+  const handleEditCategory = (catId) => { setTargetCategory({ ...categoryDefs[catId], originalId: catId }); };
+  const handleAddCategory = () => { setTargetCategory({ id: '', label: '', color: 'bg-gray-50 text-gray-800', order: Object.keys(categoryDefs).length + 1, originalId: null }); };
   const saveCategory = () => {
-    if (!targetCategory.id || !targetCategory.label) {
-      alert('IDとラベルは必須です');
-      return;
-    }
+    if (!targetCategory.id || !targetCategory.label) { alert('IDとラベルは必須です'); return; }
     const newDefs = { ...categoryDefs };
-    
-    // ID変更時の処理
-    if (targetCategory.originalId && targetCategory.originalId !== targetCategory.id) {
-       delete newDefs[targetCategory.originalId];
-    }
-
-    newDefs[targetCategory.id] = {
-      id: targetCategory.id,
-      label: targetCategory.label,
-      color: targetCategory.color,
-      order: targetCategory.order
-    };
-    
+    if (targetCategory.originalId && targetCategory.originalId !== targetCategory.id) delete newDefs[targetCategory.originalId];
+    newDefs[targetCategory.id] = { id: targetCategory.id, label: targetCategory.label, color: targetCategory.color, order: targetCategory.order };
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
     setTargetCategory(null);
   };
-
   const deleteCategory = (catId) => {
     const isUsed = Object.values(shiftDefs).some(s => s.category === catId);
-    if (isUsed) {
-      alert('このカテゴリを使用しているシフトがあるため削除できません。\n先にシフト設定を変更してください。');
-      return;
-    }
+    if (isUsed) { alert('このカテゴリを使用しているシフトがあるため削除できません。'); return; }
     const newDefs = { ...categoryDefs };
     delete newDefs[catId];
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
   };
-
-  // カテゴリドラッグソート
   const handleSortCategory = (dragId, dropId) => {
     if (dragId === dropId) return;
-    
-    // order順に並んだ配列を作る
     const sortedCats = Object.values(categoryDefs).sort((a, b) => a.order - b.order);
     const dragIndex = sortedCats.findIndex(c => c.id === dragId);
     const dropIndex = sortedCats.findIndex(c => c.id === dropId);
-    
     if (dragIndex === -1 || dropIndex === -1) return;
-
-    // 配列上で移動
     const [dragItem] = sortedCats.splice(dragIndex, 1);
     sortedCats.splice(dropIndex, 0, dragItem);
-
-    // orderを再番
     const newDefs = { ...categoryDefs };
-    sortedCats.forEach((cat, index) => {
-      if (newDefs[cat.id]) {
-        newDefs[cat.id] = { ...newDefs[cat.id], order: index + 1 };
-      }
-    });
-
+    sortedCats.forEach((cat, index) => { if (newDefs[cat.id]) newDefs[cat.id] = { ...newDefs[cat.id], order: index + 1 }; });
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
   };
 
-  const handleAddNewShift = () => {
-    setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
-    setShowShiftEditModal(true);
-  };
-
-  const handleEditShift = (code) => {
-    setEditingShift({ ...shiftDefs[code], originalCode: code });
-    setShowShiftEditModal(true);
-  };
-
+  // シフト編集ハンドラ
+  const handleAddNewShift = () => { setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null }); };
+  const handleEditShift = (code) => { setEditingShift({ ...shiftDefs[code], originalCode: code }); };
   const saveShiftConfig = () => {
-    if (!editingShift || !editingShift.code || !editingShift.label) {
-      alert('コードと表示名は必須です');
-      return;
-    }
+    if (!editingShift || !editingShift.code || !editingShift.label) { alert('コードと表示名は必須です'); return; }
     const newDefs = { ...shiftDefs };
-    if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) {
-      delete newDefs[editingShift.originalCode];
-    }
+    if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) delete newDefs[editingShift.originalCode];
     const { originalCode, ...cleanShift } = editingShift;
     if (newDefs[cleanShift.code]?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
-    } else {
-      cleanShift.order = newDefs[cleanShift.code].order;
-    }
+    } else { cleanShift.order = newDefs[cleanShift.code].order; }
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
     alert('保存しました');
     setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
-
   const deleteShiftConfig = (code) => {
     setConfirmModal({
       isOpen: true,
@@ -720,11 +656,10 @@ export default function WorkScheduleApp() {
         delete newDefs[code];
         setShiftDefs(newDefs);
         saveMasterData(staffList, newDefs);
-        if (editingShift?.originalCode === code) setShowShiftEditModal(false);
+        if (editingShift?.originalCode === code) setEditingShift(null);
       }
     });
   };
-
   const handleSortShift = (dragCode, dropCode) => {
     if (dragCode === dropCode) return;
     const dragShift = shiftDefs[dragCode];
@@ -740,11 +675,7 @@ export default function WorkScheduleApp() {
     items.splice(dragIdx, 1);
     items.splice(dropIdx, 0, dragCode);
     const newDefs = { ...shiftDefs };
-    items.forEach((code, index) => {
-      if (newDefs[code]) {
-        newDefs[code] = { ...newDefs[code], order: currentOrders[index] };
-      }
-    });
+    items.forEach((code, index) => { if (newDefs[code]) newDefs[code] = { ...newDefs[code], order: currentOrders[index] }; });
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
   };
@@ -769,150 +700,124 @@ export default function WorkScheduleApp() {
     });
   };
 
+  // --- AI 機能 ---
+
   const prepareScheduleDataForAi = () => ({
     year, month,
-    // AIに「名前とIDの対応表」として認識させる
     staff: staffList.map(s => ({ 
-      id: s.id, // これを使ってほしい
-      name: s.name, 
-      jobTitle: s.jobTitle, 
-      roles: s.roles,
-      skills: s.skills,
-      maxCool3: s.maxCool3, 
-      excludeFromAi: s.excludeFromAi 
+      id: s.id, name: s.name, jobTitle: s.jobTitle, roles: s.roles, skills: s.skills, maxCool3: s.maxCool3, excludeFromAi: s.excludeFromAi 
     })),
-    shifts: shiftData, 
-    tasks: taskData,
-    targetCounts,
+    shifts: shiftData, tasks: taskData, targetCounts,
     definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
   });
 
-  const handleAiAnalyze = async () => {
-    setAiMode('analyze'); setShowAiModal(true); setIsAiLoading(true); setAiResponse('');
-    const data = prepareScheduleDataForAi();
-    const result = await callGemini(`勤務表分析: ${JSON.stringify(data)}`, "プロの勤務表管理者として分析・改善案を日本語で提示", aiModel);
-    setAiResponse(result); setIsAiLoading(false);
-  };
-
-  const handleAiMagicFill = async () => {
+  const handleAiSend = async () => {
     if (!aiInput.trim()) return;
+    const userMsg = { role: 'user', text: aiInput };
+    setAiMessages(prev => [...prev, userMsg]);
     setIsAiLoading(true);
-    const data = prepareScheduleDataForAi();
-    
-    // 制約条件の追加
-    const constraintPrompt = `
-    【役割】
-    あなたは熟練の勤務表管理者です。提供されたデータ(staff, shifts, targetCounts)とユーザーの指示に基づいて、シフト表(JSON)を作成・修正してください。
-
-    【重要: データ形式】
-    1. **出力はJSONのみ**: Markdown記法や解説文は一切含めないでください。
-    2. **IDの使用**: 職員やシフトの指定には、名前ではなく必ず「ID」や「コード」を使用してください。
-       - 職員ID例: "1", "2" ... (名前 "職員A" は不可)
-       - シフトコード例: "A", "P", "/" ...
-    3. **JSON構造**:
-       {
-         "shift": {
-           "職員ID": { "日付(1-31)": "シフトコード" },
-           ...
-         },
-         "task": { ... }
-       }
-
-    【作成ルール】
-    1. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
-    2. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
-    3. **全入力の対応**: ユーザーから「全て埋めて」「作成して」等の指示があった場合、上記の保護対象以外の日付を適切なシフトで埋めてください。
-    4. **連続勤務制限**: 3クール(名前に3を含むシフト)は連続させないでください。
-    5. **必要人数の充足**: targetCounts の設定値を満たすよう努力してください。
-
-    指示: ${aiInput}
-    `;
+    setAiInput('');
 
     try {
-      const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt}`, "JSON出力マシーン", aiModel);
+      const data = prepareScheduleDataForAi();
+      let prompt = "";
       
-      // JSON抽出ロジックの強化
-      let jsonStr = result;
-      jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '');
-      const firstBrace = jsonStr.indexOf('{');
-      const lastBrace = jsonStr.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1) {
-        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+      if (aiChatMode === 'analyze') {
+        prompt = `
+        あなたはプロの勤務表管理者です。以下の勤務表データを分析し、改善点や問題点（人員不足、特定職員への負荷集中など）を指摘してください。
+        データ: ${JSON.stringify(data)}
+        ユーザーの指示: ${userMsg.text}
+        `;
+      } else {
+        // Create Mode
+        prompt = `
+        【役割】
+        あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフト表(JSON)を作成・修正してください。
+
+        【重要: データ形式】
+        1. **出力はJSONのみ**: 解説文は含めないでください。
+        2. **IDの使用**: 職員指定は必ず "id" を使用してください(名前不可)。
+        3. **JSON構造**:
+           {
+             "shift": { "職員ID": { "日付(1-31)": "シフトコード" }, ... },
+             "task": { ... }
+           }
+
+        【作成ルール】
+        1. "category": "req"(希望) / "off"(休み) は変更不可。
+        2. "excludeFromAi": true の職員は変更不可。
+        3. 3クール(名前に3を含むシフト)は連続させない。
+        4. targetCounts を満たすように配置。
+
+        データ: ${JSON.stringify(data)}
+        指示: ${userMsg.text}
+        `;
       }
 
-      const changes = JSON.parse(jsonStr);
+      const result = await callGemini(prompt, aiChatMode === 'analyze' ? "" : "JSON出力マシーン", aiModel);
       
-      // 名前→ID変換用マップ
-      const nameToIdMap = {};
-      staffList.forEach(s => nameToIdMap[s.name] = s.id);
+      let aiText = result;
+      if (aiChatMode === 'create') {
+        // JSON抽出と反映
+        let jsonStr = result.replace(/```json/g, '').replace(/```/g, '');
+        const firstBrace = jsonStr.indexOf('{');
+        const lastBrace = jsonStr.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) {
+          jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+          try {
+            const changes = JSON.parse(jsonStr);
+            const nameToIdMap = {};
+            staffList.forEach(s => nameToIdMap[s.name] = s.id);
+            let updatedCount = 0;
 
-      let updatedCount = 0;
-      
-      if (changes.shift) {
-        const ns = { ...shiftData };
-        Object.keys(changes.shift).forEach(key => {
-          // キーがIDか名前か判定して正規化
-          let staffId = key;
-          // IDが見つからない場合、名前として検索
-          if (!staffList.find(s => s.id === staffId)) {
-             staffId = nameToIdMap[key];
-          }
-
-          if (staffId && staffList.find(s => s.id === staffId)) { 
-             // 日付ごとの更新
-             const dayShiftMap = changes.shift[key];
-             if (!ns[staffId]) ns[staffId] = {};
-             
-             Object.keys(dayShiftMap).forEach(day => {
-                const code = dayShiftMap[day];
-                // シフトコードの有効性チェック
-                if (shiftDefs[code]) {
-                   ns[staffId][day] = code;
-                   updatedCount++;
+            if (changes.shift) {
+              const ns = { ...shiftData };
+              Object.keys(changes.shift).forEach(key => {
+                let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+                if (staffId) { 
+                   if (!ns[staffId]) ns[staffId] = {};
+                   Object.keys(changes.shift[key]).forEach(day => {
+                      if (shiftDefs[changes.shift[key][day]]) {
+                         ns[staffId][day] = changes.shift[key][day];
+                         updatedCount++;
+                      }
+                   });
                 }
-             });
-          }
-        });
-        setShiftData(ns); 
-        saveSchedule(ns, taskData);
-      }
-      
-      if (changes.task) {
-        const nt = { ...taskData };
-        Object.keys(changes.task).forEach(key => {
-          let staffId = key;
-          if (!staffList.find(s => s.id === staffId)) {
-             staffId = nameToIdMap[key];
-          }
-
-          if (staffId && staffList.find(s => s.id === staffId)) {
-             const dayTaskMap = changes.task[key];
-             if (!nt[staffId]) nt[staffId] = {};
-             
-             Object.keys(dayTaskMap).forEach(day => {
-                const code = dayTaskMap[day];
-                if (shiftDefs[code]) {
-                   nt[staffId][day] = code;
-                   updatedCount++;
+              });
+              setShiftData(ns); saveSchedule(ns, taskData);
+            }
+            if (changes.task) {
+              const nt = { ...taskData };
+              Object.keys(changes.task).forEach(key => {
+                let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+                if (staffId) {
+                   if (!nt[staffId]) nt[staffId] = {};
+                   Object.keys(changes.task[key]).forEach(day => {
+                      if (shiftDefs[changes.task[key][day]]) {
+                         nt[staffId][day] = changes.task[key][day];
+                         updatedCount++;
+                      }
+                   });
                 }
-             });
+              });
+              setTaskData(nt); saveSchedule(shiftData, nt);
+            }
+            aiText = `✅ ${updatedCount}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`;
+          } catch (e) {
+            aiText = `⚠️ JSONの解析に失敗しました。\n${result}`;
           }
-        });
-        setTaskData(nt); 
-        saveSchedule(shiftData, nt);
+        }
       }
 
-      setAiResponse(updatedCount > 0 
-        ? `✅ ${updatedCount}箇所のシフトを更新しました` 
-        : "⚠️ 変更が必要な箇所が見つかりませんでした (既に条件を満たしているか、指示が具体的でない可能性があります)");
+      setAiMessages(prev => [...prev, { role: 'model', text: aiText }]);
 
-    } catch (e) { 
-      console.error(e); 
-      setAiResponse(`⚠️ エラー: AIの応答を解析できませんでした。\n詳細: ${e.message}`); 
+    } catch (e) {
+      setAiMessages(prev => [...prev, { role: 'model', text: `エラーが発生しました: ${e.message}` }]);
     }
     setIsAiLoading(false);
   };
-  
+
+  // --- Memoized Values ---
   const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month]);
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
   const calendarDays = useMemo(() => generateCalendarDays(year, month), [year, month]);
@@ -920,45 +825,18 @@ export default function WorkScheduleApp() {
   const dynamicPaletteGroups = useMemo(() => {
     const groups = {};
     Object.keys(categoryDefs).forEach(catId => groups[catId] = []);
-    
-    Object.values(shiftDefs)
-      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)) 
-      .forEach(shift => {
-        if (groups[shift.category]) {
-          groups[shift.category].push(shift.code);
-        } else {
-           if (!groups['basic']) groups['basic'] = []; 
-           groups['basic'].push(shift.code); 
-        }
-      });
-
-    return Object.values(categoryDefs)
-      .sort((a, b) => a.order - b.order)
-      .map(cat => ({
-        id: cat.id,
-        name: cat.label,
-        items: groups[cat.id] || []
-      }))
-      .filter(g => g.items.length > 0);
+    Object.values(shiftDefs).sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)).forEach(shift => {
+      if (groups[shift.category]) groups[shift.category].push(shift.code);
+      else { if (!groups['basic']) groups['basic'] = []; groups['basic'].push(shift.code); }
+    });
+    return Object.values(categoryDefs).sort((a, b) => a.order - b.order).map(cat => ({ id: cat.id, name: cat.label, items: groups[cat.id] || [] })).filter(g => g.items.length > 0);
   }, [shiftDefs, categoryDefs]);
 
   const dynamicSummaryGroups = useMemo(() => {
-    return Object.values(categoryDefs)
-      .filter(cat => cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role')
-      .sort((a, b) => a.order - b.order)
-      .map(def => {
+    return Object.values(categoryDefs).filter(cat => cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role').sort((a, b) => a.order - b.order).map(def => {
         const catKey = def.id;
-        const categoryItems = Object.values(shiftDefs)
-          .filter(s => s.category === catKey && s.type === 'shift')
-          .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
-          .map(s => s.code);
-        return { 
-          id: catKey,
-          name: def.label, 
-          items: categoryItems, 
-          totalLabel: `${def.label} 計`, 
-          headerColor: def.color 
-        };
+        const categoryItems = Object.values(shiftDefs).filter(s => s.category === catKey && s.type === 'shift').sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)).map(s => s.code);
+        return { id: catKey, name: def.label, items: categoryItems, totalLabel: `${def.label} 計`, headerColor: def.color };
       });
   }, [shiftDefs, categoryDefs]);
 
@@ -1002,49 +880,29 @@ export default function WorkScheduleApp() {
   const displayStaffList = useMemo(() => {
     if (!appUser) return [];
     let list = staffList;
-
     if (currentView !== 'all') {
       const team = TEAMS.find(t => t.id === currentView);
-      if (team && team.role) {
-        list = list.filter(s => s.roles && s.roles.includes(team.role));
-      }
+      if (team && team.role) list = list.filter(s => s.roles && s.roles.includes(team.role));
     }
-
-    if (appUser.role === 'staff' && viewMode === 'personal') {
-      list = list.filter(s => s.id === appUser.id);
-    }
-
+    if (appUser.role === 'staff' && viewMode === 'personal') list = list.filter(s => s.id === appUser.id);
     return list;
   }, [staffList, currentView, appUser, viewMode]);
 
   // --- Render ---
   if (!appUser) return (
     <LoginScreen 
-      onLogin={(user) => {
-        setAppUser(user);
-        if (user.initialView) setCurrentView(user.initialView);
-        if (user.role === 'staff') setViewMode('personal');
-      }} 
-      staffList={staffList} 
-      adminSettings={adminSettings}
+      onLogin={(user) => { setAppUser(user); if (user.initialView) setCurrentView(user.initialView); if (user.role === 'staff') setViewMode('personal'); }} 
+      staffList={staffList} adminSettings={adminSettings}
     />
   );
   
   const getPopupOptions = (type) => {
     if (currentView === 'ope' && type === 'shift') {
-      const l = shiftDefs['L'];
-      const g = shiftDefs['G'];
-      const opts = [];
-      if (l) opts.push(l);
-      if (g) opts.push(g);
-      return opts;
+      const l = shiftDefs['L']; const g = shiftDefs['G'];
+      const opts = []; if (l) opts.push(l); if (g) opts.push(g); return opts;
     }
-
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
-    let opts = orderedCodes
-      .map(code => shiftDefs[code])
-      .filter(s => s && s.type === type);
-
+    let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && s.type === type);
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
       opts = opts.filter(s => s.category === 'req' || s.category === 'off');
     }
@@ -1065,17 +923,10 @@ export default function WorkScheduleApp() {
           {appUser.role === 'admin' && (
             <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
               {TEAMS.map(team => (
-                <button 
-                  key={team.id}
-                  onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }}
-                  className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}
-                >
-                  {team.label}
-                </button>
+                <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
               ))}
             </div>
           )}
-
           {appUser.role === 'staff' && (
             <div className="flex bg-gray-100 rounded p-1 ml-4 border">
               <button onClick={() => { setViewMode('personal'); setCurrentView('all'); }} className={`px-3 py-1 text-xs rounded transition ${viewMode==='personal' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>個人</button>
@@ -1083,39 +934,24 @@ export default function WorkScheduleApp() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
            {appUser.role === 'admin' && (
              <>
-               <button onClick={() => setShowCategoryModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
-                 <Palette size={16} /> <span className="hidden sm:inline">カテゴリ設定</span>
+               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
+                 <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
-               <button onClick={() => { setEditingShift(null); handleAddNewShift(); }} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
-                 <Settings size={16} /> <span className="hidden sm:inline">シフト設定</span>
-               </button>
-               <button onClick={() => setShowStaffSettingsModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
-                 <ListFilter size={16} /> <span className="hidden sm:inline">職員設定</span>
+               <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm">
+                 <Bot size={18} /> <span className="hidden sm:inline">AIアシスタント</span>
                </button>
              </>
            )}
-           <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
-             <Key size={16} /> <span className="hidden sm:inline">パスワード</span>
-           </button>
-           
-           {appUser.role === 'admin' && (
-             <button onClick={handleResetSchedule} className="flex items-center gap-1 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200" title="現在の月のシフトを全て消去">
-               <Eraser size={16} /> <span className="hidden sm:inline">全消去</span>
+           {appUser.role === 'staff' && (
+             <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
+               <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
              </button>
            )}
-          
-          {appUser.role === 'admin' && (
-            <>
-              <div className="h-6 w-px bg-gray-300 mx-2"></div>
-              <button onClick={() => { setAiMode('analyze'); setShowAiModal(true); }} className="flex items-center gap-1 px-3 py-2 bg-purple-100 text-purple-700 rounded font-bold border border-purple-300"><Sparkles size={16} /> AI分析</button>
-              <button onClick={() => { setAiMode('chat'); setShowAiModal(true); }} className="flex items-center gap-1 px-3 py-2 bg-indigo-100 text-indigo-700 rounded font-bold border border-indigo-300"><MessageSquare size={16} /> AI入力</button>
-            </>
-          )}
-          <div className="h-6 w-px bg-gray-300 mx-2"></div>
-          <button onClick={() => setAppUser(null)} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
+           <div className="h-6 w-px bg-gray-300 mx-2"></div>
+           <button onClick={() => setAppUser(null)} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
         </div>
       </header>
 
@@ -1124,6 +960,7 @@ export default function WorkScheduleApp() {
           <div className="inline-block min-w-full align-middle p-4">
             
             {viewMode === 'personal' && appUser.role === 'staff' ? (
+              /* ... (Personal View - No Changes) ... */
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
                 <div className="bg-gray-50 px-4 py-3 border-b flex items-center justify-between">
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
@@ -1168,6 +1005,7 @@ export default function WorkScheduleApp() {
                 </div>
               </div>
             ) : (
+              /* ... (Admin Table View - No Changes) ... */
               <div className="bg-white rounded-lg shadow overflow-hidden">
                 <table className="w-full border-collapse select-none">
                   <thead>
@@ -1229,10 +1067,8 @@ export default function WorkScheduleApp() {
                                 </div>
                                 <div className="text-[10px] text-gray-500 flex items-center gap-2">
                                   {staff.jobTitle}
-                                  {/* スキルバッジの表示 */}
                                   {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
                                   {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
-                                  {/* AI除外マーク */}
                                   {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
                                 </div>
                               </div>
@@ -1302,7 +1138,6 @@ export default function WorkScheduleApp() {
                                   const total = group.items.reduce((sum, code) => sum + (dailyStats[day][code] || 0), 0);
                                   const targetTotal = group.items.reduce((sum, code) => sum + getTargetCount(code, day), 0);
                                   const isAlert = targetTotal > 0 && total < targetTotal;
-                                  
                                   return (
                                     <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>
                                       {total > 0 ? total : '-'}
@@ -1321,10 +1156,7 @@ export default function WorkScheduleApp() {
                                     const count = dailyStats[day][code] || 0;
                                     const target = getTargetCount(code, day);
                                     let isAlert = false;
-                                    if (target > 0) {
-                                      isAlert = count < target;
-                                    }
-
+                                    if (target > 0) isAlert = count < target;
                                     return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{count > 0 ? count : '-'}</td>;
                                   })}
                                   <td className="bg-gray-50 border-b"></td>
@@ -1344,11 +1176,7 @@ export default function WorkScheduleApp() {
 
         {activePopup && (
           <div 
-            className={`
-              z-50 bg-white shadow-xl border p-2 animate-in fade-in zoom-in-95 duration-100
-              fixed bottom-0 left-0 right-0 w-full rounded-t-xl
-              md:absolute md:w-64 md:rounded-lg md:bottom-auto md:left-auto md:right-auto
-            `}
+            className={`z-50 bg-white shadow-xl border p-2 animate-in fade-in zoom-in-95 duration-100 fixed bottom-0 left-0 right-0 w-full rounded-t-xl md:absolute md:w-64 md:rounded-lg md:bottom-auto md:left-auto md:right-auto`}
             style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 200), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 280) } : {}}
             onClick={e => e.stopPropagation()}
           >
@@ -1365,352 +1193,287 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* カテゴリ編集モーダル */}
-        {showCategoryModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowCategoryModal(false)}>
-             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
-               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Palette size={18}/> カテゴリ設定</h3>
-                 <button onClick={() => setShowCategoryModal(false)}><X size={20} className="text-gray-400"/></button>
-               </div>
-               <div className="flex flex-1 overflow-hidden">
-                 <div className="w-1/3 border-r bg-gray-50 overflow-y-auto p-2">
-                    <button onClick={handleAddCategory} className="w-full mb-2 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規作成</button>
-                    <div className="space-y-1">
-                      {Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (
-                        <div 
-                          key={cat.id} 
-                          className={`p-2 rounded border text-xs font-bold flex items-center gap-2 ${targetCategory?.originalId === cat.id ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200'} ${cat.color}`}
-                          onClick={() => handleEditCategory(cat.id)}
-                          draggable
-                          onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            const dragId = e.dataTransfer.getData('text/plain');
-                            handleSortCategory(dragId, cat.id);
-                          }}
-                        >
-                           <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
-                           <span className="flex-1 truncate">{cat.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                 </div>
-                 <div className="w-2/3 p-4 overflow-y-auto">
-                    {targetCategory ? (
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 mb-1">ID (英数字)</label>
-                          <input type="text" className="w-full border p-2 rounded" value={targetCategory.id} onChange={e => setTargetCategory({...targetCategory, id: e.target.value})} placeholder="例: morning" disabled={!!targetCategory.originalId}/>
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 mb-1">表示名</label>
-                          <input type="text" className="w-full border p-2 rounded" value={targetCategory.label} onChange={e => setTargetCategory({...targetCategory, label: e.target.value})}/>
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 mb-1">背景色・文字色</label>
-                          <div className="grid grid-cols-2 gap-2">
-                             {BG_COLOR_OPTIONS.map(opt => (
-                               <button key={opt.value} onClick={() => setTargetCategory({...targetCategory, color: opt.value})} className={`text-xs p-2 rounded border font-bold ${opt.value} ${targetCategory.color === opt.value ? 'ring-2 ring-blue-500' : ''}`}>
-                                 {opt.label}
-                               </button>
-                             ))}
-                          </div>
-                        </div>
-                        <div className="flex justify-between pt-4 border-t mt-4">
-                          {targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}
-                          <button onClick={saveCategory} className="px-4 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-gray-400 text-sm">左側から選択または新規作成</div>
-                    )}
-                 </div>
-               </div>
-             </div>
-          </div>
-        )}
-
-        {showShiftEditModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowShiftEditModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
-              <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-                <h3 className="font-bold text-gray-800">シフト編集</h3>
-                <button onClick={() => setShowShiftEditModal(false)}><X size={20} className="text-gray-400"/></button>
+        {/* 統合設定モーダル */}
+        {showSettingsModal && (
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><Settings size={20}/> システム設定</h3>
+                <button onClick={() => setShowSettingsModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
               </div>
               <div className="flex flex-1 overflow-hidden">
-                <div className="w-1/3 border-r bg-gray-50 overflow-y-auto p-2">
-                  <button onClick={() => { setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null }); }} className="w-full mb-2 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規作成</button>
-                  <div className="space-y-3">
-                    {dynamicPaletteGroups.map(g => (
-                      <div key={g.id}>
-                        <div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div>
-                        <div className="space-y-1">
-                          {g.items.map(code => (
+                {/* サイドバー */}
+                <div className="w-48 bg-gray-100 border-r flex flex-col p-2 space-y-1">
+                  <button onClick={() => setActiveSettingsTab('category')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'category' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Palette size={16}/> カテゴリ設定</button>
+                  <button onClick={() => setActiveSettingsTab('shift')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'shift' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Clock size={16}/> シフト設定</button>
+                  <button onClick={() => setActiveSettingsTab('staff')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'staff' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Users size={16}/> 職員設定</button>
+                  <button onClick={() => setActiveSettingsTab('password')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'password' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Key size={16}/> パスワード</button>
+                  <div className="flex-1"></div>
+                  <button onClick={() => setActiveSettingsTab('data')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'data' ? 'bg-red-50 text-red-600 border border-red-200' : 'text-gray-600 hover:bg-gray-200'}`}><Database size={16}/> データ管理</button>
+                </div>
+                
+                {/* コンテンツエリア */}
+                <div className="flex-1 overflow-auto bg-white p-6">
+                  
+                  {/* カテゴリ設定 */}
+                  {activeSettingsTab === 'category' && (
+                    <div className="flex h-full gap-4">
+                      <div className="w-1/3 border-r pr-4 overflow-y-auto">
+                        <button onClick={handleAddCategory} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規カテゴリ</button>
+                        <div className="space-y-2">
+                          {Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (
                             <div 
-                              key={code} 
-                              draggable
-                              onDragStart={(e) => e.dataTransfer.setData('text/plain', code)}
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                const dragCode = e.dataTransfer.getData('text/plain');
-                                handleSortShift(dragCode, code);
-                              }}
-                              onClick={() => handleEditShift(code)} 
-                              className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}
+                              key={cat.id} 
+                              className={`p-2 rounded border text-xs font-bold flex items-center gap-2 cursor-pointer ${targetCategory?.originalId === cat.id ? 'ring-2 ring-blue-400 bg-blue-50' : 'bg-white'} ${cat.color}`}
+                              onClick={() => handleEditCategory(cat.id)}
+                              draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)}
+                              onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortCategory(e.dataTransfer.getData('text/plain'), cat.id); }}
                             >
-                              <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
-                              <span className={shiftDefs[code].text}>{shiftDefs[code].label}</span>
+                               <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
+                               <span className="flex-1 truncate">{cat.label}</span>
                             </div>
                           ))}
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="w-2/3 p-4 overflow-y-auto">
-                  {editingShift ? (
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div><label className="block text-xs font-bold text-gray-500">コード</label><input type="text" className="w-full border p-2 rounded" value={editingShift.code || ''} onChange={e => setEditingShift({...editingShift, code: e.target.value.toUpperCase()})} /></div>
-                        <div><label className="block text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={editingShift.label || ''} onChange={e => setEditingShift({...editingShift, label: e.target.value})} /></div>
-                      </div>
-                      <div><label className="block text-xs font-bold text-gray-500">カテゴリ</label>
-                        <select className="w-full border p-2 rounded" value={editingShift.category || 'saka'} onChange={e => setEditingShift({...editingShift, category: e.target.value})}>
-                          {Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}
-                        </select>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div><label className="block text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
-                        <div><label className="block text-xs font-bold text-gray-500">文字色</label>
-                          <div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (
-                            <button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`} title={c.label}>Aa</button>
-                          ))}</div>
-                        </div>
-                      </div>
-                      {editingShift.type === 'shift' && (
-                        <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
-                          <div><label className="block text-xs font-bold text-blue-700">開始</label>
-                            <input type="time" className="w-full border rounded p-1" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value, time: `${e.target.value}-${editingShift.endTime}`})} />
+                      <div className="flex-1 pl-4">
+                        {targetCategory ? (
+                          <div className="space-y-4 max-w-md">
+                            <h4 className="font-bold text-gray-700 border-b pb-2">カテゴリ編集</h4>
+                            <div><label className="text-xs font-bold text-gray-500">ID (英数字)</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.id} onChange={e => setTargetCategory({...targetCategory, id: e.target.value})} disabled={!!targetCategory.originalId}/></div>
+                            <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.label} onChange={e => setTargetCategory({...targetCategory, label: e.target.value})}/></div>
+                            <div><label className="text-xs font-bold text-gray-500">色スタイル</label><div className="grid grid-cols-3 gap-2 mt-1">{BG_COLOR_OPTIONS.map(opt => (<button key={opt.value} onClick={() => setTargetCategory({...targetCategory, color: opt.value})} className={`text-xs p-2 rounded border font-bold ${opt.value} ${targetCategory.color === opt.value ? 'ring-2 ring-blue-500' : ''}`}>{opt.label}</button>))}</div></div>
+                            <div className="flex justify-between pt-4">
+                              {targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}
+                              <button onClick={saveCategory} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
+                            </div>
                           </div>
-                          <div><label className="block text-xs font-bold text-blue-700">終了</label>
-                            <input type="time" className="w-full border rounded p-1" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value, time: `${editingShift.startTime}-${e.target.value}`})} />
-                          </div>
-                        </div>
-                      )}
-                      <div className="flex justify-between pt-4 border-t mt-4">
-                        {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
-                        <button onClick={saveShiftConfig} className="px-4 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
+                        ) : <div className="text-gray-400 text-center mt-20">左側からカテゴリを選択または新規作成してください</div>}
                       </div>
                     </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-gray-400 text-sm">左側から選択または新規作成</div>
                   )}
+
+                  {/* シフト設定 */}
+                  {activeSettingsTab === 'shift' && (
+                    <div className="flex h-full gap-4">
+                      <div className="w-1/3 border-r pr-4 overflow-y-auto">
+                        <button onClick={handleAddNewShift} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規シフト</button>
+                        <div className="space-y-4">
+                          {dynamicPaletteGroups.map(g => (
+                            <div key={g.id}>
+                              <div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div>
+                              <div className="space-y-1">
+                                {g.items.map(code => (
+                                  <div key={code} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', code)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortShift(e.dataTransfer.getData('text/plain'), code); }} onClick={() => handleEditShift(code)} className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}>
+                                    <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
+                                    <span className={shiftDefs[code].text}>{shiftDefs[code].label}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex-1 pl-4 overflow-y-auto">
+                        {editingShift ? (
+                          <div className="space-y-4 max-w-lg">
+                            <h4 className="font-bold text-gray-700 border-b pb-2">シフト編集</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div><label className="text-xs font-bold text-gray-500">コード</label><input type="text" className="w-full border p-2 rounded" value={editingShift.code || ''} onChange={e => setEditingShift({...editingShift, code: e.target.value.toUpperCase()})} /></div>
+                              <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={editingShift.label || ''} onChange={e => setEditingShift({...editingShift, label: e.target.value})} /></div>
+                            </div>
+                            <div><label className="text-xs font-bold text-gray-500">カテゴリ</label>
+                              <select className="w-full border p-2 rounded" value={editingShift.category || 'saka'} onChange={e => setEditingShift({...editingShift, category: e.target.value})}>{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}</select>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div><label className="text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
+                              <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
+                            </div>
+                            {editingShift.type === 'shift' && (
+                              <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
+                                <div><label className="text-xs font-bold text-blue-700">開始</label><input type="time" className="w-full border rounded p-1" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value})} /></div>
+                                <div><label className="text-xs font-bold text-blue-700">終了</label><input type="time" className="w-full border rounded p-1" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value})} /></div>
+                              </div>
+                            )}
+                            <div className="flex justify-between pt-4 mt-4">
+                              {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
+                              <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
+                            </div>
+                          </div>
+                        ) : <div className="text-gray-400 text-center mt-20">左側からシフトを選択または新規作成してください</div>}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 職員設定 */}
+                  {activeSettingsTab === 'staff' && (
+                    <div className="h-full flex flex-col">
+                      <div className="mb-4 flex justify-between items-center">
+                        <p className="text-xs text-gray-500">スキル、3クール制限、AI除外設定を一括管理します。</p>
+                        <button onClick={handleAddStaff} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded flex items-center gap-1 hover:bg-blue-700"><Plus size={12}/> 職員追加</button>
+                      </div>
+                      <div className="flex-1 overflow-auto border rounded-lg">
+                        <table className="w-full border-collapse text-xs">
+                          <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
+                            <tr>
+                              <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
+                              <th className="p-2 border text-center w-16">編集</th>
+                              <th className="p-2 border text-center w-20">AI除外</th>
+                              <th className="p-2 border text-center w-20">3クール上限</th>
+                              {STAFF_SKILLS.map(skill => (
+                                <th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {staffList.map((staff, index) => (
+                              <tr key={staff.id} className="hover:bg-gray-50 border-b">
+                                <td className="p-2 border font-bold text-gray-700">
+                                  <div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div>
+                                </td>
+                                <td className="p-2 border text-center">
+                                  <button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded"><Edit2 size={14}/></button>
+                                </td>
+                                <td className="p-2 border text-center bg-red-50">
+                                  <input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/>
+                                </td>
+                                <td className="p-2 border text-center">
+                                  <input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/>
+                                </td>
+                                {STAFF_SKILLS.map(skill => (
+                                  <td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => { const newList = [...staffList]; const currentVal = staff.skills?.[skill.key] || false; newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } }; setStaffList(newList); }}>
+                                    {staff.skills?.[skill.key] ? <Check size={16} className="text-green-600 mx-auto"/> : <div className="w-3 h-3 mx-auto border rounded-sm border-gray-300"></div>}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="mt-4 flex justify-end">
+                        <button onClick={() => saveAllStaffSettings(staffList)} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">全変更を保存</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* パスワード変更 */}
+                  {activeSettingsTab === 'password' && (
+                    <div className="max-w-md mx-auto mt-8">
+                      <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">パスワード変更</h4>
+                      <div className="space-y-4">
+                        <div className="mb-4">
+                          <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
+                          <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
+                            {Object.keys(adminSettings).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label>
+                          <input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+                        </div>
+                        <button onClick={handleChangePassword} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">変更を保存</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* データ管理 */}
+                  {activeSettingsTab === 'data' && (
+                    <div className="max-w-lg mx-auto mt-8 text-center">
+                      <div className="bg-red-50 border border-red-200 rounded-xl p-6">
+                        <h4 className="font-bold text-red-700 text-lg mb-2 flex items-center justify-center gap-2"><AlertTriangle/> 危険な操作エリア</h4>
+                        <p className="text-sm text-red-600 mb-6">現在表示中の月（{year}年{month}月）のシフトデータを完全に削除します。<br/>この操作は取り消せません。</p>
+                        <button onClick={handleResetSchedule} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 w-full">
+                          <Eraser size={20}/> 勤務表を全消去（リセット）
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* 以下、他モーダルは省略なしで維持 */}
-        {showStaffSettingsModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
-              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                <h3 className="font-bold text-gray-800 flex items-center gap-2"><ListFilter size={18}/> 職員設定一覧 (スキル・制限・AI設定)</h3>
-                <button onClick={() => setShowStaffSettingsModal(false)}><X size={20} className="text-gray-400"/></button>
-              </div>
-              <div className="flex-1 overflow-auto p-4">
-                 <table className="w-full border-collapse text-xs">
-                   <thead className="bg-gray-100 sticky top-0 z-10 shadow-sm">
-                     <tr>
-                       <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
-                       <th className="p-2 border text-center w-20">AI除外</th>
-                       <th className="p-2 border text-center w-24">3クール上限</th>
-                       {STAFF_SKILLS.map(skill => (
-                         <th key={skill.key} className="p-2 border text-center w-20">
-                           <div className="flex flex-col items-center">
-                             <skill.icon size={16} className="text-gray-600 mb-1"/>
-                             <span>{skill.label}</span>
-                           </div>
-                         </th>
-                       ))}
-                     </tr>
-                   </thead>
-                   <tbody>
-                     {staffList.map((staff, index) => (
-                       <tr key={staff.id} className="hover:bg-gray-50 border-b">
-                         <td className="p-2 border font-bold text-gray-700">
-                           <div>{staff.name}</div>
-                           <div className="text-[10px] text-gray-400">{staff.jobTitle}</div>
-                         </td>
-                         <td className="p-2 border text-center bg-red-50">
-                           <input 
-                             type="checkbox" 
-                             className="w-4 h-4"
-                             checked={staff.excludeFromAi || false}
-                             onChange={(e) => {
-                               const newList = [...staffList];
-                               newList[index] = { ...staff, excludeFromAi: e.target.checked };
-                               setStaffList(newList);
-                             }}
-                           />
-                           {staff.excludeFromAi && <div className="text-[9px] text-red-500 font-bold">除外</div>}
-                         </td>
-                         <td className="p-2 border text-center">
-                           <input 
-                             type="number" 
-                             min="0"
-                             className="w-16 p-1 border rounded text-center"
-                             value={staff.maxCool3 ?? 5}
-                             onChange={(e) => {
-                               const newList = [...staffList];
-                               newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 };
-                               setStaffList(newList);
-                             }}
-                           />
-                         </td>
-                         {STAFF_SKILLS.map(skill => (
-                           <td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => {
-                              const newList = [...staffList];
-                              const currentVal = staff.skills?.[skill.key] || false;
-                              newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } };
-                              setStaffList(newList);
-                           }}>
-                             {staff.skills?.[skill.key] ? <Check size={18} className="text-green-600 mx-auto"/> : <div className="w-4 h-4 mx-auto border rounded-sm border-gray-300"></div>}
-                           </td>
-                         ))}
-                       </tr>
-                     ))}
-                   </tbody>
-                 </table>
-              </div>
-              <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
-                 <button onClick={() => setShowStaffSettingsModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
-                 <button onClick={() => saveAllStaffSettings(staffList)} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
               </div>
             </div>
           </div>
         )}
 
+        {/* AI アシスタントモーダル */}
+        {showAiModal && (
+          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col h-[80vh]" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50">
+                <h3 className="font-bold text-lg flex items-center gap-2 text-indigo-800"><Bot className="text-indigo-600"/> AIアシスタント</h3>
+                <div className="flex items-center gap-4">
+                  <select className="border p-1 rounded text-xs bg-white/50" value={aiModel} onChange={(e) => setAiModel(e.target.value)}>
+                    {AI_MODELS.map(model => (<option key={model.value} value={model.value}>{model.label}</option>))}
+                  </select>
+                  <button onClick={() => setShowAiModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
+                </div>
+              </div>
+              
+              {/* チャット履歴エリア */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+                {aiMessages.length === 0 && (
+                  <div className="text-center text-gray-400 mt-10">
+                    <Sparkles size={48} className="mx-auto mb-2 opacity-20"/>
+                    <p>シフト作成や分析について話しかけてください。<br/>例: 「空いているところを埋めて」「Aさんの残業を減らして」</p>
+                  </div>
+                )}
+                {aiMessages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[80%] rounded-lg p-3 text-sm whitespace-pre-wrap ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-800 shadow-sm'}`}>
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+                {isAiLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-white border rounded-lg p-3 shadow-sm"><Loader2 className="animate-spin text-indigo-500" size={20}/></div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* 入力エリア */}
+              <div className="p-4 border-t bg-white">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-gray-500">モード:</span>
+                  <div className="flex bg-gray-100 rounded p-1">
+                    <button onClick={() => setAiChatMode('create')} className={`px-3 py-1 text-xs rounded transition ${aiChatMode === 'create' ? 'bg-white shadow text-indigo-600 font-bold' : 'text-gray-500'}`}>シフト作成</button>
+                    <button onClick={() => setAiChatMode('analyze')} className={`px-3 py-1 text-xs rounded transition ${aiChatMode === 'analyze' ? 'bg-white shadow text-purple-600 font-bold' : 'text-gray-500'}`}>分析のみ</button>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    className="flex-1 border rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-300 outline-none transition" 
+                    placeholder={aiChatMode === 'create' ? "例: 全ての空欄を埋めてください" : "例: 今月の残業状況を教えて"}
+                    value={aiInput} 
+                    onChange={e => setAiInput(e.target.value)} 
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAiSend(); }} 
+                  />
+                  <button onClick={handleAiSend} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg transition disabled:opacity-50"><Send size={18}/></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* スタッフ詳細（サブモーダル） */}
         {showStaffModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
                 <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
               </div>
               <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label>
-                  <input type="text" className="w-full border p-2 rounded" placeholder="任意のIDを入力" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} />
-                  <p className="text-[10px] text-gray-400 mt-1">ログインに使用するIDです</p>
-                </div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label><input type="text" className="w-full border p-2 rounded" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} /></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label>
-                  <select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => {
-                    const newTitle = e.target.value;
-                    let newSkills = targetStaff.skills ? { ...targetStaff.skills } : {};
-                    // 役職に応じてスキル「リーダー可」を自動チェック
-                    if(LEADER_FORCE_TITLES.includes(newTitle)) newSkills.isLeader = true;
-                    setTargetStaff({...targetStaff, jobTitle: newTitle, skills: newSkills});
-                  }}>
-                    {JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label>
-                  <div className="space-y-2">{STAFF_ROLES.map(r => (
-                    <label key={r} className="flex items-center gap-2"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => {
-                      const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r];
-                      setTargetStaff({...targetStaff, roles});
-                    }}/> <span className="text-sm">{r}</span></label>
-                  ))}</div>
-                </div>
-
-                {/* スキル評価設定（管理者のみ） */}
-                {appUser.role === 'admin' && (
-                  <>
-                    <div className="border-t pt-4 mt-2">
-                      <label className="block text-xs font-bold text-blue-600 mb-2 flex items-center gap-1"><ShieldCheck size={14}/> スキル評価 (管理者のみ)</label>
-                      <div className="space-y-3 bg-blue-50 p-3 rounded-lg">
-                        {STAFF_SKILLS.map(skill => (
-                          <div key={skill.key} className="flex items-start gap-2">
-                            <input 
-                              type="checkbox" 
-                              id={`skill-${skill.key}`}
-                              className="mt-1"
-                              checked={targetStaff.skills?.[skill.key] || false} 
-                              onChange={(e) => {
-                                const newSkills = { ...targetStaff.skills, [skill.key]: e.target.checked };
-                                setTargetStaff({ ...targetStaff, skills: newSkills });
-                              }}
-                            />
-                            <label htmlFor={`skill-${skill.key}`} className="text-sm cursor-pointer">
-                              <div className="font-bold flex items-center gap-1">{skill.label}</div>
-                              <div className="text-[10px] text-gray-500">{skill.desc}</div>
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    {/* 詳細設定 */}
-                    <div className="border-t pt-4 mt-2">
-                      <label className="block text-xs font-bold text-gray-600 mb-2">詳細設定</label>
-                      <div className="space-y-3">
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 mb-1">3クール上限回数 (月間)</label>
-                          <input type="number" className="w-full border p-2 rounded" value={targetStaff.maxCool3 ?? 5} onChange={e => setTargetStaff({...targetStaff, maxCool3: parseInt(e.target.value)||0})} />
-                        </div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <input type="checkbox" id="excludeFromAi" className="w-4 h-4" checked={targetStaff.excludeFromAi || false} onChange={e => setTargetStaff({...targetStaff, excludeFromAi: e.target.checked})}/>
-                          <label htmlFor="excludeFromAi" className="text-xs font-bold text-red-600 cursor-pointer">AI自動生成から除外する (シフトを固定)</label>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label><select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => setTargetStaff({...targetStaff, jobTitle: e.target.value})}>{JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="space-y-2">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-2"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
-              </div>
-              <div className="p-4 border-t flex justify-end gap-2">
-                <button onClick={saveStaff} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存</button>
+                <div className="pt-2"><button onClick={saveStaff} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button></div>
+                {targetStaff.id && <button onClick={() => { removeStaff(targetStaff.id); setShowStaffModal(false); }} className="w-full py-2 text-red-500 text-xs hover:underline">この職員を削除</button>}
               </div>
             </div>
-          </div>
-        )}
-
-        {showPasswordChangeModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowPasswordChangeModal(false)}>
-             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
-               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Key size={18}/> パスワード変更</h3>
-                 <button onClick={() => setShowPasswordChangeModal(false)}><X size={20} className="text-gray-400"/></button>
-               </div>
-               <div className="p-6">
-                 {appUser.role === 'admin' ? (
-                   <div className="mb-4">
-                     <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
-                     <select 
-                       className="w-full border p-2 rounded-lg"
-                       value={targetAdminKey}
-                       onChange={e => setTargetAdminKey(e.target.value)}
-                     >
-                       {Object.keys(adminSettings).map(key => (
-                         <option key={key} value={key}>{adminSettings[key].label}</option>
-                       ))}
-                     </select>
-                   </div>
-                 ) : null}
-                 <label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label>
-                 <input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} autoFocus />
-               </div>
-               <div className="p-4 border-t flex justify-end gap-2">
-                 <button onClick={handleChangePassword} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">変更する</button>
-               </div>
-             </div>
           </div>
         )}
 
@@ -1748,59 +1511,18 @@ export default function WorkScheduleApp() {
                          <tbody>
                            {group.items.map(code => {
                              const shift = shiftDefs[code];
-                             // じんクリ: 月(1)の値を代表として表示
                              const val1 = targetCounts[code]?.[1] ?? 0;
-                             // じんクリ: 火(2)の値を代表として表示
                              const val2 = targetCounts[code]?.[2] ?? 0;
-                             
                              return (
                                <tr key={code} className="border-b last:border-b-0">
-                                 <td className="p-2 border text-left font-bold text-gray-700">
-                                    <span className={shift.text}>{shift.label}</span>
-                                 </td>
+                                 <td className="p-2 border text-left font-bold text-gray-700"><span className={shift.text}>{shift.label}</span></td>
                                  {group.id === 'jinkuri' ? (
                                    <>
-                                     <td className="p-1 border">
-                                       <input 
-                                         type="number" min="0" className="w-16 p-1 border rounded text-center"
-                                         value={val1}
-                                         onChange={(e) => {
-                                           const v = parseInt(e.target.value) || 0;
-                                           setTargetCounts(prev => ({
-                                             ...prev,
-                                             [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } // 月水金
-                                           }));
-                                         }}
-                                       />
-                                     </td>
-                                     <td className="p-1 border">
-                                       <input 
-                                         type="number" min="0" className="w-16 p-1 border rounded text-center"
-                                         value={val2}
-                                         onChange={(e) => {
-                                           const v = parseInt(e.target.value) || 0;
-                                           setTargetCounts(prev => ({
-                                             ...prev,
-                                             [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } // 火木土
-                                           }));
-                                         }}
-                                       />
-                                     </td>
+                                     <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } })); }} /></td>
+                                     <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val2} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } })); }} /></td>
                                    </>
                                  ) : (
-                                   <td className="p-1 border">
-                                     <input 
-                                       type="number" min="0" className="w-16 p-1 border rounded text-center"
-                                       value={val1}
-                                       onChange={(e) => {
-                                         const v = parseInt(e.target.value) || 0;
-                                         setTargetCounts(prev => ({
-                                           ...prev,
-                                           [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } // 月～土
-                                         }));
-                                       }}
-                                     />
-                                   </td>
+                                   <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } })); }} /></td>
                                  )}
                                </tr>
                              );
@@ -1820,7 +1542,7 @@ export default function WorkScheduleApp() {
         )}
 
         {confirmModal.isOpen && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500"/> {confirmModal.title}</h3>
@@ -1837,60 +1559,6 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {showAiModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between p-4 border-b">
-                <h3 className="font-bold text-lg flex items-center gap-2"><Sparkles className="text-purple-600"/> AIアシスタント</h3>
-                <button onClick={() => setShowAiModal(false)}><X size={20} className="text-gray-400"/></button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
-                
-                {/* モデル選択エリア */}
-                <div className="mb-4">
-                  <label className="block text-xs font-bold text-gray-500 mb-1">使用モデル</label>
-                  <select 
-                    className="w-full border p-2 rounded text-sm bg-white"
-                    value={aiModel}
-                    onChange={(e) => setAiModel(e.target.value)}
-                  >
-                    {AI_MODELS.map(model => (
-                      <option key={model.value} value={model.value}>{model.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {isAiLoading ? <div className="flex justify-center p-8"><Loader2 className="animate-spin text-blue-500"/></div> : (
-                  <div className="space-y-4">
-                    {aiMode === 'chat' && <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">💡 例: 「Aさんの土日を休みに」「Bさんの空きをPで埋めて」</div>}
-                    <div className="whitespace-pre-wrap text-sm">{aiResponse}</div>
-                  </div>
-                )}
-              </div>
-              {aiMode === 'chat' && (
-                <div className="p-4 border-t bg-white flex gap-2">
-                  <input 
-                    type="text" 
-                    className="flex-1 border rounded px-3 py-2" 
-                    placeholder="指示を入力..." 
-                    value={aiInput} 
-                    onChange={e => setAiInput(e.target.value)} 
-                    // 日本語変換中（isComposing）は送信しない
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                        handleAiMagicFill();
-                      }
-                    }} 
-                  />
-                  <button onClick={handleAiMagicFill} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 text-white px-4 py-2 rounded"><Send size={18}/></button>
-                </div>
-              )}
-              {aiMode === 'analyze' && !aiResponse && !isAiLoading && (
-                <div className="p-4 border-t bg-white"><button onClick={handleAiAnalyze} className="w-full bg-purple-600 text-white py-2 rounded font-bold">分析開始</button></div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
