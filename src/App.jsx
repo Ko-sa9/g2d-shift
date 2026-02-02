@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -66,7 +66,6 @@ const JOB_TITLES = ['顧問', '科長', '副技士長', '主任', '一般', 'パ
 const STAFF_ROLES = ['エコー班', 'オペ班', 'HHD班'];
 const LEADER_FORCE_TITLES = ['科長', '副技士長', '主任'];
 
-// スキル評価項目の定義
 const STAFF_SKILLS = [
   { key: 'isLeader', label: 'リーダー', icon: ShieldCheck, desc: '責任者・指示出し' },
   { key: 'canEcho', label: 'エコー', icon: Activity, desc: '難渋例の穿刺' },
@@ -103,7 +102,6 @@ const TEAMS = [
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
 
-// AIモデルの定義
 const AI_MODELS = [
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (高速・推奨)' },
   { value: 'gemini-2.0-pro-exp-02-05', label: 'Gemini 2.0 Pro (高性能・実験的)' },
@@ -125,7 +123,6 @@ const DEFAULT_ADMIN_SETTINGS = {
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
 
-// 時間選択肢
 const TIME_OPTIONS = [];
 for (let h = 7; h <= 23; h++) {
   TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:00`);
@@ -789,23 +786,39 @@ export default function WorkScheduleApp() {
     });
   };
 
-  const prepareScheduleDataForAi = () => ({
-    year, month,
-    // AIに「名前とIDの対応表」として認識させる
-    staff: staffList.map(s => ({ 
-      id: s.id, // これを使ってほしい
-      name: s.name, 
-      jobTitle: s.jobTitle, 
-      roles: s.roles,
-      skills: s.skills,
-      maxCool3: s.maxCool3, 
-      excludeFromAi: s.excludeFromAi 
-    })),
-    shifts: shiftData, 
-    tasks: taskData,
-    targetCounts,
-    definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
-  });
+  const prepareScheduleDataForAi = () => {
+    const days = getDaysInMonth(year, month);
+    const calendarInfo = {};
+    for (let d = 1; d <= days; d++) {
+      const date = new Date(year, month - 1, d);
+      const dayOfWeek = date.getDay(); // 0:Sun, 1:Mon...
+      const isHol = isHoliday(year, month, d);
+      calendarInfo[d] = {
+        date: `${month}/${d}`,
+        dayOfWeek: ['日','月','火','水','木','金','土'][dayOfWeek],
+        isSunday: dayOfWeek === 0,
+        isHoliday: isHol
+      };
+    }
+
+    return {
+      year, month,
+      calendar: calendarInfo,
+      staff: staffList.map(s => ({ 
+        id: s.id, // これを使ってほしい
+        name: s.name, 
+        jobTitle: s.jobTitle, 
+        roles: s.roles,
+        skills: s.skills,
+        maxCool3: s.maxCool3, 
+        excludeFromAi: s.excludeFromAi 
+      })),
+      shifts: shiftData, 
+      tasks: taskData,
+      targetCounts,
+      definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
+    };
+  };
 
   const handleAiSend = async () => {
     if (!aiInput.trim()) return;
@@ -824,22 +837,28 @@ export default function WorkScheduleApp() {
         systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。挨拶や解説は不要です。必ずvalidなJSONを返してください。";
         prompt = `
         【役割】
-        あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフト表(JSON)を作成・修正してください。
+        あなたは熟練の勤務表管理者です。提供されたデータ(calendar, staff, shifts, targetCounts)とユーザーの指示に基づいて、シフト表(JSON)を作成・修正してください。
 
         【重要: データ形式】
         1. **出力はJSONのみ**: 解説文は含めないでください。
-        2. **IDの使用**: 職員指定は必ず "id" を使用してください(名前不可)。
+        2. **IDの使用**: 職員やシフトの指定には、名前ではなく必ず「ID」や「コード」を使用してください。
+           - 職員ID例: "1", "2" ... (名前 "職員A" は不可)
+           - シフトコード例: "A", "P", "/" ...
         3. **JSON構造**:
            {
-             "shift": { "職員ID": { "日付(1-31)": "シフトコード" }, ... },
+             "shift": {
+               "職員ID": { "日付(1-31)": "シフトコード" },
+               ...
+             },
              "task": { ... }
            }
 
         【作成ルール】
-        1. "category": "req"(希望) / "off"(休み) は変更不可。
-        2. "excludeFromAi": true の職員は変更不可。
-        3. 3クール(名前に3を含むシフト)は連続させない。
-        4. targetCounts を満たすように配置。
+        1. **日曜日・祝日の扱い**: calendar情報で isSunday: true または isHoliday: true の日は、原則としてシフトを入れない（"off" カテゴリのコードを使用）か、休日専用シフト（C, D, Kなど）を使用してください。通常シフト（A, P, F, Bなど）は禁止です。
+        2. **バランス**: 勤務日は、カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。特定の施設に偏らせないでください。
+        3. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
+        4. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
+        5. **全入力の対応**: ユーザーから「全て埋めて」「作成して」等の指示があった場合、上記の保護対象以外の日付を適切なシフトで埋めてください。
 
         データ: ${JSON.stringify(data)}
         指示: ${userMsg.text}
@@ -873,12 +892,18 @@ export default function WorkScheduleApp() {
             if (changes.shift) {
               const ns = { ...shiftData };
               Object.keys(changes.shift).forEach(key => {
-                let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+                let staffId = key;
+                // IDが見つからない場合、名前として検索
+                if (!staffList.find(s => s.id === staffId)) {
+                   staffId = nameToIdMap[key];
+                }
+
                 if (staffId && staffList.find(s => s.id === staffId)) { 
                    if (!ns[staffId]) ns[staffId] = {};
                    Object.keys(changes.shift[key]).forEach(day => {
-                      if (shiftDefs[changes.shift[key][day]]) {
-                         ns[staffId][day] = changes.shift[key][day];
+                      const code = changes.shift[key][day];
+                      if (shiftDefs[code]) {
+                         ns[staffId][day] = code;
                          updatedCount++;
                       }
                    });
@@ -889,12 +914,17 @@ export default function WorkScheduleApp() {
             if (changes.task) {
               const nt = { ...taskData };
               Object.keys(changes.task).forEach(key => {
-                let staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+                let staffId = key;
+                if (!staffList.find(s => s.id === staffId)) {
+                   staffId = nameToIdMap[key];
+                }
+
                 if (staffId && staffList.find(s => s.id === staffId)) {
                    if (!nt[staffId]) nt[staffId] = {};
                    Object.keys(changes.task[key]).forEach(day => {
-                      if (shiftDefs[changes.task[key][day]]) {
-                         nt[staffId][day] = changes.task[key][day];
+                      const code = changes.task[key][day];
+                      if (shiftDefs[code]) {
+                         nt[staffId][day] = code;
                          updatedCount++;
                       }
                    });
@@ -1521,6 +1551,16 @@ export default function WorkScheduleApp() {
                   <div className="text-center text-gray-400 mt-10">
                     <Sparkles size={48} className="mx-auto mb-2 opacity-20"/>
                     <p>シフト作成や分析について話しかけてください。<br/>例: 「空いているところを埋めて」「Aさんの残業を減らして」</p>
+                    
+                    <div className="mt-6 bg-blue-50 p-4 rounded-lg text-left text-xs text-blue-800 mx-auto max-w-md">
+                      <div className="font-bold mb-2 flex items-center gap-1"><HelpCircle size={14}/> 指示のコツ</div>
+                      <ul className="list-disc pl-4 space-y-1">
+                        <li>「全員の空欄を自動で埋めて」</li>
+                        <li>「Aさんの日曜日は休みに」</li>
+                        <li>「君津の人数を増やして」</li>
+                      </ul>
+                      <div className="mt-2 text-blue-600">※AIは現在のシフト状況とルール（日曜休みなど）を考慮して提案します。</div>
+                    </div>
                   </div>
                 )}
                 {aiMessages.map((msg, idx) => (
