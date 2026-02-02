@@ -274,7 +274,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (foundViewKey) {
         onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
       } else {
-        setError('パスワードが違います。');
+        setError('パスワードが違います (初期: admin)');
       }
     } else {
       const staff = staffList.find(s => s.loginId === loginId);
@@ -285,7 +285,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (password === staff.password) {
         onLogin({ role: 'staff', ...staff });
       } else {
-        setError('パスワードが違います (初期:職員ID)');
+        setError('パスワードが違います (初期: 1234)');
       }
     }
   };
@@ -1007,7 +1007,7 @@ export default function WorkScheduleApp() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 text-sm font-sans" onClick={() => setActivePopup(null)}>
-      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-40">
+      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-gray-50 rounded-lg p-1 border">
             <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={20} /></button>
@@ -1033,6 +1033,9 @@ export default function WorkScheduleApp() {
         <div className="flex items-center gap-3">
            {appUser.role === 'admin' && (
              <>
+               <button onClick={() => setShowCategoryModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
+                 <Palette size={18} /> <span className="hidden sm:inline">カテゴリ設定</span>
+               </button>
                <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
                  <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
@@ -1042,7 +1045,10 @@ export default function WorkScheduleApp() {
              </>
            )}
            {appUser.role === 'staff' && (
-             <button onClick={() => setShowPasswordChangeModal(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300">
+             <button 
+               onClick={(e) => { e.stopPropagation(); setShowPasswordChangeModal(true); }} 
+               className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 relative z-50 shadow-sm"
+             >
                <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
              </button>
            )}
