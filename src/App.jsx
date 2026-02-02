@@ -274,7 +274,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (foundViewKey) {
         onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
       } else {
-        setError('パスワードが違います (初期: admin)');
+        setError('パスワードが違います。');
       }
     } else {
       const staff = staffList.find(s => s.loginId === loginId);
@@ -285,7 +285,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (password === staff.password) {
         onLogin({ role: 'staff', ...staff });
       } else {
-        setError('パスワードが違います (初期: 1234)');
+        setError('パスワードが違います (初期:職員ID)');
       }
     }
   };
@@ -313,6 +313,11 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
           </div>
           {error && <p className="text-red-500 text-sm font-bold text-center">{error}</p>}
           <button onClick={handleLogin} className={`w-full py-3 rounded-lg font-bold text-white shadow transition transform active:scale-95 ${selectedRole === 'admin' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>ログイン</button>
+          
+          <div className="text-xs text-gray-400 text-center mt-4">
+            ※パスワード変更はログイン後に行えます。<br/>
+            忘れた場合は管理者へ連絡してください。
+          </div>
         </div>
       </div>
     </div>
@@ -340,27 +345,31 @@ export default function WorkScheduleApp() {
   
   const [activePopup, setActivePopup] = useState(null);
   const [showAiModal, setShowAiModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false); // 統合設定モーダル
-  const [showStaffModal, setShowStaffModal] = useState(false); // 個別職員編集（サブモーダル）
-  const [showTargetCountModal, setShowTargetCountModal] = useState(false);
+  const [showShiftEditModal, setShowShiftEditModal] = useState(false);
+  const [showStaffModal, setShowStaffModal] = useState(false);
+  const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
+  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false); 
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
+  const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
 
   // 設定モーダル内のタブ管理
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('category'); 
 
   const [targetAdminKey, setTargetAdminKey] = useState('all');
+
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
   const [targetCategory, setTargetCategory] = useState(null); 
   const [newPassword, setNewPassword] = useState('');
   
-  // AIチャット関連
-  const [aiChatMode, setAiChatMode] = useState('create'); // 'create' or 'analyze'
+  const [aiChatMode, setAiChatMode] = useState('create');
   const [aiInput, setAiInput] = useState('');
-  const [aiMessages, setAiMessages] = useState([]); // { role: 'user'|'model', text: string }
+  const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiModel, setAiModel] = useState('gemini-2.0-flash'); 
   const chatEndRef = useRef(null);
@@ -384,6 +393,7 @@ export default function WorkScheduleApp() {
     const unsubMaster = onSnapshot(masterDocRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
+        
         const loadedStaffList = (data.staffList || []).map(s => ({
           ...s,
           loginId: s.loginId || '',
@@ -391,10 +401,12 @@ export default function WorkScheduleApp() {
           maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
           excludeFromAi: s.excludeFromAi || false 
         }));
+
         setStaffList(loadedStaffList);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
         setCategoryDefs(data.categoryDefs || DEFAULT_CATEGORY_DEFS); 
         setTargetCounts(data.targetCounts || {});
+        
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
         if (loadedAdminSettings['opera']) {
            const { opera, ...rest } = loadedAdminSettings;
@@ -433,7 +445,7 @@ export default function WorkScheduleApp() {
     };
   }, [authUser, year, month]);
 
-  // AIチャット自動スクロール
+  // AI Chat Auto Scroll
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
@@ -457,7 +469,6 @@ export default function WorkScheduleApp() {
     }, { merge: true });
   };
 
-  // ... (Cell Click Handlers kept same) ...
   const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
@@ -512,13 +523,12 @@ export default function WorkScheduleApp() {
     });
   };
 
-  // --- 設定関連ハンドラ ---
-
   const handleChangePassword = () => {
     if (!newPassword.trim()) {
       alert('新しいパスワードを入力してください');
       return;
     }
+
     if (appUser.role === 'admin') {
       const newSettings = { ...adminSettings };
       if (newSettings[targetAdminKey]) {
@@ -533,6 +543,8 @@ export default function WorkScheduleApp() {
       saveMasterData(newList, shiftDefs, categoryDefs, adminSettings, targetCounts);
       alert('パスワードを変更しました。次回ログイン時から有効です。');
     }
+    
+    setShowPasswordChangeModal(false);
     setNewPassword('');
   };
 
@@ -552,10 +564,20 @@ export default function WorkScheduleApp() {
   };
 
   const saveStaff = () => {
-    if (!targetStaff.name.trim()) { alert('名前を入力してください'); return; }
-    if (!targetStaff.loginId.trim()) { alert('ログインIDを入力してください'); return; }
+    if (!targetStaff.name.trim()) {
+      alert('名前を入力してください');
+      return;
+    }
+    if (!targetStaff.loginId.trim()) {
+      alert('ログインIDを入力してください');
+      return;
+    }
+
     const duplicateStaff = staffList.find(s => s.loginId === targetStaff.loginId && s.id !== targetStaff.id);
-    if (duplicateStaff) { alert(`そのログインIDは既に使用されています。`); return; }
+    if (duplicateStaff) {
+      alert(`そのログインID "${targetStaff.loginId}" は既に "${duplicateStaff.name}" さんに使用されています。\n別のIDを指定してください。`);
+      return;
+    }
 
     let newList = [...staffList];
     if (targetStaff.id) {
@@ -564,9 +586,17 @@ export default function WorkScheduleApp() {
       const newStaff = { ...targetStaff, id: Date.now().toString() };
       newList.push(newStaff);
     }
+
     setStaffList(newList);
     saveMasterData(newList);
     setShowStaffModal(false);
+  };
+
+  const saveAllStaffSettings = (updatedStaffList) => {
+    setStaffList(updatedStaffList);
+    saveMasterData(updatedStaffList);
+    alert('全職員の設定を保存しました。');
+    setShowStaffSettingsModal(false);
   };
 
   const removeStaff = (id) => {
@@ -594,58 +624,112 @@ export default function WorkScheduleApp() {
     saveMasterData(newStaffList);
   };
 
-  // カテゴリ編集ハンドラ
-  const handleEditCategory = (catId) => { setTargetCategory({ ...categoryDefs[catId], originalId: catId }); };
-  const handleAddCategory = () => { setTargetCategory({ id: '', label: '', color: 'bg-gray-50 text-gray-800', order: Object.keys(categoryDefs).length + 1, originalId: null }); };
+  // --- カテゴリ編集関連 ---
+  const handleEditCategory = (catId) => {
+    const cat = categoryDefs[catId];
+    setTargetCategory({ ...cat, originalId: catId });
+  };
+
+  const handleAddCategory = () => {
+    setTargetCategory({ id: '', label: '', color: 'bg-gray-50 text-gray-800', order: Object.keys(categoryDefs).length + 1, originalId: null });
+  };
+
   const saveCategory = () => {
-    if (!targetCategory.id || !targetCategory.label) { alert('IDとラベルは必須です'); return; }
+    if (!targetCategory.id || !targetCategory.label) {
+      alert('IDとラベルは必須です');
+      return;
+    }
     const newDefs = { ...categoryDefs };
-    if (targetCategory.originalId && targetCategory.originalId !== targetCategory.id) delete newDefs[targetCategory.originalId];
-    newDefs[targetCategory.id] = { id: targetCategory.id, label: targetCategory.label, color: targetCategory.color, order: targetCategory.order };
+    
+    // ID変更時の処理
+    if (targetCategory.originalId && targetCategory.originalId !== targetCategory.id) {
+       delete newDefs[targetCategory.originalId];
+    }
+
+    newDefs[targetCategory.id] = {
+      id: targetCategory.id,
+      label: targetCategory.label,
+      color: targetCategory.color,
+      order: targetCategory.order
+    };
+    
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
     setTargetCategory(null);
   };
+
   const deleteCategory = (catId) => {
     const isUsed = Object.values(shiftDefs).some(s => s.category === catId);
-    if (isUsed) { alert('このカテゴリを使用しているシフトがあるため削除できません。'); return; }
+    if (isUsed) {
+      alert('このカテゴリを使用しているシフトがあるため削除できません。\n先にシフト設定を変更してください。');
+      return;
+    }
     const newDefs = { ...categoryDefs };
     delete newDefs[catId];
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
   };
+
+  // カテゴリドラッグソート
   const handleSortCategory = (dragId, dropId) => {
     if (dragId === dropId) return;
+    
+    // order順に並んだ配列を作る
     const sortedCats = Object.values(categoryDefs).sort((a, b) => a.order - b.order);
     const dragIndex = sortedCats.findIndex(c => c.id === dragId);
     const dropIndex = sortedCats.findIndex(c => c.id === dropId);
+    
     if (dragIndex === -1 || dropIndex === -1) return;
+
+    // 配列上で移動
     const [dragItem] = sortedCats.splice(dragIndex, 1);
     sortedCats.splice(dropIndex, 0, dragItem);
+
+    // orderを再番
     const newDefs = { ...categoryDefs };
-    sortedCats.forEach((cat, index) => { if (newDefs[cat.id]) newDefs[cat.id] = { ...newDefs[cat.id], order: index + 1 }; });
+    sortedCats.forEach((cat, index) => {
+      if (newDefs[cat.id]) {
+        newDefs[cat.id] = { ...newDefs[cat.id], order: index + 1 };
+      }
+    });
+
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
   };
 
-  // シフト編集ハンドラ
-  const handleAddNewShift = () => { setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null }); };
-  const handleEditShift = (code) => { setEditingShift({ ...shiftDefs[code], originalCode: code }); };
+  const handleAddNewShift = () => {
+    setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
+    setShowShiftEditModal(true);
+  };
+
+  const handleEditShift = (code) => {
+    setEditingShift({ ...shiftDefs[code], originalCode: code });
+    setShowShiftEditModal(true);
+  };
+
   const saveShiftConfig = () => {
-    if (!editingShift || !editingShift.code || !editingShift.label) { alert('コードと表示名は必須です'); return; }
+    if (!editingShift || !editingShift.code || !editingShift.label) {
+      alert('コードと表示名は必須です');
+      return;
+    }
     const newDefs = { ...shiftDefs };
-    if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) delete newDefs[editingShift.originalCode];
+    if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) {
+      delete newDefs[editingShift.originalCode];
+    }
     const { originalCode, ...cleanShift } = editingShift;
     if (newDefs[cleanShift.code]?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
-    } else { cleanShift.order = newDefs[cleanShift.code].order; }
+    } else {
+      cleanShift.order = newDefs[cleanShift.code].order;
+    }
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
     alert('保存しました');
     setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
+
   const deleteShiftConfig = (code) => {
     setConfirmModal({
       isOpen: true,
@@ -656,10 +740,11 @@ export default function WorkScheduleApp() {
         delete newDefs[code];
         setShiftDefs(newDefs);
         saveMasterData(staffList, newDefs);
-        if (editingShift?.originalCode === code) setEditingShift(null);
+        if (editingShift?.originalCode === code) setShowShiftEditModal(false);
       }
     });
   };
+
   const handleSortShift = (dragCode, dropCode) => {
     if (dragCode === dropCode) return;
     const dragShift = shiftDefs[dragCode];
@@ -675,7 +760,11 @@ export default function WorkScheduleApp() {
     items.splice(dragIdx, 1);
     items.splice(dropIdx, 0, dragCode);
     const newDefs = { ...shiftDefs };
-    items.forEach((code, index) => { if (newDefs[code]) newDefs[code] = { ...newDefs[code], order: currentOrders[index] }; });
+    items.forEach((code, index) => {
+      if (newDefs[code]) {
+        newDefs[code] = { ...newDefs[code], order: currentOrders[index] };
+      }
+    });
     setShiftDefs(newDefs);
     saveMasterData(staffList, newDefs);
   };
@@ -700,14 +789,21 @@ export default function WorkScheduleApp() {
     });
   };
 
-  // --- AI 機能 ---
-
   const prepareScheduleDataForAi = () => ({
     year, month,
+    // AIに「名前とIDの対応表」として認識させる
     staff: staffList.map(s => ({ 
-      id: s.id, name: s.name, jobTitle: s.jobTitle, roles: s.roles, skills: s.skills, maxCool3: s.maxCool3, excludeFromAi: s.excludeFromAi 
+      id: s.id, // これを使ってほしい
+      name: s.name, 
+      jobTitle: s.jobTitle, 
+      roles: s.roles,
+      skills: s.skills,
+      maxCool3: s.maxCool3, 
+      excludeFromAi: s.excludeFromAi 
     })),
-    shifts: shiftData, tasks: taskData, targetCounts,
+    shifts: shiftData, 
+    tasks: taskData,
+    targetCounts,
     definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
   });
 
@@ -911,7 +1007,7 @@ export default function WorkScheduleApp() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 text-sm font-sans" onClick={() => setActivePopup(null)}>
-      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between z-10">
+      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-40">
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-gray-50 rounded-lg p-1 border">
             <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={20} /></button>
