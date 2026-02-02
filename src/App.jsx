@@ -326,7 +326,7 @@ export default function WorkScheduleApp() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [staffList, setStaffList] = useState([]);
   const [shiftDefs, setShiftDefs] = useState(DEFAULT_SHIFT_TYPES);
-  const [categoryDefs, setCategoryDefs] = useState(DEFAULT_CATEGORY_DEFS); // カテゴリ定義をState管理に変更
+  const [categoryDefs, setCategoryDefs] = useState(DEFAULT_CATEGORY_DEFS); 
   const [adminSettings, setAdminSettings] = useState(DEFAULT_ADMIN_SETTINGS); 
   const [targetCounts, setTargetCounts] = useState({});
 
@@ -339,7 +339,7 @@ export default function WorkScheduleApp() {
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
   const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false);
-  const [showCategoryModal, setShowCategoryModal] = useState(false); // カテゴリ編集モーダル
+  const [showCategoryModal, setShowCategoryModal] = useState(false); 
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
@@ -350,10 +350,9 @@ export default function WorkScheduleApp() {
 
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
-  const [targetCategory, setTargetCategory] = useState(null); // 編集中のカテゴリ
+  const [targetCategory, setTargetCategory] = useState(null); 
   const [newPassword, setNewPassword] = useState('');
   
-  // AI関連のステート
   const [aiMode, setAiMode] = useState('chat');
   const [aiInput, setAiInput] = useState('');
   const [aiResponse, setAiResponse] = useState('');
@@ -390,7 +389,7 @@ export default function WorkScheduleApp() {
 
         setStaffList(loadedStaffList);
         setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
-        setCategoryDefs(data.categoryDefs || DEFAULT_CATEGORY_DEFS); // カテゴリ定義の読み込み
+        setCategoryDefs(data.categoryDefs || DEFAULT_CATEGORY_DEFS); 
         setTargetCounts(data.targetCounts || {});
         
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
@@ -400,7 +399,6 @@ export default function WorkScheduleApp() {
         }
         setAdminSettings(loadedAdminSettings);
       } else {
-        // 初期データ保存
         setDoc(masterDocRef, { 
           staffList: INITIAL_STAFF, 
           shiftDefs: DEFAULT_SHIFT_TYPES, 
@@ -626,7 +624,6 @@ export default function WorkScheduleApp() {
     // ID変更時の処理
     if (targetCategory.originalId && targetCategory.originalId !== targetCategory.id) {
        delete newDefs[targetCategory.originalId];
-       // 既存シフトのカテゴリIDも更新する必要があるかも（今回は簡易実装）
     }
 
     newDefs[targetCategory.id] = {
@@ -642,7 +639,6 @@ export default function WorkScheduleApp() {
   };
 
   const deleteCategory = (catId) => {
-    // 使用中のシフトがあるか確認
     const isUsed = Object.values(shiftDefs).some(s => s.category === catId);
     if (isUsed) {
       alert('このカテゴリを使用しているシフトがあるため削除できません。\n先にシフト設定を変更してください。');
@@ -654,25 +650,32 @@ export default function WorkScheduleApp() {
     saveMasterData(staffList, shiftDefs, newDefs);
   };
 
-  const moveCategoryOrder = (catId, direction) => {
-    const sortedCats = Object.values(categoryDefs).sort((a,b) => a.order - b.order);
-    const index = sortedCats.findIndex(c => c.id === catId);
-    if (index === -1) return;
+  // カテゴリドラッグソート
+  const handleSortCategory = (dragId, dropId) => {
+    if (dragId === dropId) return;
     
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= sortedCats.length) return;
+    // order順に並んだ配列を作る
+    const sortedCats = Object.values(categoryDefs).sort((a, b) => a.order - b.order);
+    const dragIndex = sortedCats.findIndex(c => c.id === dragId);
+    const dropIndex = sortedCats.findIndex(c => c.id === dropId);
+    
+    if (dragIndex === -1 || dropIndex === -1) return;
 
-    const swapCat = sortedCats[targetIndex];
-    const currentCat = sortedCats[index];
-    
+    // 配列上で移動
+    const [dragItem] = sortedCats.splice(dragIndex, 1);
+    sortedCats.splice(dropIndex, 0, dragItem);
+
+    // orderを再番
     const newDefs = { ...categoryDefs };
-    newDefs[currentCat.id].order = swapCat.order;
-    newDefs[swapCat.id].order = currentCat.order;
-    
+    sortedCats.forEach((cat, index) => {
+      if (newDefs[cat.id]) {
+        newDefs[cat.id] = { ...newDefs[cat.id], order: index + 1 };
+      }
+    });
+
     setCategoryDefs(newDefs);
     saveMasterData(staffList, shiftDefs, newDefs);
   };
-
 
   const handleAddNewShift = () => {
     setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
@@ -768,8 +771,9 @@ export default function WorkScheduleApp() {
 
   const prepareScheduleDataForAi = () => ({
     year, month,
+    // AIに「名前とIDの対応表」として認識させる
     staff: staffList.map(s => ({ 
-      id: s.id, 
+      id: s.id, // これを使ってほしい
       name: s.name, 
       jobTitle: s.jobTitle, 
       roles: s.roles,
@@ -795,10 +799,14 @@ export default function WorkScheduleApp() {
     setIsAiLoading(true);
     const data = prepareScheduleDataForAi();
     
-    // 制約条件の追加
+    // 制約条件の追加 (プロンプト強化)
     const constraintPrompt = `
     【自動作成・調整ルール】
     あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフトを作成・修正してください。
+
+    ⚠️ **重要: データの識別には必ず「ID」を使用してください** ⚠️
+    - 職員を特定するキーは "name" (名前) ではなく "id" (例: "1", "2" 等) です。
+    - 出力JSONのキーは必ずこの "id" にしてください。名前をキーにするとシステムが動きません。
 
     1. **絶対遵守条件 (Hard Constraints)**:
        - **AI除外職員の保護**: 職員データの 'excludeFromAi' が true の場合、その職員のシフトは一切変更せず、空欄であっても埋めないでください。
@@ -808,7 +816,14 @@ export default function WorkScheduleApp() {
 
     2. **出力形式**:
        - 必ず **純粋なJSONデータのみ** を出力してください。Markdownのコードブロック（\`\`\`json ... \`\`\`）や解説文は一切不要です。
-       - フォーマット: { "shift": { "staffId": { "day": "code" } }, "task": { ... } }
+       - フォーマット: 
+       { 
+         "shift": { 
+           "職員ID(例: '1')": { "日付(例: '1')": "シフトコード(例: 'A')" },
+           ...
+         },
+         "task": { ... } 
+       }
 
     指示: ${aiInput}
     `;
@@ -816,26 +831,43 @@ export default function WorkScheduleApp() {
     try {
       const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt}`, "JSON出力マシーン", aiModel);
       
-      // Markdownのコードブロックを除去してJSONを抽出
       const jsonMatch = result.replace(/```json\n?|```/g, '').trim();
       const match = jsonMatch.match(/\{[\s\S]*\}/);
       
       if (match) {
         const changes = JSON.parse(match[0]);
         let updated = false;
+        
+        // AIが名前をキーにしてしまった場合の簡易補正（念のため）
+        const nameToIdMap = {};
+        staffList.forEach(s => nameToIdMap[s.name] = s.id);
+
         if (changes.shift) {
           const ns = { ...shiftData };
-          Object.keys(changes.shift).forEach(s => { if(!ns[s]) ns[s]={}; Object.assign(ns[s], changes.shift[s]); });
+          Object.keys(changes.shift).forEach(key => {
+            // キーがIDか名前か判定して正規化
+            const staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+            if (staffId) {
+              if(!ns[staffId]) ns[staffId]={}; 
+              Object.assign(ns[staffId], changes.shift[key]);
+            }
+          });
           setShiftData(ns); saveSchedule(ns, taskData);
           updated = true;
         }
         if (changes.task) {
           const nt = { ...taskData };
-          Object.keys(changes.task).forEach(s => { if(!nt[s]) nt[s]={}; Object.assign(nt[s], changes.task[s]); });
+          Object.keys(changes.task).forEach(key => {
+            const staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
+            if (staffId) {
+              if(!nt[staffId]) nt[staffId]={}; 
+              Object.assign(nt[staffId], changes.task[key]);
+            }
+          });
           setTaskData(nt); saveSchedule(shiftData, nt);
           updated = true;
         }
-        setAiResponse(updated ? "✅ シフトを更新しました" : "⚠️ 変更が必要な箇所が見つかりませんでした");
+        setAiResponse(updated ? "✅ シフトを更新しました" : "⚠️ 変更が必要な箇所が見つかりませんでした (条件を満たす配置済か、ID不一致の可能性があります)");
       } else { 
         setAiResponse(`⚠️ エラー: AIの応答を解析できませんでした。\n生の応答: ${result.substring(0, 100)}...`); 
       }
@@ -850,25 +882,21 @@ export default function WorkScheduleApp() {
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
   const calendarDays = useMemo(() => generateCalendarDays(year, month), [year, month]);
 
-  // categoryDefs に基づいてパレットを生成
   const dynamicPaletteGroups = useMemo(() => {
     const groups = {};
     Object.keys(categoryDefs).forEach(catId => groups[catId] = []);
     
-    // シフトをカテゴリごとに分類
     Object.values(shiftDefs)
       .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)) 
       .forEach(shift => {
         if (groups[shift.category]) {
           groups[shift.category].push(shift.code);
         } else {
-           // 未定義カテゴリの場合はbasicに入れる
            if (!groups['basic']) groups['basic'] = []; 
            groups['basic'].push(shift.code); 
         }
       });
 
-    // カテゴリのオーダー順に並び替え
     return Object.values(categoryDefs)
       .sort((a, b) => a.order - b.order)
       .map(cat => ({
@@ -879,7 +907,6 @@ export default function WorkScheduleApp() {
       .filter(g => g.items.length > 0);
   }, [shiftDefs, categoryDefs]);
 
-  // 集計用グループも categoryDefs に基づく
   const dynamicSummaryGroups = useMemo(() => {
     const targetCategories = Object.keys(categoryDefs).filter(k => k !== 'off' && k !== 'req' && k !== 'role');
     return targetCategories.map(catKey => {
@@ -1314,8 +1341,21 @@ export default function WorkScheduleApp() {
                     <button onClick={handleAddCategory} className="w-full mb-2 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規作成</button>
                     <div className="space-y-1">
                       {Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (
-                        <div key={cat.id} onClick={() => handleEditCategory(cat.id)} className={`p-2 rounded cursor-pointer border text-xs font-bold ${targetCategory?.originalId === cat.id ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200'} ${cat.color}`}>
-                           {cat.label}
+                        <div 
+                          key={cat.id} 
+                          className={`p-2 rounded border text-xs font-bold flex items-center gap-2 ${targetCategory?.originalId === cat.id ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200'} ${cat.color}`}
+                          onClick={() => handleEditCategory(cat.id)}
+                          draggable
+                          onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const dragId = e.dataTransfer.getData('text/plain');
+                            handleSortCategory(dragId, cat.id);
+                          }}
+                        >
+                           <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
+                           <span className="flex-1 truncate">{cat.label}</span>
                         </div>
                       ))}
                     </div>
@@ -1341,12 +1381,6 @@ export default function WorkScheduleApp() {
                              ))}
                           </div>
                         </div>
-                        {targetCategory.originalId && (
-                           <div className="flex gap-2 border-t pt-4">
-                              <button onClick={() => moveCategoryOrder(targetCategory.id, 'up')} className="flex-1 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-600 flex justify-center"><ArrowUp size={16}/></button>
-                              <button onClick={() => moveCategoryOrder(targetCategory.id, 'down')} className="flex-1 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-600 flex justify-center"><ArrowDown size={16}/></button>
-                           </div>
-                        )}
                         <div className="flex justify-between pt-4 border-t mt-4">
                           {targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}
                           <button onClick={saveCategory} className="px-4 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
@@ -1422,11 +1456,9 @@ export default function WorkScheduleApp() {
                       {editingShift.type === 'shift' && (
                         <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
                           <div><label className="block text-xs font-bold text-blue-700">開始</label>
-                            {/* 時刻入力への変更 */}
                             <input type="time" className="w-full border rounded p-1" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value, time: `${e.target.value}-${editingShift.endTime}`})} />
                           </div>
                           <div><label className="block text-xs font-bold text-blue-700">終了</label>
-                            {/* 時刻入力への変更 */}
                             <input type="time" className="w-full border rounded p-1" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value, time: `${editingShift.startTime}-${e.target.value}`})} />
                           </div>
                         </div>
@@ -1444,8 +1476,8 @@ export default function WorkScheduleApp() {
             </div>
           </div>
         )}
-
-        {/* 職員設定一括モーダル */}
+        
+        {/* 以下、他モーダルは省略なしで維持 */}
         {showStaffSettingsModal && (
           <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
@@ -1744,7 +1776,7 @@ export default function WorkScheduleApp() {
                </div>
                <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
                  <button onClick={() => setShowTargetCountModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
-                 <button onClick={saveTargetCounts} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
+                 <button onClick={() => saveTargetCounts} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
                </div>
             </div>
           </div>
