@@ -799,31 +799,31 @@ export default function WorkScheduleApp() {
     setIsAiLoading(true);
     const data = prepareScheduleDataForAi();
     
-    // 制約条件の追加 (プロンプト強化)
+    // 制約条件の追加
     const constraintPrompt = `
-    【自動作成・調整ルール】
-    あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフトを作成・修正してください。
+    【役割】
+    あなたは熟練の勤務表管理者です。提供されたデータ(staff, shifts, targetCounts)とユーザーの指示に基づいて、シフト表(JSON)を作成・修正してください。
 
-    ⚠️ **重要: データの識別には必ず「ID」を使用してください** ⚠️
-    - 職員を特定するキーは "name" (名前) ではなく "id" (例: "1", "2" 等) です。
-    - 出力JSONのキーは必ずこの "id" にしてください。名前をキーにするとシステムが動きません。
-
-    1. **絶対遵守条件 (Hard Constraints)**:
-       - **AI除外職員の保護**: 職員データの 'excludeFromAi' が true の場合、その職員のシフトは一切変更せず、空欄であっても埋めないでください。
-       - **希望休の維持**: シフト区分が「希望(req)」または「休み(off)」として既に入力されている箇所は絶対に変更しないでください。
-       - **固定シフトの維持**: 役割(roles)に「オペ班」「エコー班」「HHD班」が含まれる職員のシフト、および既に割り当てられている特殊シフトは変更しないでください。
-       - **必要人数の充足**: 「必要人数設定(targetCounts)」に基づき、各カテゴリ・各日の目標人数を満たすように配置してください。
-
-    2. **出力形式**:
-       - 必ず **純粋なJSONデータのみ** を出力してください。Markdownのコードブロック（\`\`\`json ... \`\`\`）や解説文は一切不要です。
-       - フォーマット: 
-       { 
-         "shift": { 
-           "職員ID(例: '1')": { "日付(例: '1')": "シフトコード(例: 'A')" },
+    【重要: データ形式】
+    1. **出力はJSONのみ**: Markdown記法や解説文は一切含めないでください。
+    2. **IDの使用**: 職員やシフトの指定には、名前ではなく必ず「ID」や「コード」を使用してください。
+       - 職員ID例: "1", "2" ... (名前 "職員A" は不可)
+       - シフトコード例: "A", "P", "/" ...
+    3. **JSON構造**:
+       {
+         "shift": {
+           "職員ID": { "日付(1-31)": "シフトコード" },
            ...
          },
-         "task": { ... } 
+         "task": { ... }
        }
+
+    【作成ルール】
+    1. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
+    2. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
+    3. **全入力の対応**: ユーザーから「全て埋めて」「作成して」等の指示があった場合、上記の保護対象以外の日付を適切なシフトで埋めてください。
+    4. **連続勤務制限**: 3クール(名前に3を含むシフト)は連続させないでください。
+    5. **必要人数の充足**: targetCounts の設定値を満たすよう努力してください。
 
     指示: ${aiInput}
     `;
@@ -831,49 +831,84 @@ export default function WorkScheduleApp() {
     try {
       const result = await callGemini(`現状:${JSON.stringify(data)} ${constraintPrompt}`, "JSON出力マシーン", aiModel);
       
-      const jsonMatch = result.replace(/```json\n?|```/g, '').trim();
-      const match = jsonMatch.match(/\{[\s\S]*\}/);
-      
-      if (match) {
-        const changes = JSON.parse(match[0]);
-        let updated = false;
-        
-        // AIが名前をキーにしてしまった場合の簡易補正（念のため）
-        const nameToIdMap = {};
-        staffList.forEach(s => nameToIdMap[s.name] = s.id);
-
-        if (changes.shift) {
-          const ns = { ...shiftData };
-          Object.keys(changes.shift).forEach(key => {
-            // キーがIDか名前か判定して正規化
-            const staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
-            if (staffId) {
-              if(!ns[staffId]) ns[staffId]={}; 
-              Object.assign(ns[staffId], changes.shift[key]);
-            }
-          });
-          setShiftData(ns); saveSchedule(ns, taskData);
-          updated = true;
-        }
-        if (changes.task) {
-          const nt = { ...taskData };
-          Object.keys(changes.task).forEach(key => {
-            const staffId = staffList.find(s => s.id === key) ? key : nameToIdMap[key];
-            if (staffId) {
-              if(!nt[staffId]) nt[staffId]={}; 
-              Object.assign(nt[staffId], changes.task[key]);
-            }
-          });
-          setTaskData(nt); saveSchedule(shiftData, nt);
-          updated = true;
-        }
-        setAiResponse(updated ? "✅ シフトを更新しました" : "⚠️ 変更が必要な箇所が見つかりませんでした (条件を満たす配置済か、ID不一致の可能性があります)");
-      } else { 
-        setAiResponse(`⚠️ エラー: AIの応答を解析できませんでした。\n生の応答: ${result.substring(0, 100)}...`); 
+      // JSON抽出ロジックの強化
+      let jsonStr = result;
+      jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '');
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1) {
+        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
       }
+
+      const changes = JSON.parse(jsonStr);
+      
+      // 名前→ID変換用マップ
+      const nameToIdMap = {};
+      staffList.forEach(s => nameToIdMap[s.name] = s.id);
+
+      let updatedCount = 0;
+      
+      if (changes.shift) {
+        const ns = { ...shiftData };
+        Object.keys(changes.shift).forEach(key => {
+          // キーがIDか名前か判定して正規化
+          let staffId = key;
+          // IDが見つからない場合、名前として検索
+          if (!staffList.find(s => s.id === staffId)) {
+             staffId = nameToIdMap[key];
+          }
+
+          if (staffId && staffList.find(s => s.id === staffId)) { 
+             // 日付ごとの更新
+             const dayShiftMap = changes.shift[key];
+             if (!ns[staffId]) ns[staffId] = {};
+             
+             Object.keys(dayShiftMap).forEach(day => {
+                const code = dayShiftMap[day];
+                // シフトコードの有効性チェック
+                if (shiftDefs[code]) {
+                   ns[staffId][day] = code;
+                   updatedCount++;
+                }
+             });
+          }
+        });
+        setShiftData(ns); 
+        saveSchedule(ns, taskData);
+      }
+      
+      if (changes.task) {
+        const nt = { ...taskData };
+        Object.keys(changes.task).forEach(key => {
+          let staffId = key;
+          if (!staffList.find(s => s.id === staffId)) {
+             staffId = nameToIdMap[key];
+          }
+
+          if (staffId && staffList.find(s => s.id === staffId)) {
+             const dayTaskMap = changes.task[key];
+             if (!nt[staffId]) nt[staffId] = {};
+             
+             Object.keys(dayTaskMap).forEach(day => {
+                const code = dayTaskMap[day];
+                if (shiftDefs[code]) {
+                   nt[staffId][day] = code;
+                   updatedCount++;
+                }
+             });
+          }
+        });
+        setTaskData(nt); 
+        saveSchedule(shiftData, nt);
+      }
+
+      setAiResponse(updatedCount > 0 
+        ? `✅ ${updatedCount}箇所のシフトを更新しました` 
+        : "⚠️ 変更が必要な箇所が見つかりませんでした (既に条件を満たしているか、指示が具体的でない可能性があります)");
+
     } catch (e) { 
       console.error(e); 
-      setAiResponse(`⚠️ エラー: ${e.message}`); 
+      setAiResponse(`⚠️ エラー: AIの応答を解析できませんでした。\n詳細: ${e.message}`); 
     }
     setIsAiLoading(false);
   };
@@ -908,7 +943,6 @@ export default function WorkScheduleApp() {
   }, [shiftDefs, categoryDefs]);
 
   const dynamicSummaryGroups = useMemo(() => {
-    // 修正: order順にソートしてからマップする
     return Object.values(categoryDefs)
       .filter(cat => cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role')
       .sort((a, b) => a.order - b.order)
