@@ -908,21 +908,24 @@ export default function WorkScheduleApp() {
   }, [shiftDefs, categoryDefs]);
 
   const dynamicSummaryGroups = useMemo(() => {
-    const targetCategories = Object.keys(categoryDefs).filter(k => k !== 'off' && k !== 'req' && k !== 'role');
-    return targetCategories.map(catKey => {
-      const def = categoryDefs[catKey];
-      const categoryItems = Object.values(shiftDefs)
-        .filter(s => s.category === catKey && s.type === 'shift')
-        .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
-        .map(s => s.code);
-      return { 
-        id: catKey,
-        name: def.label, 
-        items: categoryItems, 
-        totalLabel: `${def.label} 計`, 
-        headerColor: def.color 
-      };
-    });
+    // 修正: order順にソートしてからマップする
+    return Object.values(categoryDefs)
+      .filter(cat => cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role')
+      .sort((a, b) => a.order - b.order)
+      .map(def => {
+        const catKey = def.id;
+        const categoryItems = Object.values(shiftDefs)
+          .filter(s => s.category === catKey && s.type === 'shift')
+          .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+          .map(s => s.code);
+        return { 
+          id: catKey,
+          name: def.label, 
+          items: categoryItems, 
+          totalLabel: `${def.label} 計`, 
+          headerColor: def.color 
+        };
+      });
   }, [shiftDefs, categoryDefs]);
 
   const staffOvertimeStats = useMemo(() => {
