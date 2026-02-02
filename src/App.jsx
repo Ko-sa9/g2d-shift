@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
@@ -791,7 +791,7 @@ export default function WorkScheduleApp() {
     const calendarInfo = {};
     for (let d = 1; d <= days; d++) {
       const date = new Date(year, month - 1, d);
-      const dayOfWeek = date.getDay(); // 0:Sun, 1:Mon...
+      const dayOfWeek = date.getDay(); 
       const isHol = isHoliday(year, month, d);
       calendarInfo[d] = {
         date: `${month}/${d}`,
@@ -820,9 +820,11 @@ export default function WorkScheduleApp() {
     };
   };
 
-  const handleAiSend = async () => {
-    if (!aiInput.trim()) return;
-    const userMsg = { role: 'user', text: aiInput };
+  const handleAiSend = async (manualInstruction = null) => {
+    const instruction = manualInstruction || aiInput;
+    if (!instruction.trim()) return;
+
+    const userMsg = { role: 'user', text: instruction };
     setAiMessages(prev => [...prev, userMsg]);
     setIsAiLoading(true);
     setAiInput('');
@@ -833,7 +835,7 @@ export default function WorkScheduleApp() {
       let systemInstruction = "あなたはプロの勤務表管理者です。";
       let prompt = "";
 
-      if (aiChatMode === 'create') {
+      if (aiChatMode === 'create' || manualInstruction) {
         systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。挨拶や解説は不要です。必ずvalidなJSONを返してください。";
         prompt = `
         【役割】
@@ -854,11 +856,15 @@ export default function WorkScheduleApp() {
            }
 
         【作成ルール】
-        1. **日曜日・祝日の扱い**: calendar情報で isSunday: true または isHoliday: true の日は、原則としてシフトを入れない（"off" カテゴリのコードを使用）か、休日専用シフト（C, D, Kなど）を使用してください。通常シフト（A, P, F, Bなど）は禁止です。
-        2. **バランス**: 勤務日は、カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。特定の施設に偏らせないでください。
-        3. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
-        4. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
-        5. **全入力の対応**: ユーザーから「全て埋めて」「作成して」等の指示があった場合、上記の保護対象以外の日付を適切なシフトで埋めてください。
+        1. **日曜日の扱い**: calendar情報で isSunday: true の日は、絶対にシフトを入れないでください（"off" カテゴリのコードを使用するか、既存の休みのまま）。
+        2. **祝日の扱い**: 日曜日でない祝日（isHoliday: true, isSunday: false）は、平日と同様にシフトを入れてください。
+        3. **使用禁止シフト**: "公出" (コード: O) および "出勤" (コード: /) は自動生成では絶対に使用しないでください。
+        4. **週休2日の確保**: 全ての職員について、任意の連続する7日間において、必ず2日以上の休日（カテゴリ "off" または "req" の日）が含まれるようにしてください。これが守れない配置は禁止です。
+        5. **バランス**: カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。
+        6. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
+        7. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
+        8. **3クール制限**: 3クール(名前に3を含むシフト)は連続させないでください。
+        9. **全入力**: ユーザーから作成指示があった場合、上記のルールを守りつつ空欄を埋めてください。
 
         データ: ${JSON.stringify(data)}
         指示: ${userMsg.text}
@@ -875,7 +881,7 @@ export default function WorkScheduleApp() {
       
       let aiText = result;
       
-      if (aiChatMode === 'create') {
+      if (aiChatMode === 'create' || manualInstruction) {
         // JSON抽出と反映
         let jsonStr = result.replace(/```json/g, '').replace(/```/g, '');
         const firstBrace = jsonStr.indexOf('{');
@@ -1332,7 +1338,7 @@ export default function WorkScheduleApp() {
 
         {/* 統合設定モーダル */}
         {showSettingsModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
+          <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Settings size={20}/> システム設定</h3>
@@ -1533,7 +1539,7 @@ export default function WorkScheduleApp() {
 
         {/* AI アシスタントモーダル */}
         {showAiModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
+          <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col h-[80vh]" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50">
                 <h3 className="font-bold text-lg flex items-center gap-2 text-indigo-800"><Bot className="text-indigo-600"/> AIアシスタント</h3>
@@ -1550,16 +1556,18 @@ export default function WorkScheduleApp() {
                 {aiMessages.length === 0 && (
                   <div className="text-center text-gray-400 mt-10">
                     <Sparkles size={48} className="mx-auto mb-2 opacity-20"/>
-                    <p>シフト作成や分析について話しかけてください。<br/>例: 「空いているところを埋めて」「Aさんの残業を減らして」</p>
+                    <p>シフト作成や分析について話しかけてください。</p>
                     
                     <div className="mt-6 bg-blue-50 p-4 rounded-lg text-left text-xs text-blue-800 mx-auto max-w-md">
                       <div className="font-bold mb-2 flex items-center gap-1"><HelpCircle size={14}/> 指示のコツ</div>
-                      <ul className="list-disc pl-4 space-y-1">
-                        <li>「全員の空欄を自動で埋めて」</li>
-                        <li>「Aさんの日曜日は休みに」</li>
-                        <li>「君津の人数を増やして」</li>
-                      </ul>
-                      <div className="mt-2 text-blue-600">※AIは現在のシフト状況とルール（日曜休みなど）を考慮して提案します。</div>
+                      <div className="space-y-2">
+                        <button onClick={() => handleAiSend("全ての空欄を自動で埋めてください")} className="w-full text-left p-2 bg-white rounded border hover:bg-blue-100 transition flex items-center gap-2">
+                          <Wand2 size={14} className="text-purple-500"/> 「全ての空欄を自動で埋めて」
+                        </button>
+                        <button onClick={() => handleAiSend("土日のシフトを調整して")} className="w-full text-left p-2 bg-white rounded border hover:bg-blue-100 transition">
+                          「土日のシフトを調整して」
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1596,7 +1604,7 @@ export default function WorkScheduleApp() {
                     onChange={e => setAiInput(e.target.value)} 
                     onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAiSend(); }} 
                   />
-                  <button onClick={handleAiSend} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg transition disabled:opacity-50"><Send size={18}/></button>
+                  <button onClick={() => handleAiSend()} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg transition disabled:opacity-50"><Send size={18}/></button>
                 </div>
               </div>
             </div>
@@ -1605,7 +1613,7 @@ export default function WorkScheduleApp() {
 
         {/* スタッフ詳細（サブモーダル） */}
         {showStaffModal && (
-          <div className="absolute inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
@@ -1624,9 +1632,46 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
+        {/* パスワード変更モーダル（職員用含む） */}
+        {showPasswordChangeModal && (
+          <div className="absolute inset-0 bg-black/50 z-[120] flex items-center justify-center p-4" onClick={() => setShowPasswordChangeModal(false)}>
+             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Key size={18}/> パスワード変更</h3>
+                 <button onClick={() => setShowPasswordChangeModal(false)}><X size={20} className="text-gray-400"/></button>
+               </div>
+               <div className="p-6">
+                 {appUser.role === 'admin' ? (
+                   <div className="mb-4">
+                     <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
+                     <select 
+                       className="w-full border p-2 rounded-lg"
+                       value={targetAdminKey}
+                       onChange={e => setTargetAdminKey(e.target.value)}
+                     >
+                       {Object.keys(adminSettings).map(key => (
+                         <option key={key} value={key}>{adminSettings[key].label}</option>
+                       ))}
+                     </select>
+                   </div>
+                 ) : (
+                   <p className="mb-4 text-sm text-gray-600">
+                     <b>{appUser.name}</b> さんのログインパスワードを変更します。
+                   </p>
+                 )}
+                 <label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label>
+                 <input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} autoFocus />
+               </div>
+               <div className="p-4 border-t flex justify-end gap-2">
+                 <button onClick={handleChangePassword} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">変更する</button>
+               </div>
+             </div>
+          </div>
+        )}
+
         {/* 必要人数設定モーダル */}
         {showTargetCountModal && (
-          <div className="absolute inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users size={18}/> 必要人数設定</h3>
@@ -1689,7 +1734,7 @@ export default function WorkScheduleApp() {
         )}
 
         {confirmModal.isOpen && (
-          <div className="absolute inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 z-[120] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                  <h3 className="font-bold text-gray-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500"/> {confirmModal.title}</h3>
