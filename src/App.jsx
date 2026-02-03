@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, collection, setDoc, onSnapshot, updateDoc } from 'firebase/firestore'; // updateDocを追加
 
 // Gemini API Key
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
@@ -461,7 +461,16 @@ export default function WorkScheduleApp() {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
-    await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks }, { merge: true });
+    
+    try {
+      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks });
+    } catch (e) {
+      if (e.code === 'not-found') {
+        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks });
+      } else {
+        console.error("Save error:", e);
+      }
+    }
   };
 
   const saveMasterData = async (list = staffList, defs = shiftDefs, cats = categoryDefs, settings = adminSettings, targets = targetCounts) => {
@@ -495,7 +504,12 @@ export default function WorkScheduleApp() {
     }
     if (type === 'shift') {
       const nextShifts = { ...shiftData };
-      if (!nextShifts[staffId]) nextShifts[staffId] = {};
+      if (nextShifts[staffId]) {
+          nextShifts[staffId] = { ...nextShifts[staffId] };
+      } else {
+          nextShifts[staffId] = {};
+      }
+
       if (toolCode) {
         nextShifts[staffId][day] = toolCode;
       } else {
@@ -505,7 +519,12 @@ export default function WorkScheduleApp() {
       saveSchedule(nextShifts, taskData);
     } else {
       const nextTasks = { ...taskData };
-      if (!nextTasks[staffId]) nextTasks[staffId] = {};
+      if (nextTasks[staffId]) {
+          nextTasks[staffId] = { ...nextTasks[staffId] };
+      } else {
+          nextTasks[staffId] = {};
+      }
+
       if (toolCode) {
         nextTasks[staffId][day] = toolCode;
       } else {
