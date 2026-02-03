@@ -820,58 +820,165 @@ export default function WorkScheduleApp() {
     };
   };
 
-  const handleAiSend = async (manualInstruction = null) => {
-    const instruction = manualInstruction || aiInput;
-    if (!instruction.trim()) return;
+  // 共通のAI結果反映ロジック
+  const applyAiResult = async (jsonString) => {
+    let cleanJson = jsonString;
+    // Markdown除去
+    cleanJson = cleanJson.replace(/```json/g, '').replace(/```/g, '');
+    const firstBrace = cleanJson.indexOf('{');
+    const lastBrace = cleanJson.lastIndexOf('}');
+    
+    if (firstBrace === -1 || lastBrace === -1) return { success: false, message: "有効なJSONが見つかりませんでした。" };
+    
+    cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
 
-    const userMsg = { role: 'user', text: instruction };
+    try {
+      const changes = JSON.parse(cleanJson);
+      const nameToIdMap = {};
+      staffList.forEach(s => nameToIdMap[s.name] = s.id);
+      
+      let updatedCount = 0;
+      const ns = { ...shiftData };
+      const nt = { ...taskData };
+
+      if (changes.shift) {
+        Object.keys(changes.shift).forEach(key => {
+          let staffId = key;
+          // IDが見つからない場合、名前として検索
+          if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
+
+          if (staffId && staffList.find(s => s.id === staffId)) { 
+             if (!ns[staffId]) ns[staffId] = {};
+             Object.keys(changes.shift[key]).forEach(day => {
+                const code = changes.shift[key][day];
+                if (shiftDefs[code]) {
+                   ns[staffId][day] = code;
+                   updatedCount++;
+                }
+             });
+          }
+        });
+      }
+      
+      if (changes.task) {
+        Object.keys(changes.task).forEach(key => {
+          let staffId = key;
+          if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
+
+          if (staffId && staffList.find(s => s.id === staffId)) {
+             if (!nt[staffId]) nt[staffId] = {};
+             Object.keys(changes.task[key]).forEach(day => {
+                const code = changes.task[key][day];
+                if (shiftDefs[code]) {
+                   nt[staffId][day] = code;
+                   updatedCount++;
+                }
+             });
+          }
+        });
+      }
+
+      if (updatedCount > 0) {
+        setShiftData(ns);
+        setTaskData(nt);
+        saveSchedule(ns, nt);
+        return { success: true, count: updatedCount };
+      } else {
+        return { success: false, message: "変更が必要な箇所が見つかりませんでした。" };
+      }
+
+    } catch (e) {
+      return { success: false, message: `JSONの解析に失敗しました: ${e.message}` };
+    }
+  };
+
+  // ワンタップ自動作成
+  const handleAutoFill = async () => {
+    if (!window.confirm('現在の空欄をAIが自動で埋めます。\n※既存のシフトは維持されます。\n実行しますか？')) return;
+    
+    setIsAiLoading(true);
+    try {
+      const data = prepareScheduleDataForAi();
+      const systemInstruction = "あなたはシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。JSON以外の文字列（解説など）は一切出力しないでください。";
+      
+      const prompt = `
+      【タスク】
+      現在の勤務表データ（staff, shifts, calendar）を分析し、**まだシフトが入っていない日付（空欄）全て**に適切なシフトコードを割り当ててください。
+
+      【ルール】
+      1. **既存データの維持**: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
+      2. **休日**: 日曜日（isSunday: true）はシフトを入れないでください（空欄のまま、または除外）。祝日（isHoliday: true）は稼働日として扱ってください。
+      3. **禁止コード**: 'O'（公出）、'/'（出勤）は使用しないでください。
+      4. **制約**: 
+         - **週休2日を絶対に確保してください**（任意の7日間で2日以上の休み）。
+         - 3クール（名前に3を含む）は連続させないでください。
+         - 各日の必要人数（targetCounts）を満たすようにしてください。
+      5. **出力形式**:
+         必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json）も含めないでください。
+         {
+           "shift": {
+             "職員ID": { "日付(1-31の数値)": "シフトコード" },
+             ...
+           }
+         }
+      
+      【データ】
+      ${JSON.stringify(data)}
+      `;
+
+      // モデルは賢いPro版を強制使用
+      const result = await callGemini(prompt, systemInstruction, 'gemini-2.0-pro-exp-02-05');
+      
+      const res = await applyAiResult(result);
+      if (res.success) {
+        alert(`✅ 自動作成が完了しました (${res.count}箇所更新)`);
+      } else {
+        alert(`⚠️ 作成に失敗しました: ${res.message}`);
+      }
+
+    } catch (error) {
+      console.error(error);
+      alert(`エラーが発生しました: ${error.message}`);
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  const handleAiSend = async () => {
+    if (!aiInput.trim()) return;
+    const userMsg = { role: 'user', text: aiInput };
     setAiMessages(prev => [...prev, userMsg]);
     setIsAiLoading(true);
     setAiInput('');
 
     try {
       const data = prepareScheduleDataForAi();
-      
       let systemInstruction = "あなたはプロの勤務表管理者です。";
       let prompt = "";
 
-      if (aiChatMode === 'create' || manualInstruction) {
-        systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。挨拶や解説は不要です。必ずvalidなJSONを返してください。";
+      if (aiChatMode === 'create') {
+        systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。";
         prompt = `
         【役割】
-        あなたは熟練の勤務表管理者です。提供されたデータ(calendar, staff, shifts, targetCounts)とユーザーの指示に基づいて、シフト表(JSON)を作成・修正してください。
+        あなたは熟練の勤務表管理者です。以下のルールを厳密に守ってシフト表(JSON)を作成・修正してください。
 
         【重要: データ形式】
         1. **出力はJSONのみ**: 解説文は含めないでください。
-        2. **IDの使用**: 職員やシフトの指定には、名前ではなく必ず「ID」や「コード」を使用してください。
-           - 職員ID例: "1", "2" ... (名前 "職員A" は不可)
-           - シフトコード例: "A", "P", "/" ...
-        3. **JSON構造**:
-           {
-             "shift": {
-               "職員ID": { "日付(1-31)": "シフトコード" },
-               ...
-             },
-             "task": { ... }
-           }
+        2. **IDの使用**: 職員指定は必ず "id" を使用してください。
+        3. **JSON構造**: { "shift": { "職員ID": { "日付": "コード" } } }
 
         【作成ルール】
-        1. **日曜日の扱い**: calendar情報で isSunday: true の日は、絶対にシフトを入れないでください（"off" カテゴリのコードを使用するか、既存の休みのまま）。
-        2. **祝日の扱い**: 日曜日でない祝日（isHoliday: true, isSunday: false）は、平日と同様にシフトを入れてください。
-        3. **使用禁止シフト**: "公出" (コード: O) および "出勤" (コード: /) は自動生成では絶対に使用しないでください。
-        4. **週休2日の確保**: 全ての職員について、任意の連続する7日間において、必ず2日以上の休日（カテゴリ "off" または "req" の日）が含まれるようにしてください。これが守れない配置は禁止です。
-        5. **バランス**: カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。
-        6. **希望休の保護**: 既に "category": "req" (希望) や "off" (休み) が設定されている箇所は変更しないでください。
-        7. **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
-        8. **3クール制限**: 3クール(名前に3を含むシフト)は連続させないでください。
-        9. **全入力**: ユーザーから作成指示があった場合、上記のルールを守りつつ空欄を埋めてください。
+        1. 日曜日はシフト不可。祝日は稼働。
+        2. "公出"(O), "出勤"(/) は使用禁止。
+        3. 週休2日を確保。
+        4. "category": "req"/"off"、"excludeFromAi": true は変更不可。
 
         データ: ${JSON.stringify(data)}
         指示: ${userMsg.text}
         `;
       } else {
         prompt = `
-        以下の勤務表データを分析し、改善点や問題点（人員不足、特定職員への負荷集中など）を指摘してください。
+        以下の勤務表データを分析し、改善点や問題点を指摘してください。
         データ: ${JSON.stringify(data)}
         ユーザーの指示: ${userMsg.text}
         `;
@@ -881,71 +988,12 @@ export default function WorkScheduleApp() {
       
       let aiText = result;
       
-      if (aiChatMode === 'create' || manualInstruction) {
-        // JSON抽出と反映
-        let jsonStr = result.replace(/```json/g, '').replace(/```/g, '');
-        const firstBrace = jsonStr.indexOf('{');
-        const lastBrace = jsonStr.lastIndexOf('}');
-        
-        if (firstBrace !== -1 && lastBrace !== -1) {
-          jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
-          try {
-            const changes = JSON.parse(jsonStr);
-            const nameToIdMap = {};
-            staffList.forEach(s => nameToIdMap[s.name] = s.id);
-            let updatedCount = 0;
-
-            if (changes.shift) {
-              const ns = { ...shiftData };
-              Object.keys(changes.shift).forEach(key => {
-                let staffId = key;
-                // IDが見つからない場合、名前として検索
-                if (!staffList.find(s => s.id === staffId)) {
-                   staffId = nameToIdMap[key];
-                }
-
-                if (staffId && staffList.find(s => s.id === staffId)) { 
-                   if (!ns[staffId]) ns[staffId] = {};
-                   Object.keys(changes.shift[key]).forEach(day => {
-                      const code = changes.shift[key][day];
-                      if (shiftDefs[code]) {
-                         ns[staffId][day] = code;
-                         updatedCount++;
-                      }
-                   });
-                }
-              });
-              setShiftData(ns); saveSchedule(ns, taskData);
-            }
-            if (changes.task) {
-              const nt = { ...taskData };
-              Object.keys(changes.task).forEach(key => {
-                let staffId = key;
-                if (!staffList.find(s => s.id === staffId)) {
-                   staffId = nameToIdMap[key];
-                }
-
-                if (staffId && staffList.find(s => s.id === staffId)) {
-                   if (!nt[staffId]) nt[staffId] = {};
-                   Object.keys(changes.task[key]).forEach(day => {
-                      const code = changes.task[key][day];
-                      if (shiftDefs[code]) {
-                         nt[staffId][day] = code;
-                         updatedCount++;
-                      }
-                   });
-                }
-              });
-              setTaskData(nt); saveSchedule(shiftData, nt);
-            }
-            aiText = updatedCount > 0 
-              ? `✅ ${updatedCount}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`
-              : `⚠️ 変更箇所が見つかりませんでした。\n(AIの応答)\n${result}`;
-          } catch (e) {
-            aiText = `⚠️ JSONの解析に失敗しました。\n(AIの応答)\n${result}`;
-          }
+      if (aiChatMode === 'create') {
+        const res = await applyAiResult(result);
+        if (res.success) {
+           aiText = `✅ ${res.count}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`;
         } else {
-           aiText = `⚠️ AIがJSONデータを返しませんでした。\n(AIの応答)\n${result}`;
+           aiText = `⚠️ ${res.message}\n(AIの応答)\n${result}`;
         }
       }
 
@@ -1077,11 +1125,17 @@ export default function WorkScheduleApp() {
         <div className="flex items-center gap-3">
            {appUser.role === 'admin' && (
              <>
+               <button onClick={handleResetSchedule} className="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm" title="シフト全消去">
+                 <Trash2 size={18} /> <span className="hidden sm:inline">全消去</span>
+               </button>
+               <button onClick={handleAutoFill} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm" title="AI自動作成" disabled={isAiLoading}>
+                 {isAiLoading ? <Loader2 className="animate-spin" size={18}/> : <Sparkles size={18} />} <span className="hidden sm:inline">AI自動作成</span>
+               </button>
                <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
                  <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
                <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm">
-                 <Bot size={18} /> <span className="hidden sm:inline">AIアシスタント</span>
+                 <Bot size={18} /> <span className="hidden sm:inline">AIチャット</span>
                </button>
              </>
            )}
@@ -1098,12 +1152,11 @@ export default function WorkScheduleApp() {
         </div>
       </header>
 
+      {/* 以下、メインコンテンツと各モーダル（省略なし） */}
       <div className="flex flex-1 overflow-hidden relative">
         <main className="flex-1 overflow-auto bg-gray-100 relative">
           <div className="inline-block min-w-full align-middle p-4">
-            
             {viewMode === 'personal' && appUser.role === 'staff' ? (
-              /* ... (Personal View - No Changes) ... */
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
                 <div className="bg-gray-50 px-4 py-3 border-b flex items-center justify-between">
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
@@ -1148,7 +1201,6 @@ export default function WorkScheduleApp() {
                 </div>
               </div>
             ) : (
-              /* ... (Admin Table View - No Changes) ... */
               <div className="bg-white rounded-lg shadow overflow-hidden">
                 <table className="w-full border-collapse select-none">
                   <thead>
@@ -1180,29 +1232,9 @@ export default function WorkScheduleApp() {
                     {displayStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
                       return (
-                        <tr 
-                          key={staff.id} 
-                          className="group hover:bg-gray-50"
-                          draggable={appUser.role === 'admin'}
-                          onDragStart={(e) => {
-                            if (appUser.role !== 'admin') return;
-                            e.dataTransfer.setData('text/plain', staff.id);
-                          }}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            if (appUser.role !== 'admin') return;
-                            const dragId = e.dataTransfer.getData('text/plain');
-                            handleSortStaff(dragId, staff.id);
-                          }}
-                        >
+                        <tr key={staff.id} className="group hover:bg-gray-50">
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r p-2 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
-                              {appUser.role === 'admin' && (
-                                <div className="cursor-grab active:cursor-grabbing text-gray-400 mr-2 hover:text-gray-600">
-                                  <GripVertical size={14} />
-                                </div>
-                              )}
                               <div className="cursor-pointer flex-1" onClick={(e) => { if(appUser.role === 'admin') { e.stopPropagation(); handleEditStaff(staff); } }}>
                                 <div className="text-sm font-bold text-gray-800 flex items-center gap-1">
                                   {staff.name}
@@ -1215,7 +1247,14 @@ export default function WorkScheduleApp() {
                                   {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
                                 </div>
                               </div>
-                              {appUser.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); removeStaff(staff.id); }} className="text-gray-300 hover:text-red-500 opacity-0 group-hover/cell:opacity-100 px-1"><Trash2 size={12}/></button>}
+                              {appUser.role === 'admin' && (
+                                <div className="flex items-center">
+                                  <div className="cursor-grab active:cursor-grabbing text-gray-400 mr-2 hover:text-gray-600" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); }}>
+                                    <GripVertical size={14} />
+                                  </div>
+                                  <button onClick={(e) => { e.stopPropagation(); removeStaff(staff.id); }} className="text-gray-300 hover:text-red-500 opacity-0 group-hover/cell:opacity-100 px-1"><Trash2 size={12}/></button>
+                                </div>
+                              )}
                             </div>
                           </td>
                           {daysArray.map(day => {
@@ -1226,15 +1265,10 @@ export default function WorkScheduleApp() {
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
-
                             let cellBg = '';
-                            if (isSun || isHol) {
-                              cellBg = 'bg-red-50'; 
-                            } else if (!isEditable) {
-                              cellBg = 'bg-gray-50 opacity-80';
-                            } else {
-                              cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
-                            }
+                            if (isSun || isHol) cellBg = 'bg-red-50'; 
+                            else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
+                            else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
                             return (
                               <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
@@ -1250,10 +1284,7 @@ export default function WorkScheduleApp() {
                             );
                           })}
                           <td className={`border-b border-r text-center p-1 font-bold text-sm ${overtime > 60 ? 'bg-red-100 text-red-600' : 'bg-gray-50 text-gray-600'}`}>
-                            <div className="flex flex-col items-center justify-center h-full">
-                              <span>{overtime > 0 ? overtime : '-'}</span>
-                              {overtime > 60 && <AlertTriangle size={12} className="text-red-500 mt-1" />}
-                            </div>
+                            <div className="flex flex-col items-center justify-center h-full"><span>{overtime > 0 ? overtime : '-'}</span>{overtime > 60 && <AlertTriangle size={12} className="text-red-500 mt-1" />}</div>
                           </td>
                         </tr>
                       );
@@ -1262,16 +1293,11 @@ export default function WorkScheduleApp() {
                       <>
                         <tr>
                           <td className="p-2 bg-gray-100 border-r border-b font-bold text-gray-600 text-xs text-right sticky left-0 z-10 flex justify-between items-center">
-                            <button onClick={(e) => { e.stopPropagation(); setShowTargetCountModal(true); }} className="text-gray-400 hover:text-blue-600"><Settings size={14}/></button>
-                            <span>集計</span>
+                            <button onClick={(e) => { e.stopPropagation(); setShowTargetCountModal(true); }} className="text-gray-400 hover:text-blue-600"><Settings size={14}/></button><span>集計</span>
                           </td>
                           <td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td>
                         </tr>
-                        <tr>
-                          <td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>
-                          {daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}
-                          <td className="bg-gray-50 border-b"></td>
-                        </tr>
+                        <tr><td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>{daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}<td className="bg-gray-50 border-b"></td></tr>
                         {dynamicSummaryGroups.map(group => (
                           <React.Fragment key={group.name}>
                             {group.totalLabel && (
@@ -1281,11 +1307,7 @@ export default function WorkScheduleApp() {
                                   const total = group.items.reduce((sum, code) => sum + (dailyStats[day][code] || 0), 0);
                                   const targetTotal = group.items.reduce((sum, code) => sum + getTargetCount(code, day), 0);
                                   const isAlert = targetTotal > 0 && total < targetTotal;
-                                  return (
-                                    <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>
-                                      {total > 0 ? total : '-'}
-                                    </td>
-                                  );
+                                  return <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>{total > 0 ? total : '-'}</td>;
                                 })}
                                 <td className="bg-gray-50 border-b"></td>
                               </tr>
@@ -1330,13 +1352,11 @@ export default function WorkScheduleApp() {
                 <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
               ))}
             </div>
-            <div className="mt-2 md:hidden">
-              <button onClick={() => setActivePopup(null)} className="w-full py-3 bg-gray-100 text-gray-600 rounded-lg font-bold">閉じる</button>
-            </div>
+            <div className="mt-2 md:hidden"><button onClick={() => setActivePopup(null)} className="w-full py-3 bg-gray-100 text-gray-600 rounded-lg font-bold">閉じる</button></div>
           </div>
         )}
 
-        {/* 統合設定モーダル */}
+        {/* 統合設定モーダル (z-index 100) */}
         {showSettingsModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
@@ -1345,7 +1365,6 @@ export default function WorkScheduleApp() {
                 <button onClick={() => setShowSettingsModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
               </div>
               <div className="flex flex-1 overflow-hidden">
-                {/* サイドバー */}
                 <div className="w-48 bg-gray-100 border-r flex flex-col p-2 space-y-1">
                   <button onClick={() => setActiveSettingsTab('category')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'category' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Palette size={16}/> カテゴリ設定</button>
                   <button onClick={() => setActiveSettingsTab('shift')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'shift' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Clock size={16}/> シフト設定</button>
@@ -1354,29 +1373,12 @@ export default function WorkScheduleApp() {
                   <div className="flex-1"></div>
                   <button onClick={() => setActiveSettingsTab('data')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'data' ? 'bg-red-50 text-red-600 border border-red-200' : 'text-gray-600 hover:bg-gray-200'}`}><Database size={16}/> データ管理</button>
                 </div>
-                
-                {/* コンテンツエリア */}
                 <div className="flex-1 overflow-auto bg-white p-6">
-                  
-                  {/* カテゴリ設定 */}
                   {activeSettingsTab === 'category' && (
                     <div className="flex h-full gap-4">
                       <div className="w-1/3 border-r pr-4 overflow-y-auto">
                         <button onClick={handleAddCategory} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規カテゴリ</button>
-                        <div className="space-y-2">
-                          {Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (
-                            <div 
-                              key={cat.id} 
-                              className={`p-2 rounded border text-xs font-bold flex items-center gap-2 cursor-pointer ${targetCategory?.originalId === cat.id ? 'ring-2 ring-blue-400 bg-blue-50' : 'bg-white'} ${cat.color}`}
-                              onClick={() => handleEditCategory(cat.id)}
-                              draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)}
-                              onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortCategory(e.dataTransfer.getData('text/plain'), cat.id); }}
-                            >
-                               <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
-                               <span className="flex-1 truncate">{cat.label}</span>
-                            </div>
-                          ))}
-                        </div>
+                        <div className="space-y-2">{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (<div key={cat.id} className={`p-2 rounded border text-xs font-bold flex items-center gap-2 cursor-pointer ${targetCategory?.originalId === cat.id ? 'ring-2 ring-blue-400 bg-blue-50' : 'bg-white'} ${cat.color}`} onClick={() => handleEditCategory(cat.id)} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortCategory(e.dataTransfer.getData('text/plain'), cat.id); }}><GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" /><span className="flex-1 truncate">{cat.label}</span></div>))}</div>
                       </div>
                       <div className="flex-1 pl-4">
                         {targetCategory ? (
@@ -1385,36 +1387,17 @@ export default function WorkScheduleApp() {
                             <div><label className="text-xs font-bold text-gray-500">ID (英数字)</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.id} onChange={e => setTargetCategory({...targetCategory, id: e.target.value})} disabled={!!targetCategory.originalId}/></div>
                             <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.label} onChange={e => setTargetCategory({...targetCategory, label: e.target.value})}/></div>
                             <div><label className="text-xs font-bold text-gray-500">色スタイル</label><div className="grid grid-cols-3 gap-2 mt-1">{BG_COLOR_OPTIONS.map(opt => (<button key={opt.value} onClick={() => setTargetCategory({...targetCategory, color: opt.value})} className={`text-xs p-2 rounded border font-bold ${opt.value} ${targetCategory.color === opt.value ? 'ring-2 ring-blue-500' : ''}`}>{opt.label}</button>))}</div></div>
-                            <div className="flex justify-between pt-4">
-                              {targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}
-                              <button onClick={saveCategory} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
-                            </div>
+                            <div className="flex justify-between pt-4">{targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}<button onClick={saveCategory} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button></div>
                           </div>
                         ) : <div className="text-gray-400 text-center mt-20">左側からカテゴリを選択または新規作成してください</div>}
                       </div>
                     </div>
                   )}
-
-                  {/* シフト設定 */}
                   {activeSettingsTab === 'shift' && (
                     <div className="flex h-full gap-4">
                       <div className="w-1/3 border-r pr-4 overflow-y-auto">
                         <button onClick={handleAddNewShift} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規シフト</button>
-                        <div className="space-y-4">
-                          {dynamicPaletteGroups.map(g => (
-                            <div key={g.id}>
-                              <div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div>
-                              <div className="space-y-1">
-                                {g.items.map(code => (
-                                  <div key={code} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', code)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortShift(e.dataTransfer.getData('text/plain'), code); }} onClick={() => handleEditShift(code)} className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}>
-                                    <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
-                                    <span className={shiftDefs[code].text}>{shiftDefs[code].label}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                        <div className="space-y-4">{dynamicPaletteGroups.map(g => (<div key={g.id}><div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div><div className="space-y-1">{g.items.map(code => (<div key={code} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', code)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortShift(e.dataTransfer.getData('text/plain'), code); }} onClick={() => handleEditShift(code)} className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}><GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" /><span className={shiftDefs[code].text}>{shiftDefs[code].label}</span></div>))}</div></div>))}</div>
                       </div>
                       <div className="flex-1 pl-4 overflow-y-auto">
                         {editingShift ? (
@@ -1424,9 +1407,7 @@ export default function WorkScheduleApp() {
                               <div><label className="text-xs font-bold text-gray-500">コード</label><input type="text" className="w-full border p-2 rounded" value={editingShift.code || ''} onChange={e => setEditingShift({...editingShift, code: e.target.value.toUpperCase()})} /></div>
                               <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={editingShift.label || ''} onChange={e => setEditingShift({...editingShift, label: e.target.value})} /></div>
                             </div>
-                            <div><label className="text-xs font-bold text-gray-500">カテゴリ</label>
-                              <select className="w-full border p-2 rounded" value={editingShift.category || 'saka'} onChange={e => setEditingShift({...editingShift, category: e.target.value})}>{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}</select>
-                            </div>
+                            <div><label className="text-xs font-bold text-gray-500">カテゴリ</label><select className="w-full border p-2 rounded" value={editingShift.category || 'saka'} onChange={e => setEditingShift({...editingShift, category: e.target.value})}>{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}</select></div>
                             <div className="grid grid-cols-2 gap-4">
                               <div><label className="text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
                               <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
@@ -1446,8 +1427,6 @@ export default function WorkScheduleApp() {
                       </div>
                     </div>
                   )}
-
-                  {/* 職員設定 */}
                   {activeSettingsTab === 'staff' && (
                     <div className="h-full flex flex-col">
                       <div className="mb-4 flex justify-between items-center">
@@ -1457,48 +1436,24 @@ export default function WorkScheduleApp() {
                       <div className="flex-1 overflow-auto border rounded-lg">
                         <table className="w-full border-collapse text-xs">
                           <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
-                            <tr>
-                              <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
-                              <th className="p-2 border text-center w-16">編集</th>
-                              <th className="p-2 border text-center w-20">AI除外</th>
-                              <th className="p-2 border text-center w-20">3クール上限</th>
-                              {STAFF_SKILLS.map(skill => (
-                                <th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>
-                              ))}
-                            </tr>
+                            <tr><th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th><th className="p-2 border text-center w-16">編集</th><th className="p-2 border text-center w-20">AI除外</th><th className="p-2 border text-center w-20">3クール上限</th>{STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}</tr>
                           </thead>
                           <tbody>
                             {staffList.map((staff, index) => (
                               <tr key={staff.id} className="hover:bg-gray-50 border-b">
-                                <td className="p-2 border font-bold text-gray-700">
-                                  <div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div>
-                                </td>
-                                <td className="p-2 border text-center">
-                                  <button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded"><Edit2 size={14}/></button>
-                                </td>
-                                <td className="p-2 border text-center bg-red-50">
-                                  <input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/>
-                                </td>
-                                <td className="p-2 border text-center">
-                                  <input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/>
-                                </td>
-                                {STAFF_SKILLS.map(skill => (
-                                  <td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => { const newList = [...staffList]; const currentVal = staff.skills?.[skill.key] || false; newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } }; setStaffList(newList); }}>
-                                    {staff.skills?.[skill.key] ? <Check size={16} className="text-green-600 mx-auto"/> : <div className="w-3 h-3 mx-auto border rounded-sm border-gray-300"></div>}
-                                  </td>
-                                ))}
+                                <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
+                                <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded"><Edit2 size={14}/></button></td>
+                                <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
+                                <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
+                                {STAFF_SKILLS.map(skill => (<td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => { const newList = [...staffList]; const currentVal = staff.skills?.[skill.key] || false; newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } }; setStaffList(newList); }}>{staff.skills?.[skill.key] ? <Check size={16} className="text-green-600 mx-auto"/> : <div className="w-3 h-3 mx-auto border rounded-sm border-gray-300"></div>}</td>))}
                               </tr>
                             ))}
                           </tbody>
                         </table>
                       </div>
-                      <div className="mt-4 flex justify-end">
-                        <button onClick={() => saveAllStaffSettings(staffList)} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">全変更を保存</button>
-                      </div>
+                      <div className="mt-4 flex justify-end"><button onClick={() => saveAllStaffSettings(staffList)} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">全変更を保存</button></div>
                     </div>
                   )}
-
-                  {/* パスワード変更 */}
                   {activeSettingsTab === 'password' && (
                     <div className="max-w-md mx-auto mt-8">
                       <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">パスワード変更</h4>
@@ -1509,28 +1464,21 @@ export default function WorkScheduleApp() {
                             {Object.keys(adminSettings).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
                           </select>
                         </div>
-                        <div>
-                          <label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label>
-                          <input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-                        </div>
+                        <div><label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label><input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></div>
                         <button onClick={handleChangePassword} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">変更を保存</button>
                       </div>
                     </div>
                   )}
-
-                  {/* データ管理 */}
                   {activeSettingsTab === 'data' && (
                     <div className="max-w-lg mx-auto mt-8 text-center">
                       <div className="bg-red-50 border border-red-200 rounded-xl p-6">
                         <h4 className="font-bold text-red-700 text-lg mb-2 flex items-center justify-center gap-2"><AlertTriangle/> 危険な操作エリア</h4>
                         <p className="text-sm text-red-600 mb-6">現在表示中の月（{year}年{month}月）のシフトデータを完全に削除します。<br/>この操作は取り消せません。</p>
-                        <button onClick={handleResetSchedule} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 w-full">
-                          <Eraser size={20}/> 勤務表を全消去（リセット）
-                        </button>
+                        {/* このボタンはヘッダーに移動しましたが、ここにも残しておきます */}
+                        <button onClick={handleResetSchedule} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 w-full"><Eraser size={20}/> 勤務表を全消去（リセット）</button>
                       </div>
                     </div>
                   )}
-
                 </div>
               </div>
             </div>
@@ -1544,49 +1492,20 @@ export default function WorkScheduleApp() {
               <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50">
                 <h3 className="font-bold text-lg flex items-center gap-2 text-indigo-800"><Bot className="text-indigo-600"/> AIアシスタント</h3>
                 <div className="flex items-center gap-4">
-                  <select className="border p-1 rounded text-xs bg-white/50" value={aiModel} onChange={(e) => setAiModel(e.target.value)}>
-                    {AI_MODELS.map(model => (<option key={model.value} value={model.value}>{model.label}</option>))}
-                  </select>
+                  <select className="border p-1 rounded text-xs bg-white/50" value={aiModel} onChange={(e) => setAiModel(e.target.value)}>{AI_MODELS.map(model => (<option key={model.value} value={model.value}>{model.label}</option>))}</select>
                   <button onClick={() => setShowAiModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
                 </div>
               </div>
-              
-              {/* チャット履歴エリア */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
                 {aiMessages.length === 0 && (
-                  <div className="text-center text-gray-400 mt-10">
-                    <Sparkles size={48} className="mx-auto mb-2 opacity-20"/>
-                    <p>シフト作成や分析について話しかけてください。</p>
-                    
-                    <div className="mt-6 bg-blue-50 p-4 rounded-lg text-left text-xs text-blue-800 mx-auto max-w-md">
-                      <div className="font-bold mb-2 flex items-center gap-1"><HelpCircle size={14}/> 指示のコツ</div>
-                      <div className="space-y-2">
-                        <button onClick={() => handleAiSend("全ての空欄を自動で埋めてください")} className="w-full text-left p-2 bg-white rounded border hover:bg-blue-100 transition flex items-center gap-2">
-                          <Wand2 size={14} className="text-purple-500"/> 「全ての空欄を自動で埋めて」
-                        </button>
-                        <button onClick={() => handleAiSend("土日のシフトを調整して")} className="w-full text-left p-2 bg-white rounded border hover:bg-blue-100 transition">
-                          「土日のシフトを調整して」
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                  <div className="text-center text-gray-400 mt-10"><Sparkles size={48} className="mx-auto mb-2 opacity-20"/><p>シフト作成や分析について話しかけてください。</p></div>
                 )}
                 {aiMessages.map((msg, idx) => (
-                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[80%] rounded-lg p-3 text-sm whitespace-pre-wrap ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-800 shadow-sm'}`}>
-                      {msg.text}
-                    </div>
-                  </div>
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[80%] rounded-lg p-3 text-sm whitespace-pre-wrap ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-800 shadow-sm'}`}>{msg.text}</div></div>
                 ))}
-                {isAiLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-white border rounded-lg p-3 shadow-sm"><Loader2 className="animate-spin text-indigo-500" size={20}/></div>
-                  </div>
-                )}
+                {isAiLoading && <div className="flex justify-start"><div className="bg-white border rounded-lg p-3 shadow-sm"><Loader2 className="animate-spin text-indigo-500" size={20}/></div></div>}
                 <div ref={chatEndRef} />
               </div>
-
-              {/* 入力エリア */}
               <div className="p-4 border-t bg-white">
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-xs font-bold text-gray-500">モード:</span>
@@ -1596,14 +1515,7 @@ export default function WorkScheduleApp() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    className="flex-1 border rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-300 outline-none transition" 
-                    placeholder={aiChatMode === 'create' ? "例: 全ての空欄を埋めてください" : "例: 今月の残業状況を教えて"}
-                    value={aiInput} 
-                    onChange={e => setAiInput(e.target.value)} 
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAiSend(); }} 
-                  />
+                  <input type="text" className="flex-1 border rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-300 outline-none transition" placeholder={aiChatMode === 'create' ? "例: 全ての空欄を埋めてください" : "例: 今月の残業状況を教えて"} value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAiSend(); }} />
                   <button onClick={() => handleAiSend()} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg transition disabled:opacity-50"><Send size={18}/></button>
                 </div>
               </div>
@@ -1611,7 +1523,7 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* スタッフ詳細（サブモーダル） */}
+        {/* スタッフ詳細（サブモーダル） (z-index 110) */}
         {showStaffModal && (
           <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1632,7 +1544,7 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* パスワード変更モーダル（職員用含む） */}
+        {/* パスワード変更モーダル（職員用含む） (z-index 120) */}
         {showPasswordChangeModal && (
           <div className="absolute inset-0 bg-black/50 z-[120] flex items-center justify-center p-4" onClick={() => setShowPasswordChangeModal(false)}>
              <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -1644,14 +1556,8 @@ export default function WorkScheduleApp() {
                  {appUser.role === 'admin' ? (
                    <div className="mb-4">
                      <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
-                     <select 
-                       className="w-full border p-2 rounded-lg"
-                       value={targetAdminKey}
-                       onChange={e => setTargetAdminKey(e.target.value)}
-                     >
-                       {Object.keys(adminSettings).map(key => (
-                         <option key={key} value={key}>{adminSettings[key].label}</option>
-                       ))}
+                     <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
+                       {Object.keys(adminSettings).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
                      </select>
                    </div>
                  ) : (
@@ -1669,7 +1575,7 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* 必要人数設定モーダル */}
+        {/* 必要人数設定モーダル (z-index 100) */}
         {showTargetCountModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
@@ -1678,28 +1584,13 @@ export default function WorkScheduleApp() {
                  <button onClick={() => setShowTargetCountModal(false)}><X size={20} className="text-gray-400"/></button>
                </div>
                <div className="p-4 overflow-y-auto">
-                 <p className="text-xs text-gray-500 mb-4">
-                   各シフト・曜日ごとの必要人数を設定してください。<br/>
-                   設定値を下回ると集計欄が赤く表示されます。
-                 </p>
+                 <p className="text-xs text-gray-500 mb-4">各シフト・曜日ごとの必要人数を設定してください。<br/>設定値を下回ると集計欄が赤く表示されます。</p>
                  <div className="space-y-6">
                    {dynamicSummaryGroups.map(group => (
                      <div key={group.id} className="border rounded-lg overflow-hidden">
                        <div className={`px-4 py-2 font-bold text-sm ${group.headerColor}`}>{group.name}</div>
                        <table className="w-full text-center text-xs border-collapse">
-                         <thead>
-                           <tr className="bg-gray-100 text-gray-600">
-                             <th className="p-2 border text-left w-32">シフト</th>
-                             {group.id === 'jinkuri' ? (
-                               <>
-                                 <th className="p-2 border w-24">月・水・金</th>
-                                 <th className="p-2 border w-24">火・木・土</th>
-                               </>
-                             ) : (
-                               <th className="p-2 border w-32">通常 (月～土)</th>
-                             )}
-                           </tr>
-                         </thead>
+                         <thead><tr className="bg-gray-100 text-gray-600"><th className="p-2 border text-left w-32">シフト</th>{group.id === 'jinkuri' ? (<><th className="p-2 border w-24">月・水・金</th><th className="p-2 border w-24">火・木・土</th></>) : (<th className="p-2 border w-32">通常 (月～土)</th>)}</tr></thead>
                          <tbody>
                            {group.items.map(code => {
                              const shift = shiftDefs[code];
