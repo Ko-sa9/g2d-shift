@@ -11,7 +11,6 @@ const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 // 定数・初期設定
 // ------------------------------------------------------------------
 
-// 管理者ログイン時のパスワードと表示モードの対応設定
 const ADMIN_VIEW_PASSWORDS = {
   'admin': 'all',        // 全体
   'admin-ope': 'ope',    // オペ班
@@ -19,7 +18,6 @@ const ADMIN_VIEW_PASSWORDS = {
   'admin-hhd': 'hhd',    // HHD班
 };
 
-// 初期のカテゴリ定義
 const DEFAULT_CATEGORY_DEFS = {
   'saka':    { id: 'saka',    label: '坂田',    color: 'bg-blue-50 text-blue-800', order: 1 },
   'kimi':    { id: 'kimi',    label: '君津',    color: 'bg-green-50 text-green-800', order: 2 },
@@ -122,12 +120,6 @@ const DEFAULT_ADMIN_SETTINGS = {
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
-
-const TIME_OPTIONS = [];
-for (let h = 7; h <= 23; h++) {
-  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:00`);
-  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:30`);
-}
 
 // ------------------------------------------------------------------
 // ヘルパー関数群
@@ -370,6 +362,17 @@ export default function WorkScheduleApp() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiModel, setAiModel] = useState('gemini-2.0-flash'); 
   const chatEndRef = useRef(null);
+
+  // AI自動作成の設定条件
+  const [showAutoFillModal, setShowAutoFillModal] = useState(false);
+  const [autoFillConditions, setAutoFillConditions] = useState({
+    noSunday: true,        // 日曜休み
+    workHoliday: true,     // 祝日稼働
+    noSpecialShift: true,  // 公出・出勤禁止
+    week2DaysOff: true,    // 週休2日
+    no3Cool: true,         // 3クール連続禁止
+    balance: true          // バランス重視
+  });
 
   useEffect(() => {
     const initAuth = async () => {
@@ -893,40 +896,53 @@ export default function WorkScheduleApp() {
   };
 
   // ワンタップ自動作成
-  const handleAutoFill = async () => {
-    if (!window.confirm('現在の空欄をAIが自動で埋めます。\n※既存のシフトは維持されます。\n実行しますか？')) return;
-    
+  const handleOpenAutoFill = () => {
+    setShowAutoFillModal(true);
+  };
+
+  const executeAutoFill = async () => {
+    setShowAutoFillModal(false);
     setIsAiLoading(true);
     try {
       const data = prepareScheduleDataForAi();
       const systemInstruction = "あなたはシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。JSON以外の文字列（解説など）は一切出力しないでください。";
       
+      // 条件に基づいてプロンプトを構築
+      const conditionsText = [
+        autoFillConditions.noSunday ? "1. **日曜日の扱い**: calendar情報で isSunday: true の日は、絶対にシフトを入れないでください（'off' カテゴリのコードを使用するか、既存の休みのまま）。" : "1. **日曜日の扱い**: 日曜日も通常通りシフトを入れてください。",
+        autoFillConditions.workHoliday ? "2. **祝日の扱い**: 日曜日でない祝日（isHoliday: true, isSunday: false）は、平日と同様に稼働日としてシフトを入れてください。" : "2. **祝日の扱い**: 祝日は休みとして扱ってください。",
+        autoFillConditions.noSpecialShift ? "3. **禁止コード**: 'O'（公出）、'/'（出勤）は自動生成では絶対に使用しないでください。" : "",
+        autoFillConditions.week2DaysOff ? "4. **週休2日の確保**: 全ての職員について、任意の連続する7日間において、必ず2日以上の休日（カテゴリ 'off' または 'req' の日）が含まれるようにしてください。" : "",
+        autoFillConditions.no3Cool ? "5. **3クール制限**: 3クール（名前に3を含む）は連続させないでください。" : "",
+        autoFillConditions.balance ? "6. **バランス**: カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。" : ""
+      ].filter(Boolean).join("\n");
+
       const prompt = `
       【タスク】
       現在の勤務表データ（staff, shifts, calendar）を分析し、**まだシフトが入っていない日付（空欄）全て**に適切なシフトコードを割り当ててください。
 
-      【ルール】
-      1. **既存データの維持**: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
-      2. **休日**: 日曜日（isSunday: true）はシフトを入れないでください（空欄のまま、または除外）。祝日（isHoliday: true）は稼働日として扱ってください。
-      3. **禁止コード**: 'O'（公出）、'/'（出勤）は使用しないでください。
-      4. **制約**: 
-         - **週休2日を絶対に確保してください**（任意の7日間で2日以上の休み）。
-         - 3クール（名前に3を含む）は連続させないでください。
-         - 各日の必要人数（targetCounts）を満たすようにしてください。
-      5. **出力形式**:
-         必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json）も含めないでください。
-         {
-           "shift": {
-             "職員ID": { "日付(1-31の数値)": "シフトコード" },
-             ...
-           }
-         }
+      【基本ルール】
+      - **既存データの維持**: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
+      - **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
+      - **各日の必要人数**: targetCounts を満たすようにしてください。
+
+      【適用条件】
+      ${conditionsText}
+
+      【出力形式】
+      必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json）も含めないでください。
+      {
+        "shift": {
+          "職員ID": { "日付(1-31の数値)": "シフトコード" },
+          ...
+        }
+      }
       
       【データ】
       ${JSON.stringify(data)}
       `;
 
-      // モデルは賢いPro版を強制使用
+      // モデルはPro版を使用
       const result = await callGemini(prompt, systemInstruction, 'gemini-2.0-pro-exp-02-05');
       
       const res = await applyAiResult(result);
@@ -1125,17 +1141,17 @@ export default function WorkScheduleApp() {
         <div className="flex items-center gap-3">
            {appUser.role === 'admin' && (
              <>
-               <button onClick={handleResetSchedule} className="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm" title="シフト全消去">
-                 <Trash2 size={18} /> <span className="hidden sm:inline">全消去</span>
-               </button>
-               <button onClick={handleAutoFill} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm" title="AI自動作成" disabled={isAiLoading}>
+               <button onClick={handleOpenAutoFill} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm" title="AI自動作成" disabled={isAiLoading}>
                  {isAiLoading ? <Loader2 className="animate-spin" size={18}/> : <Sparkles size={18} />} <span className="hidden sm:inline">AI自動作成</span>
-               </button>
-               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
-                 <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
                <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm">
                  <Bot size={18} /> <span className="hidden sm:inline">AIチャット</span>
+               </button>
+               <button onClick={handleResetSchedule} className="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm" title="シフト全消去">
+                 <Trash2 size={18} /> <span className="hidden sm:inline">全消去</span>
+               </button>
+               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
+                 <Settings size={18} /> <span className="hidden sm:inline">設定</span>
                </button>
              </>
            )}
@@ -1152,7 +1168,7 @@ export default function WorkScheduleApp() {
         </div>
       </header>
 
-      {/* 以下、メインコンテンツと各モーダル（省略なし） */}
+      {/* 以下、メインコンテンツと各モーダル */}
       <div className="flex flex-1 overflow-hidden relative">
         <main className="flex-1 overflow-auto bg-gray-100 relative">
           <div className="inline-block min-w-full align-middle p-4">
@@ -1356,7 +1372,7 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
-        {/* 統合設定モーダル (z-index 100) */}
+        {/* 統合設定モーダル */}
         {showSettingsModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
@@ -1374,6 +1390,7 @@ export default function WorkScheduleApp() {
                   <button onClick={() => setActiveSettingsTab('data')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'data' ? 'bg-red-50 text-red-600 border border-red-200' : 'text-gray-600 hover:bg-gray-200'}`}><Database size={16}/> データ管理</button>
                 </div>
                 <div className="flex-1 overflow-auto bg-white p-6">
+                  {/* ... (設定タブの内容は省略せず表示) */}
                   {activeSettingsTab === 'category' && (
                     <div className="flex h-full gap-4">
                       <div className="w-1/3 border-r pr-4 overflow-y-auto">
@@ -1485,6 +1502,50 @@ export default function WorkScheduleApp() {
           </div>
         )}
 
+        {/* AI自動作成確認モーダル */}
+        {showAutoFillModal && (
+          <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAutoFillModal(false)}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-yellow-50 to-orange-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2 text-orange-700"><Sparkles size={18}/> AI自動作成 (条件設定)</h3>
+                <button onClick={() => setShowAutoFillModal(false)}><X size={20} className="text-gray-400"/></button>
+              </div>
+              <div className="p-6">
+                <p className="text-sm text-gray-600 mb-4 font-bold">以下の条件で、空いているシフトを全て自動で埋めます。</p>
+                <div className="space-y-3 mb-6 bg-gray-50 p-4 rounded-lg border">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.noSunday} onChange={e => setAutoFillConditions({...autoFillConditions, noSunday: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm font-bold">日曜日はシフトを入れない</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.workHoliday} onChange={e => setAutoFillConditions({...autoFillConditions, workHoliday: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm font-bold">祝日は稼働日として扱う (日曜以外)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.noSpecialShift} onChange={e => setAutoFillConditions({...autoFillConditions, noSpecialShift: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm">「公出」「出勤」を使用しない</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.week2DaysOff} onChange={e => setAutoFillConditions({...autoFillConditions, week2DaysOff: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm">週休2日を確保する</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.no3Cool} onChange={e => setAutoFillConditions({...autoFillConditions, no3Cool: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm">3クール連続を禁止する</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={autoFillConditions.balance} onChange={e => setAutoFillConditions({...autoFillConditions, balance: e.target.checked})} className="w-4 h-4 text-orange-500"/>
+                    <span className="text-sm">施設バランスを考慮する</span>
+                  </label>
+                </div>
+                <button onClick={executeAutoFill} className="w-full py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold rounded-lg shadow hover:shadow-lg transition flex items-center justify-center gap-2">
+                  <Wand2 size={18}/> 実行する
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* AI アシスタントモーダル */}
         {showAiModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
@@ -1556,8 +1617,14 @@ export default function WorkScheduleApp() {
                  {appUser.role === 'admin' ? (
                    <div className="mb-4">
                      <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
-                     <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
-                       {Object.keys(adminSettings).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
+                     <select 
+                       className="w-full border p-2 rounded-lg"
+                       value={targetAdminKey}
+                       onChange={e => setTargetAdminKey(e.target.value)}
+                     >
+                       {Object.keys(adminSettings).map(key => (
+                         <option key={key} value={key}>{adminSettings[key].label}</option>
+                       ))}
                      </select>
                    </div>
                  ) : (
