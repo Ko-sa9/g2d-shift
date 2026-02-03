@@ -121,6 +121,12 @@ const DEFAULT_ADMIN_SETTINGS = {
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
 };
 
+const TIME_OPTIONS = [];
+for (let h = 7; h <= 23; h++) {
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:00`);
+  TIME_OPTIONS.push(`${h.toString().padStart(2, '0')}:30`);
+}
+
 // ------------------------------------------------------------------
 // ヘルパー関数群
 // ------------------------------------------------------------------
@@ -365,14 +371,15 @@ export default function WorkScheduleApp() {
 
   // AI自動作成の設定条件
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
-  const [autoFillConditions, setAutoFillConditions] = useState({
-    noSunday: true,        // 日曜休み
-    workHoliday: true,     // 祝日稼働
-    noSpecialShift: true,  // 公出・出勤禁止
-    week2DaysOff: true,    // 週休2日
-    no3Cool: true,         // 3クール連続禁止
-    balance: true          // バランス重視
-  });
+  const [autoFillConditions, setAutoFillConditions] = useState([
+    { id: 1, text: '日曜日はシフトを入れない (calendar.isSunday=trueの日は空欄または休日シフト)', active: true },
+    { id: 2, text: '祝日は稼働日として扱う (日曜以外の祝日は平日同様にシフトを入れる)', active: true },
+    { id: 3, text: '「公出」(O)、「出勤」(/) は使用しない', active: true },
+    { id: 4, text: '週休2日を確保する (任意の7日間で2日以上の休み)', active: true },
+    { id: 5, text: '3クール(名前に3を含む)は連続させない', active: true },
+    { id: 6, text: '施設(saka, kimi, kikuri)の人数バランスを均等にする', active: true }
+  ]);
+  const [newConditionText, setNewConditionText] = useState('');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -895,6 +902,22 @@ export default function WorkScheduleApp() {
     }
   };
 
+  // 条件操作ハンドラ
+  const addAutoFillCondition = () => {
+    if (!newConditionText.trim()) return;
+    const newId = Date.now();
+    setAutoFillConditions([...autoFillConditions, { id: newId, text: newConditionText, active: true }]);
+    setNewConditionText('');
+  };
+
+  const deleteAutoFillCondition = (id) => {
+    setAutoFillConditions(autoFillConditions.filter(c => c.id !== id));
+  };
+
+  const toggleAutoFillCondition = (id) => {
+    setAutoFillConditions(autoFillConditions.map(c => c.id === id ? { ...c, active: !c.active } : c));
+  };
+
   // ワンタップ自動作成
   const handleOpenAutoFill = () => {
     setShowAutoFillModal(true);
@@ -907,15 +930,11 @@ export default function WorkScheduleApp() {
       const data = prepareScheduleDataForAi();
       const systemInstruction = "あなたはシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。JSON以外の文字列（解説など）は一切出力しないでください。";
       
-      // 条件に基づいてプロンプトを構築
-      const conditionsText = [
-        autoFillConditions.noSunday ? "1. **日曜日の扱い**: calendar情報で isSunday: true の日は、絶対にシフトを入れないでください（'off' カテゴリのコードを使用するか、既存の休みのまま）。" : "1. **日曜日の扱い**: 日曜日も通常通りシフトを入れてください。",
-        autoFillConditions.workHoliday ? "2. **祝日の扱い**: 日曜日でない祝日（isHoliday: true, isSunday: false）は、平日と同様に稼働日としてシフトを入れてください。" : "2. **祝日の扱い**: 祝日は休みとして扱ってください。",
-        autoFillConditions.noSpecialShift ? "3. **禁止コード**: 'O'（公出）、'/'（出勤）は自動生成では絶対に使用しないでください。" : "",
-        autoFillConditions.week2DaysOff ? "4. **週休2日の確保**: 全ての職員について、任意の連続する7日間において、必ず2日以上の休日（カテゴリ 'off' または 'req' の日）が含まれるようにしてください。" : "",
-        autoFillConditions.no3Cool ? "5. **3クール制限**: 3クール（名前に3を含む）は連続させないでください。" : "",
-        autoFillConditions.balance ? "6. **バランス**: カテゴリ 'saka', 'kimi', 'kikuri' のシフトを、職員全体でバランスよく配分してください。" : ""
-      ].filter(Boolean).join("\n");
+      // 有効な条件のみを抽出してテキスト化
+      const activeConditions = autoFillConditions
+        .filter(c => c.active)
+        .map((c, index) => `${index + 1}. ${c.text}`)
+        .join("\n");
 
       const prompt = `
       【タスク】
@@ -927,7 +946,7 @@ export default function WorkScheduleApp() {
       - **各日の必要人数**: targetCounts を満たすようにしてください。
 
       【適用条件】
-      ${conditionsText}
+      ${activeConditions}
 
       【出力形式】
       必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json）も含めないでください。
@@ -1505,39 +1524,44 @@ export default function WorkScheduleApp() {
         {/* AI自動作成確認モーダル */}
         {showAutoFillModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAutoFillModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-yellow-50 to-orange-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2 text-orange-700"><Sparkles size={18}/> AI自動作成 (条件設定)</h3>
                 <button onClick={() => setShowAutoFillModal(false)}><X size={20} className="text-gray-400"/></button>
               </div>
-              <div className="p-6">
+              <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-4 font-bold">以下の条件で、空いているシフトを全て自動で埋めます。</p>
-                <div className="space-y-3 mb-6 bg-gray-50 p-4 rounded-lg border">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.noSunday} onChange={e => setAutoFillConditions({...autoFillConditions, noSunday: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm font-bold">日曜日はシフトを入れない</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.workHoliday} onChange={e => setAutoFillConditions({...autoFillConditions, workHoliday: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm font-bold">祝日は稼働日として扱う (日曜以外)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.noSpecialShift} onChange={e => setAutoFillConditions({...autoFillConditions, noSpecialShift: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm">「公出」「出勤」を使用しない</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.week2DaysOff} onChange={e => setAutoFillConditions({...autoFillConditions, week2DaysOff: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm">週休2日を確保する</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.no3Cool} onChange={e => setAutoFillConditions({...autoFillConditions, no3Cool: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm">3クール連続を禁止する</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={autoFillConditions.balance} onChange={e => setAutoFillConditions({...autoFillConditions, balance: e.target.checked})} className="w-4 h-4 text-orange-500"/>
-                    <span className="text-sm">施設バランスを考慮する</span>
-                  </label>
+                <div className="space-y-2 mb-4">
+                  {autoFillConditions.map((condition) => (
+                    <div key={condition.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border hover:bg-gray-100">
+                      <label className="flex items-center gap-2 cursor-pointer flex-1 mr-2">
+                        <input 
+                          type="checkbox" 
+                          checked={condition.active} 
+                          onChange={() => toggleAutoFillCondition(condition.id)} 
+                          className="w-4 h-4 text-orange-500 rounded border-gray-300 focus:ring-orange-500"
+                        />
+                        <span className={`text-xs ${condition.active ? 'text-gray-800 font-bold' : 'text-gray-400'}`}>{condition.text}</span>
+                      </label>
+                      <button onClick={() => deleteAutoFillCondition(condition.id)} className="text-gray-400 hover:text-red-500 p-1">
+                        <Trash2 size={14}/>
+                      </button>
+                    </div>
+                  ))}
                 </div>
+                
+                <div className="flex gap-2 mb-6">
+                  <input 
+                    type="text" 
+                    className="flex-1 border rounded px-2 py-1 text-xs" 
+                    placeholder="新しい条件を追加 (例: 水曜日はAさん休み)" 
+                    value={newConditionText} 
+                    onChange={(e) => setNewConditionText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addAutoFillCondition()}
+                  />
+                  <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100">追加</button>
+                </div>
+
                 <button onClick={executeAutoFill} className="w-full py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold rounded-lg shadow hover:shadow-lg transition flex items-center justify-center gap-2">
                   <Wand2 size={18}/> 実行する
                 </button>
