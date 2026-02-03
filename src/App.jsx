@@ -269,7 +269,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (foundViewKey) {
         onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
       } else {
-        setError('パスワードが違います (初期: admin)');
+        setError('パスワードが違います。');
       }
     } else {
       const staff = staffList.find(s => s.loginId === loginId);
@@ -280,7 +280,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
       if (password === staff.password) {
         onLogin({ role: 'staff', ...staff });
       } else {
-        setError('パスワードが違います (初期: 1234)');
+        setError('パスワードが違います (初期: 職員IDと同じ)');
       }
     }
   };
