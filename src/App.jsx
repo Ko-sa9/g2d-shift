@@ -102,7 +102,7 @@ const TEAMS = [
 
 const AI_MODELS = [
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (高速・推奨)' },
-  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (高性能・安定)' },
+  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・バックアップ)' },
 ];
 
 const INITIAL_STAFF = [
@@ -995,8 +995,8 @@ export default function WorkScheduleApp() {
       ${JSON.stringify(data)}
       `;
 
-      // モデルはPro版を使用（安定版に変更）
-      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-pro');
+      // モデルはFlash版を使用（推奨・高速）
+      const result = await callGemini(prompt, systemInstruction, 'gemini-2.0-flash');
       
       const res = await applyAiResult(result);
       if (res.success) {
