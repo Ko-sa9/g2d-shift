@@ -849,15 +849,30 @@ export default function WorkScheduleApp() {
     };
   };
 
-  // 共通のAI結果反映ロジック
+// 共通のAI結果反映ロジック
   const applyAiResult = async (jsonString) => {
+    // 【追加】デバッグ用にコンソールに生の応答を出す
+    console.log("AI Raw Response:", jsonString);
+
+    // 【追加】callGeminiからのエラーメッセージ（⚠️で始まるもの）をそのまま返す
+    if (typeof jsonString === 'string' && jsonString.startsWith("⚠️")) {
+      return { success: false, message: jsonString };
+    }
+
     let cleanJson = jsonString;
     // Markdown除去
     cleanJson = cleanJson.replace(/```json/g, '').replace(/```/g, '');
+    
     const firstBrace = cleanJson.indexOf('{');
     const lastBrace = cleanJson.lastIndexOf('}');
     
-    if (firstBrace === -1 || lastBrace === -1) return { success: false, message: "有効なJSONが見つかりませんでした。" };
+    // JSONの開始・終了カッコが見つからない場合
+    if (firstBrace === -1 || lastBrace === -1) {
+        return { 
+            success: false, 
+            message: "有効なJSON（データ形式）が見つかりませんでした。\nAIがデータ以外の返答をした可能性があります。\nF12キーでコンソールを確認してください。" 
+        };
+    }
     
     cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
 
