@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot, updateDoc } from 'firebase/firestore'; // updateDocを追加
+import { doc, collection, setDoc, onSnapshot, updateDoc, addDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
 
 // Gemini API Key
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
@@ -119,6 +119,7 @@ const DEFAULT_ADMIN_SETTINGS = {
   'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
+  'deadline': '', // 追加: 休み希望の締切日 (YYYY-MM-DD形式)
 };
 
 const TIME_OPTIONS = [];
@@ -337,6 +338,8 @@ export default function WorkScheduleApp() {
 
   const [shiftData, setShiftData] = useState({});
   const [taskData, setTaskData] = useState({});
+
+  const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
   
   const [activePopup, setActivePopup] = useState(null);
   const [showAiModal, setShowAiModal] = useState(false);
@@ -452,6 +455,20 @@ export default function WorkScheduleApp() {
     };
   }, [authUser, year, month]);
 
+  // ★追加：変更ログを監視・取得する処理
+  useEffect(() => {
+    if (!authUser) return;
+    const logsRef = collection(db, 'artifacts', appId, 'public', 'data', 'logs');
+    // 今の年月のログだけを取得
+    const q = query(logsRef, where('targetYear', '==', year), where('targetMonth', '==', month));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setChangeLogs(logs);
+    });
+    return () => unsubscribe();
+  }, [authUser, year, month]);
+
   // AI Chat Auto Scroll
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -485,9 +502,40 @@ export default function WorkScheduleApp() {
     }, { merge: true });
   };
 
-  const handleUpdateCell = (staffId, day, toolCode, type = 'shift') => {
+  const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
+      // --- ★ここから追加・変更 ---
+      // 締切チェック
+      const deadline = adminSettings.deadline;
+      const today = new Date().toISOString().split('T')[0]; // 今日の日付 (YYYY-MM-DD)
+
+      if (deadline && today > deadline) {
+        const confirmMsg = "締切日がすぎています。\n変更記録が残り管理者に通知されます。\n\n変更しますか？";
+        if (!window.confirm(confirmMsg)) {
+          return; // キャンセルなら何もしない
+        }
+        
+        // ログを保存
+        try {
+          await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), {
+            staffId,
+            staffName: appUser.name,
+            targetYear: year,
+            targetMonth: month,
+            targetDay: day,
+            type,
+            before: shiftData[staffId]?.[day] || '',
+            after: toolCode || '',
+            timestamp: serverTimestamp(),
+            message: '締切後の変更'
+          });
+        } catch (err) {
+          console.error("ログ保存エラー:", err);
+        }
+      }
+      // --- ★ここまで追加 ---
+      
       if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
@@ -1221,6 +1269,14 @@ export default function WorkScheduleApp() {
         </div>
       </header>
 
+      {/* ★追加：管理者への通知バー */}
+      {appUser.role === 'admin' && changeLogs.length > 0 && (
+        <div className="bg-orange-100 border-b border-orange-200 px-4 py-2 text-orange-800 text-xs font-bold flex items-center gap-2 animate-pulse">
+          <AlertTriangle size={14}/>
+          <span>締切後の変更が {changeLogs.length} 件あります。黄色いセルを確認してください。</span>
+        </div>
+      )}
+
       {/* 以下、メインコンテンツと各モーダル */}
       <div className="flex flex-1 overflow-hidden relative">
         <main className="flex-1 overflow-auto bg-gray-100 relative">
@@ -1334,8 +1390,16 @@ export default function WorkScheduleApp() {
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
+                            // ★追加：このセルに対する変更ログがあるかチェック
+                            const hasLog = changeLogs.some(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
+
                             let cellBg = '';
-                            if (isSun || isHol) cellBg = 'bg-red-50'; 
+                            
+                            // ★変更：ログがあれば黄色くする (優先度高)
+                            if (hasLog) {
+                               cellBg = 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10';
+                            }
+                            else if (isSun || isHol) cellBg = 'bg-red-50'; 
                             else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
@@ -1435,6 +1499,7 @@ export default function WorkScheduleApp() {
               </div>
               <div className="flex flex-1 overflow-hidden">
                 <div className="w-48 bg-gray-100 border-r flex flex-col p-2 space-y-1">
+                  <button onClick={() => setActiveSettingsTab('basic')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'basic' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><CalendarIcon size={16}/> 基本設定</button>
                   <button onClick={() => setActiveSettingsTab('category')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'category' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Palette size={16}/> カテゴリ設定</button>
                   <button onClick={() => setActiveSettingsTab('shift')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'shift' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Clock size={16}/> シフト設定</button>
                   <button onClick={() => setActiveSettingsTab('staff')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'staff' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Users size={16}/> 職員設定</button>
@@ -1444,6 +1509,30 @@ export default function WorkScheduleApp() {
                 </div>
                 <div className="flex-1 overflow-auto bg-white p-6">
                   {/* ... (設定タブの内容は省略せず表示) */}
+                  {/* ★追加：基本設定タブの内容 */}
+                  {activeSettingsTab === 'basic' && (
+                    <div className="max-w-md mx-auto mt-8">
+                      <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">基本設定</h4>
+                      <div className="mb-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-2">休み希望の締切日</label>
+                        <div className="flex gap-2">
+                          <input type="date" className="border p-2 rounded w-full" value={adminSettings.deadline || ''} 
+                            onChange={(e) => {
+                              const newSettings = { ...adminSettings, deadline: e.target.value };
+                              setAdminSettings(newSettings);
+                              saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
+                            }} 
+                          />
+                          <button onClick={() => {
+                              const newSettings = { ...adminSettings, deadline: '' };
+                              setAdminSettings(newSettings);
+                              saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
+                          }} className="text-red-500 text-xs underline whitespace-nowrap">クリア</button>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">※この日を過ぎると、変更時に警告が出て記録が残ります。</p>
+                      </div>
+                    </div>
+                  )}
                   {activeSettingsTab === 'category' && (
                     <div className="flex h-full gap-4">
                       <div className="w-1/3 border-r pr-4 overflow-y-auto">
