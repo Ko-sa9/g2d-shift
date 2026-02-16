@@ -527,15 +527,39 @@ export default function WorkScheduleApp() {
   const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
-      // --- ★ここから追加・変更 ---
       // 締切チェック
-      const deadline = adminSettings.deadline;
-      const today = new Date().toISOString().split('T')[0]; // 今日の日付 (YYYY-MM-DD)
+      // --- ★変更: 締切チェック（毎月○日対応版） ---
+      let isAfterDeadline = false;
+      const today = new Date();
+      // 今日の日付を YYYY-MM-DD 形式の文字列にする
+      const todayStr = today.getFullYear() + '-' + (today.getMonth() + 1).toString().padStart(2, '0') + '-' + today.getDate().toString().padStart(2, '0');
 
-      if (deadline && today > deadline) {
+      // 設定された締切日（数値）を取得
+      const deadlineDay = parseInt(adminSettings.deadlineDay);
+
+      if (deadlineDay && !isNaN(deadlineDay)) {
+        // 締切日の計算: 対象年月(year, month)の「前月」の「deadlineDay」日
+        // monthは1始まり、Dateの月は0始まりなので、前月は month - 2
+        // JavaScriptのDateは自動的に年跨ぎなどを計算してくれます
+        const deadlineDate = new Date(year, month - 2, deadlineDay);
+        
+        // 比較用文字列作成
+        const deadlineStr = deadlineDate.getFullYear() + '-' + (deadlineDate.getMonth() + 1).toString().padStart(2, '0') + '-' + deadlineDate.getDate().toString().padStart(2, '0');
+        
+        // 今日が締切日より後かどうか判定
+        if (todayStr > deadlineStr) {
+          isAfterDeadline = true;
+        }
+      } 
+      // 旧設定（日付指定）の互換性維持（必要なければ削除可）
+      else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
+        isAfterDeadline = true;
+      }
+
+      if (isAfterDeadline) {
         const confirmMsg = "締切日がすぎています。\n変更記録が残り管理者に通知されます。\n\n変更しますか？";
         if (!window.confirm(confirmMsg)) {
-          return; // キャンセルなら何もしない
+          return; 
         }
         
         // ログを保存
@@ -556,7 +580,7 @@ export default function WorkScheduleApp() {
           console.error("ログ保存エラー:", err);
         }
       }
-      // --- ★ここまで追加 ---
+      // --- ★ここまで ---
       
       if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
@@ -1560,22 +1584,29 @@ export default function WorkScheduleApp() {
                     <div className="max-w-md mx-auto mt-8">
                       <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">基本設定</h4>
                       <div className="mb-6">
-                        <label className="block text-sm font-bold text-gray-700 mb-2">休み希望の締切日</label>
-                        <div className="flex gap-2">
-                          <input type="date" className="border p-2 rounded w-full" value={adminSettings.deadline || ''} 
+                        <label className="block text-sm font-bold text-gray-700 mb-2">休み希望の締切設定</label>
+                        <div className="flex gap-2 items-center">
+                          <span className="text-sm">毎月</span>
+                          <select 
+                            className="border p-2 rounded w-24 text-right" 
+                            value={adminSettings.deadlineDay || ''} 
                             onChange={(e) => {
-                              const newSettings = { ...adminSettings, deadline: e.target.value };
+                              const newSettings = { ...adminSettings, deadlineDay: e.target.value };
                               setAdminSettings(newSettings);
                               saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
-                            }} 
-                          />
-                          <button onClick={() => {
-                              const newSettings = { ...adminSettings, deadline: '' };
-                              setAdminSettings(newSettings);
-                              saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
-                          }} className="text-red-500 text-xs underline whitespace-nowrap">クリア</button>
+                            }}
+                          >
+                            <option value="">未設定</option>
+                            {[...Array(31)].map((_, i) => (
+                              <option key={i + 1} value={i + 1}>{i + 1}</option>
+                            ))}
+                          </select>
+                          <span className="text-sm">日 まで</span>
                         </div>
-                        <p className="text-xs text-gray-500 mt-2">※この日を過ぎると、変更時に警告が出て記録が残ります。</p>
+                        <p className="text-xs text-gray-500 mt-2">
+                          ※設定すると、対象月（シフトの月）の<strong>前月の設定日</strong>を締切日とみなします。<br/>
+                          （例：毎月20日に設定 → 5月分のシフト希望は4月20日が締切）
+                        </p>
                       </div>
                     </div>
                   )}
