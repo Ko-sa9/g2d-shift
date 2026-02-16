@@ -119,7 +119,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
   'echo':  { password: 'admin-echo',  label: 'エコー班管理者' },
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
-  'deadline': '', // 追加: 休み希望の締切日 (YYYY-MM-DD形式)
+  'deadline': '',    // 旧設定（念のため残す）
+  'deadlineDay': '', // ★追加: 毎月の締切日 (1-31の数値)
 };
 
 const TIME_OPTIONS = [];
