@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot, updateDoc, addDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
+import { doc, collection, setDoc, onSnapshot, updateDoc, addDoc, deleteDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
 
 // Gemini API Key
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
@@ -500,6 +500,28 @@ export default function WorkScheduleApp() {
       adminSettings: settings,
       targetCounts: targets
     }, { merge: true });
+  };
+
+// ★追加：ログを確認して削除する処理
+  const handleConfirmLogs = async () => {
+    // 誤操作防止のため、確認ダイアログを出します
+    const msg = '全ての変更通知を確認済みにしますか？\n（画面上の黄色い強調表示が消えます）';
+    if (!window.confirm(msg)) return;
+    
+    try {
+      // 現在画面に表示されているログ(changeLogs)をひとつずつ削除します
+      const promises = changeLogs.map(log => 
+        deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'logs', log.id))
+      );
+      
+      // 全ての削除処理が終わるのを待ちます
+      await Promise.all(promises);
+      
+      alert('確認しました。通知を消去します。');
+    } catch (error) {
+      console.error("削除エラー:", error);
+      alert('エラーが発生しました: ' + error.message);
+    }
   };
 
   const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
@@ -1269,11 +1291,19 @@ export default function WorkScheduleApp() {
         </div>
       </header>
 
-      {/* ★追加：管理者への通知バー */}
+      {/* ★修正：管理者への通知バー（確認ボタン付き） */}
       {appUser.role === 'admin' && changeLogs.length > 0 && (
-        <div className="bg-orange-100 border-b border-orange-200 px-4 py-2 text-orange-800 text-xs font-bold flex items-center gap-2 animate-pulse">
-          <AlertTriangle size={14}/>
-          <span>締切後の変更が {changeLogs.length} 件あります。黄色いセルを確認してください。</span>
+        <div className="bg-orange-100 border-b border-orange-200 px-4 py-2 text-orange-800 text-xs font-bold flex items-center justify-between animate-pulse">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={14}/>
+            <span>締切後の変更が {changeLogs.length} 件あります。シフト枠（黄色）を確認してください。</span>
+          </div>
+          <button 
+            onClick={handleConfirmLogs}
+            className="bg-orange-600 text-white px-3 py-1 rounded hover:bg-orange-700 transition shadow-sm"
+          >
+            確認（通知を消す）
+          </button>
         </div>
       )}
 
@@ -1390,25 +1420,41 @@ export default function WorkScheduleApp() {
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
-                            // ★追加：このセルに対する変更ログがあるかチェック
-                            const hasLog = changeLogs.some(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
+                            
+                            // 該当するログを探す
+                            const targetLog = changeLogs.find(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
+                            const hasLog = !!targetLog;
 
                             let cellBg = '';
-                            
-                            // ★変更：ログがあれば黄色くする (優先度高)
-                            if (hasLog) {
-                               cellBg = 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10';
-                            }
-                            else if (isSun || isHol) cellBg = 'bg-red-50'; 
+                            if (isSun || isHol) cellBg = 'bg-red-50'; 
                             else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
+
+                            // ツールチップ用のテキスト生成
+                            let tooltipText = "";
+                            if (targetLog) {
+                              const dateObj = targetLog.timestamp ? targetLog.timestamp.toDate() : new Date();
+                              const dateStr = `${dateObj.getMonth()+1}/${dateObj.getDate()} ${dateObj.getHours()}:${dateObj.getMinutes().toString().padStart(2,'0')}`;
+                              const beforeLabel = shiftDefs[targetLog.before]?.label || targetLog.before || '未設定';
+                              const afterLabel = shiftDefs[targetLog.after]?.label || targetLog.after || '未設定';
+                              tooltipText = `【変更履歴】\n日時: ${dateStr}\n内容: ${beforeLabel} → ${afterLabel}`;
+                            }
 
                             return (
                               <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
                                 <div className="w-full h-full flex flex-col">
-                                  <div className="h-3/4 flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5" onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}>
+                                  {/* シフト表示部分(上3/4)にだけスタイルとツールチップを適用 */}
+                                  <div 
+                                    className={`h-3/4 flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5 
+                                      ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10' : ''} 
+                                    `}
+                                    title={hasLog ? tooltipText : ''} 
+                                    onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
+                                  >
                                     {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : null}
                                   </div>
+                                  
+                                  {/* タスク表示部分(下1/4) */}
                                   <div className="h-1/4 flex items-center justify-center transition hover:bg-black/5" onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}>
                                     {task ? <span className={`font-bold text-[10px] ${task.text} transform scale-90`}>{task.label}</span> : null}
                                   </div>
