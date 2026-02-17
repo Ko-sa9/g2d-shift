@@ -1268,7 +1268,7 @@ export default function WorkScheduleApp() {
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-gray-50 rounded-lg p-1 border">
             <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={20} /></button>
-            <div className="px-4 font-bold text-lg text-gray-700 w-32 text-center">{year}年 {month}月</div>
+            <div className="px-4 font-bold text-lg text-gray-700 w-40 text-center whitespace-nowrap">{year}年 {month}月</div>
             <button onClick={() => { let nm = month + 1, ny = year; if(nm > 12){ nm = 1; ny++; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronRight size={20} /></button>
           </div>
           <span className={`px-2 py-1 rounded text-xs font-bold ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者モード' : `${appUser.name} (職員)`}</span>
