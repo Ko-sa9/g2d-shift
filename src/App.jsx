@@ -84,7 +84,8 @@ const COLOR_OPTIONS = [
 ];
 
 const BG_COLOR_OPTIONS = [
-  { value: 'bg-gray-50 text-gray-800', label: 'グレー' },
+  { value: 'bg-white text-gray-800', label: '設定なし' },
+  { value: 'bg-gray-50 text-gray-600', label: 'グレー' },
   { value: 'bg-red-50 text-red-800', label: '赤' },
   { value: 'bg-blue-50 text-blue-800', label: '青' },
   { value: 'bg-green-50 text-green-800', label: '緑' },
