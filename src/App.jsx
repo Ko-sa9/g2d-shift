@@ -1666,7 +1666,7 @@ export default function WorkScheduleApp() {
                                   checked={editingShift.isRequestable || false} 
                                   onChange={e => setEditingShift({...editingShift, isRequestable: e.target.checked})} 
                                 />
-                                <span className="text-sm font-bold text-gray-700">職員が「希望」として入力画面で選択できるようにする</span>
+                                <span className="text-sm font-bold text-gray-700">シフト希望に表示する</span>
                               </label>
                             </div>
                             <div className="flex justify-between pt-4 mt-4">
