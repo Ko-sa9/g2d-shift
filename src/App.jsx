@@ -591,9 +591,10 @@ export default function WorkScheduleApp() {
         }
       } else {
         const tool = shiftDefs[toolCode];
-        const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off'));
+        // isRequestable が true のものも許可する
+        const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off' || tool.isRequestable));
         if (!isAllowed) {
-          alert('職員モードでは「希望」「休み」のみ入力できます。');
+          alert('職員モードでは許可されたシフトのみ入力できます。');
           return;
         }
       }
@@ -820,7 +821,7 @@ export default function WorkScheduleApp() {
   };
 
   const handleAddNewShift = () => {
-    setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null });
+    setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null, isRequestable: false });
     setShowShiftEditModal(true);
   };
 
@@ -1257,7 +1258,8 @@ export default function WorkScheduleApp() {
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
     let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && s.type === type);
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
-      opts = opts.filter(s => s.category === 'req' || s.category === 'off');
+      // isRequestable が true のものも表示させる
+      opts = opts.filter(s => s.category === 'req' || s.category === 'off' || s.isRequestable);
     }
     return opts;
   };
@@ -1656,6 +1658,17 @@ export default function WorkScheduleApp() {
                                 <div><label className="text-xs font-bold text-blue-700">終了</label><input type="time" className="w-full border rounded p-1" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value})} /></div>
                               </div>
                             )}
+                            <div className="mt-4 p-3 border rounded-lg bg-gray-50">
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input 
+                                  type="checkbox" 
+                                  className="w-4 h-4 text-blue-600 rounded" 
+                                  checked={editingShift.isRequestable || false} 
+                                  onChange={e => setEditingShift({...editingShift, isRequestable: e.target.checked})} 
+                                />
+                                <span className="text-sm font-bold text-gray-700">職員が「希望」として入力画面で選択できるようにする</span>
+                              </label>
+                            </div>
                             <div className="flex justify-between pt-4 mt-4">
                               {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
                               <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
