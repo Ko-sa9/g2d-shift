@@ -591,8 +591,8 @@ export default function WorkScheduleApp() {
         }
       } else {
         const tool = shiftDefs[toolCode];
-        // isRequestable が true のものも許可する
-        const isAllowed = !toolCode || (tool && (tool.category === 'req' || tool.category === 'off' || tool.isRequestable));
+        // 修正: 'off' の無条件許可を削除
+        const isAllowed = !toolCode || (tool && (tool.isRequestable));
         if (!isAllowed) {
           alert('職員モードでは許可されたシフトのみ入力できます。');
           return;
@@ -1259,7 +1259,7 @@ export default function WorkScheduleApp() {
     let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && s.type === type);
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
       // isRequestable が true のものも表示させる
-      opts = opts.filter(s => s.category === 'req' || s.category === 'off' || s.isRequestable);
+      opts = opts.filter(s => s.isRequestable);
     }
     return opts;
   };
