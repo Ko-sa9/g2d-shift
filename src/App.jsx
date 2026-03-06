@@ -559,28 +559,9 @@ export default function WorkScheduleApp() {
       }
 
       if (isAfterDeadline) {
-        const confirmMsg = "締切日がすぎています。\n変更記録が残り管理者に通知されます。\n\n変更しますか？";
-        if (!window.confirm(confirmMsg)) {
-          return; 
-        }
-        
-        // ログを保存
-        try {
-          await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), {
-            staffId,
-            staffName: appUser.name,
-            targetYear: year,
-            targetMonth: month,
-            targetDay: day,
-            type,
-            before: shiftData[staffId]?.[day] || '',
-            after: toolCode || '',
-            timestamp: serverTimestamp(),
-            message: '締切後の変更'
-          });
-        } catch (err) {
-          console.error("ログ保存エラー:", err);
-        }
+        // ★修正: 警告を出して処理を強制終了（return）し、入力をブロックする
+        alert("締切日を過ぎているため、入力・変更はできません。\n変更が必要な場合は管理者へご連絡ください。");
+        return; 
       }
       // --- ★ここまで ---
       
