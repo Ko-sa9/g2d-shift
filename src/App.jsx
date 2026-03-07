@@ -526,17 +526,7 @@ export default function WorkScheduleApp() {
     }
   };
 
-  const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
-    // ★追加: 管理者（全体admin以外）が他班のシフトを変更できないようにブロック
-    if (appUser.role === 'admin' && appUser.initialView !== 'all') {
-      const targetStaffObj = staffList.find(s => s.id === staffId);
-      const myTeamRole = TEAMS.find(t => t.id === appUser.initialView)?.role;
-      if (!targetStaffObj || !myTeamRole || !targetStaffObj.roles?.includes(myTeamRole)) {
-        alert('他班のシフトは編集できません。');
-        return;
-      }
-    }
-
+const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
       // 締切チェック
@@ -1275,7 +1265,8 @@ export default function WorkScheduleApp() {
           
           {appUser.role === 'admin' && (
             <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
-              {TEAMS.map(team => (
+              {/* 全体管理者(all)は全て表示、それ以外は自分の初期タブ(initialView)と同じものだけ表示 */}
+              {TEAMS.filter(team => appUser.initialView === 'all' || team.id === appUser.initialView).map(team => (
                 <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
               ))}
             </div>
@@ -1445,20 +1436,7 @@ export default function WorkScheduleApp() {
                             const task = shiftDefs[taskCode];
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day);
-                            
-                            // ★修正: 管理者の場合、全体adminか、自分の班のメンバーのみ編集可能にする
-                            let isAdminEditable = false;
-                            if (appUser.role === 'admin') {
-                              if (appUser.initialView === 'all') {
-                                isAdminEditable = true;
-                              } else {
-                                const myTeamRole = TEAMS.find(t => t.id === appUser.initialView)?.role;
-                                if (myTeamRole && staff.roles?.includes(myTeamRole)) {
-                                  isAdminEditable = true;
-                                }
-                              }
-                            }
-                            const isEditable = !isSun && (isAdminEditable || (appUser.role === 'staff' && staff.id === appUser.id));
+                            const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
                             
                             // 該当するログを探す
                             const targetLog = changeLogs.find(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
