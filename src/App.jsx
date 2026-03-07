@@ -1226,7 +1226,17 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
   // --- Render ---
   if (!appUser) return (
     <LoginScreen 
-      onLogin={(user) => { setAppUser(user); if (user.initialView) setCurrentView(user.initialView); if (user.role === 'staff') setViewMode('personal'); }} 
+      onLogin={(user) => { 
+        setAppUser(user); 
+        if (user.initialView) {
+          setCurrentView(user.initialView); 
+        } else {
+          setCurrentView('all'); // 職員の場合は必ず'all'にリセット
+        }
+        if (user.role === 'staff') {
+          setViewMode('personal'); 
+        }
+      }} 
       staffList={staffList} adminSettings={adminSettings}
     />
   );
@@ -1304,7 +1314,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
              </button>
            )}
            <div className="h-6 w-px bg-gray-300 mx-2"></div>
-           <button onClick={() => setAppUser(null)} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
+           <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
         </div>
       </header>
 
