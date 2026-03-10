@@ -1734,7 +1734,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                         <div className="mb-4">
                           <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
                           <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
-                            {Object.keys(adminSettings).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
+                            {Object.keys(adminSettings).filter(key => adminSettings[key].label).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
                           </select>
                         </div>
                         <div><label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label><input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></div>
@@ -1883,9 +1883,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                        value={targetAdminKey}
                        onChange={e => setTargetAdminKey(e.target.value)}
                      >
-                       {Object.keys(adminSettings).map(key => (
-                         <option key={key} value={key}>{adminSettings[key].label}</option>
-                       ))}
+                       {Object.keys(adminSettings)
+                         .filter(key => adminSettings[key].label)
+                         .map(key => (
+                           <option key={key} value={key}>{adminSettings[key].label}</option>
+                         ))}
                      </select>
                    </div>
                  ) : (
