@@ -1335,7 +1335,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       )}
 
       {/* 以下、メインコンテンツと各モーダル */}
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-col flex-1 overflow-hidden relative">
         <main className="flex-1 overflow-auto bg-gray-100 relative">
           <div className="inline-block min-w-full align-middle p-4">
             {viewMode === 'personal' && appUser.role === 'staff' ? (
@@ -1370,7 +1370,10 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                           <div className="flex-1 flex flex-col gap-1">
                             <div 
                               onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, appUser.id, day, 'shift'); }}}
-                              className={`flex-1 rounded border flex flex-col items-center justify-center cursor-pointer transition ${shift ? 'bg-white border-blue-200 shadow-sm' : 'bg-transparent border-dashed border-gray-300'} ${isEditable ? 'hover:border-blue-400' : ''}`}
+                              className={`flex-1 rounded border flex flex-col items-center justify-center cursor-pointer transition 
+                                ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
+                                  shift ? 'bg-white border-blue-200 shadow-sm' : 'bg-transparent border-dashed border-gray-300'} 
+                                ${isEditable ? 'hover:border-blue-400' : ''}`}
                             >
                               {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : <span className="text-[8px] text-gray-300">選択</span>}
                             </div>
@@ -1474,6 +1477,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                                   <div 
                                     className={`h-3/4 flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5 
                                       ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10' : ''} 
+                                      ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
                                     `}
                                     title={hasLog ? tooltipText : ''} 
                                     onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
@@ -1547,18 +1551,21 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
 
         {activePopup && (
           <div 
-            className={`z-50 bg-white shadow-xl border p-2 animate-in fade-in zoom-in-95 duration-100 fixed bottom-0 left-0 right-0 w-full rounded-t-xl md:absolute md:w-64 md:rounded-lg md:bottom-auto md:left-auto md:right-auto`}
-            style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 200), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 280) } : {}}
+            className="z-50 bg-white shadow-[0_-4px_10px_rgba(0,0,0,0.1)] border-t border-gray-200 p-3 animate-in slide-in-from-bottom-4 duration-200 shrink-0"
             onClick={e => e.stopPropagation()}
           >
-            <div className="text-xs font-bold text-gray-500 mb-2 border-b pb-1 text-center md:text-left">{activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}</div>
-            <div className="grid grid-cols-4 gap-2">
-              <button onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }} className="col-span-4 h-10 md:h-8 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 mb-1">クリア</button>
+            <div className="flex justify-between items-center mb-2 pb-2 border-b">
+              <div className="text-sm font-bold text-gray-700">
+                {month}月{activePopup.day}日 - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
+              </div>
+              <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition"><X size={18} /></button>
+            </div>
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 overflow-y-auto max-h-[30vh] p-1">
+              <button onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }} className="col-span-2 h-12 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold">クリア</button>
               {getPopupOptions(activePopup.type).map(shift => (
-                <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
+                <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
               ))}
             </div>
-            <div className="mt-2 md:hidden"><button onClick={() => setActivePopup(null)} className="w-full py-3 bg-gray-100 text-gray-600 rounded-lg font-bold">閉じる</button></div>
           </div>
         )}
 
