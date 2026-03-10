@@ -493,16 +493,28 @@ export default function WorkScheduleApp() {
     }
   };
 
-  const saveMasterData = async (list = staffList, defs = shiftDefs, cats = categoryDefs, settings = adminSettings, targets = targetCounts) => {
+  // ★修正: 変更したいデータだけを指定して安全に更新する仕組みに変更
+  const saveMasterData = async (updates) => {
     if (!authUser) return;
     const masterDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'general', 'masterData');
-    await setDoc(masterDocRef, { 
-      staffList: list, 
-      shiftDefs: defs, 
-      categoryDefs: cats,
-      adminSettings: settings,
-      targetCounts: targets
-    }); // merge: true を削除し、データを完全に上書きするように変更
+    try {
+      // updateDoc を使うことで、指定したデータ（例: 職員リストだけ）を更新し、他のデータを保護する
+      await updateDoc(masterDocRef, updates);
+    } catch (e) {
+      // 万が一ドキュメント自体が存在しない場合は新規作成
+      if (e.code === 'not-found') {
+        await setDoc(masterDocRef, { 
+          staffList: INITIAL_STAFF, 
+          shiftDefs: DEFAULT_SHIFT_TYPES, 
+          categoryDefs: DEFAULT_CATEGORY_DEFS,
+          adminSettings: DEFAULT_ADMIN_SETTINGS, 
+          targetCounts: {},
+          ...updates // 今回保存したいデータを反映
+        });
+      } else {
+        console.error("データ保存エラー:", e);
+      }
+    }
   };
 
 // ★追加：ログを確認して削除する処理
@@ -640,12 +652,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
         newSettings[targetAdminKey] = { ...newSettings[targetAdminKey], password: newPassword };
       }
       setAdminSettings(newSettings);
-      saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
+      saveMasterData({ adminSettings: newSettings });
       alert(`${newSettings[targetAdminKey].label}のパスワードを変更しました。`);
     } else {
       const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: newPassword } : s);
       setStaffList(newList);
-      saveMasterData(newList, shiftDefs, categoryDefs, adminSettings, targetCounts);
+      saveMasterData({ staffList: newList });
       alert('パスワードを変更しました。次回ログイン時から有効です。');
     }
     
@@ -693,13 +705,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     }
 
     setStaffList(newList);
-    saveMasterData(newList);
+    saveMasterData({ staffList: newList }); // ★修正
     setShowStaffModal(false);
   };
 
   const saveAllStaffSettings = (updatedStaffList) => {
     setStaffList(updatedStaffList);
-    saveMasterData(updatedStaffList);
+    saveMasterData({ staffList: updatedStaffList }); // ★修正
     alert('全職員の設定を保存しました。');
     setShowStaffSettingsModal(false);
   };
@@ -712,7 +724,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       onConfirm: () => {
         const newList = staffList.filter(s => s.id !== id);
         setStaffList(newList);
-        saveMasterData(newList);
+        saveMasterData({ staffList: newList }); // ★修正
       }
     });
   };
@@ -726,7 +738,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     const [dragItem] = newStaffList.splice(dragIndex, 1);
     newStaffList.splice(dropIndex, 0, dragItem);
     setStaffList(newStaffList);
-    saveMasterData(newStaffList);
+    saveMasterData({ staffList: newStaffList }); // ★修正
   };
 
   // --- カテゴリ編集関連 ---
@@ -759,7 +771,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     };
     
     setCategoryDefs(newDefs);
-    saveMasterData(staffList, shiftDefs, newDefs);
+    saveMasterData({ categoryDefs: newDefs }); // ★修正
     setTargetCategory(null);
   };
 
@@ -772,7 +784,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     const newDefs = { ...categoryDefs };
     delete newDefs[catId];
     setCategoryDefs(newDefs);
-    saveMasterData(staffList, shiftDefs, newDefs);
+    saveMasterData({ categoryDefs: newDefs }); // ★修正
   };
 
   // カテゴリドラッグソート
@@ -799,7 +811,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     });
 
     setCategoryDefs(newDefs);
-    saveMasterData(staffList, shiftDefs, newDefs);
+    saveMasterData({ categoryDefs: newDefs }); // ★修正
   };
 
   const handleAddNewShift = () => {
@@ -830,7 +842,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     }
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
-    saveMasterData(staffList, newDefs);
+    saveMasterData({ shiftDefs: newDefs }); // ★修正
     alert('保存しました');
     setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
@@ -844,7 +856,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
         const newDefs = { ...shiftDefs };
         delete newDefs[code];
         setShiftDefs(newDefs);
-        saveMasterData(staffList, newDefs);
+        saveMasterData({ shiftDefs: newDefs }); // ★修正
         if (editingShift?.originalCode === code) setShowShiftEditModal(false);
       }
     });
@@ -871,11 +883,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       }
     });
     setShiftDefs(newDefs);
-    saveMasterData(staffList, newDefs);
+    saveMasterData({ shiftDefs: newDefs }); // ★修正
   };
 
   const saveTargetCounts = () => {
-    saveMasterData(staffList, shiftDefs, categoryDefs, adminSettings, targetCounts);
+    saveMasterData({ targetCounts: targetCounts }); // ★修正
     alert('必要人数設定を保存しました');
     setShowTargetCountModal(false);
   };
@@ -1607,7 +1619,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                             onChange={(e) => {
                               const newSettings = { ...adminSettings, deadlineDay: e.target.value };
                               setAdminSettings(newSettings);
-                              saveMasterData(staffList, shiftDefs, categoryDefs, newSettings, targetCounts);
+                              saveMasterData({ adminSettings: newSettings }); // ★修正
                             }}
                           >
                             <option value="">未設定</option>
@@ -1934,7 +1946,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
                </div>
                <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
                  <button onClick={() => setShowTargetCountModal(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded font-bold">キャンセル</button>
-                 <button onClick={() => saveTargetCounts} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
+                 <button onClick={saveTargetCounts} className="px-4 py-2 bg-blue-600 text-white rounded font-bold">保存する</button>
                </div>
             </div>
           </div>
