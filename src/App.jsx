@@ -80,6 +80,7 @@ const COLOR_OPTIONS = [
   { value: 'text-yellow-600', label: '黄' },
   { value: 'text-purple-600', label: '紫' },
   { value: 'text-pink-600', label: 'ピンク' },
+  { value: 'text-pink-400', label: '薄ピンク' }, // 追加
   { value: 'text-orange-600', label: 'オレンジ' },
 ];
 
@@ -1551,7 +1552,9 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
 
         {activePopup && (
           <div 
-            className="z-50 bg-white shadow-[0_-4px_10px_rgba(0,0,0,0.1)] border-t border-gray-200 p-3 animate-in slide-in-from-bottom-4 duration-200 shrink-0"
+            className={`z-50 bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
+              md:absolute md:w-64 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
+            style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 200), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 280) } : {}}
             onClick={e => e.stopPropagation()}
           >
             <div className="flex justify-between items-center mb-2 pb-2 border-b">
@@ -1560,10 +1563,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
               </div>
               <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition"><X size={18} /></button>
             </div>
-            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 overflow-y-auto max-h-[30vh] p-1">
-              <button onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }} className="col-span-2 h-12 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold">クリア</button>
+            {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto max-h-[40vh] md:max-h-[30vh] p-1">
+              <button onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }} className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold">クリア</button>
               {getPopupOptions(activePopup.type).map(shift => (
-                <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
+                <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
               ))}
             </div>
           </div>
