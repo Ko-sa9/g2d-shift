@@ -427,13 +427,8 @@ export default function WorkScheduleApp() {
         }
         setAdminSettings(loadedAdminSettings);
       } else {
-        setDoc(masterDocRef, { 
-          staffList: INITIAL_STAFF, 
-          shiftDefs: DEFAULT_SHIFT_TYPES, 
-          categoryDefs: DEFAULT_CATEGORY_DEFS,
-          adminSettings: DEFAULT_ADMIN_SETTINGS, 
-          targetCounts: {} 
-        });
+        // ★修正: 勝手にデータベースを初期化（上書き保存）する処理を削除
+        // 通信エラー時などに本番データが破壊されるのを防ぎます
         setStaffList(INITIAL_STAFF);
         setCategoryDefs(DEFAULT_CATEGORY_DEFS);
         setAdminSettings(DEFAULT_ADMIN_SETTINGS);
