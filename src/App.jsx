@@ -75,12 +75,12 @@ const STAFF_SKILLS = [
 const COLOR_OPTIONS = [
   { value: 'text-gray-800', label: '黒' },
   { value: 'text-red-600', label: '赤' },
+  { value: 'text-red-400', label: '薄ピンク(休み色)' }, // ← 追加：実際の休みシフトに使われている色
   { value: 'text-blue-600', label: '青' },
   { value: 'text-green-600', label: '緑' },
   { value: 'text-yellow-600', label: '黄' },
   { value: 'text-purple-600', label: '紫' },
   { value: 'text-pink-600', label: 'ピンク' },
-  { value: 'text-pink-400', label: '薄ピンク' }, // 追加
   { value: 'text-orange-600', label: 'オレンジ' },
 ];
 
