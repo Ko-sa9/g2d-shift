@@ -501,7 +501,7 @@ export default function WorkScheduleApp() {
       categoryDefs: cats,
       adminSettings: settings,
       targetCounts: targets
-    }, { merge: true });
+    }); // merge: true を削除し、データを完全に上書きするように変更
   };
 
 // ★追加：ログを確認して削除する処理
