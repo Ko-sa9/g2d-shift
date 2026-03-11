@@ -311,7 +311,15 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
             <input type="password" className="w-full border p-2 rounded-lg" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogin()}/>
           </div>
           {error && <p className="text-red-500 text-sm font-bold text-center">{error}</p>}
-          <button onClick={handleLogin} className={`w-full py-3 rounded-lg font-bold text-white shadow transition transform active:scale-95 ${selectedRole === 'admin' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>ログイン</button>
+          
+          {/* ★修正: データが読み込まれるまではボタンを押せないようにする */}
+          {staffList.length === 0 ? (
+            <button disabled className="w-full py-3 rounded-lg font-bold text-white shadow bg-gray-400 cursor-not-allowed flex items-center justify-center gap-2">
+              <Loader2 className="animate-spin" size={18}/> データを読み込み中...
+            </button>
+          ) : (
+            <button onClick={handleLogin} className={`w-full py-3 rounded-lg font-bold text-white shadow transition transform active:scale-95 ${selectedRole === 'admin' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>ログイン</button>
+          )}
           
           <div className="text-xs text-gray-400 text-center mt-4">
             ※パスワード変更はログイン後に行えます。<br/>
