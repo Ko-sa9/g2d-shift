@@ -581,20 +581,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       }
       // --- ★ここまで ---
       
-      if (currentView === 'ope') {
+if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
         }
-      } else {
-        const tool = shiftDefs[toolCode];
-        // 修正: 'off' の無条件許可を削除
-        const isAllowed = !toolCode || (tool && (tool.isRequestable));
-        if (!isAllowed) {
-          alert('職員モードでは許可されたシフトのみ入力できます。');
-          return;
-        }
       }
+      // ※職員モードの保存時の二重チェック（elseブロック）は削除しました
     }
     if (type === 'shift') {
       const nextShifts = { ...shiftData };
