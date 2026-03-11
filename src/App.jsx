@@ -1273,57 +1273,57 @@ if (currentView === 'ope') {
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 text-sm font-sans" onClick={() => setActivePopup(null)}>
-      <header className="bg-white border-b border-gray-200 px-4 py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60]">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center bg-gray-50 rounded-lg p-1 border">
+      <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex flex-wrap items-center justify-between sticky top-0 z-[60] gap-y-2">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4 w-full md:w-auto">
+          <div className="flex items-center bg-gray-50 rounded-lg p-1 border shrink-0">
             <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={20} /></button>
-            <div className="px-4 font-bold text-lg text-gray-700 w-40 text-center whitespace-nowrap">{year}年 {month}月</div>
+            <div className="px-2 sm:px-4 font-bold text-base sm:text-lg text-gray-700 min-w-[100px] text-center whitespace-nowrap">{year}年 {month}月</div>
             <button onClick={() => { let nm = month + 1, ny = year; if(nm > 12){ nm = 1; ny++; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronRight size={20} /></button>
           </div>
-          <span className={`px-2 py-1 rounded text-xs font-bold ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者モード' : `${appUser.name} (職員)`}</span>
+          <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者' : `${appUser.name}`}</span>
           
           {appUser.role === 'admin' && (
-            <div className="flex items-center bg-gray-100 rounded p-1 border ml-2">
-              {/* 全体管理者(all)は全て表示、それ以外は自分の初期タブ(initialView)と同じものだけ表示 */}
+            <div className="flex items-center bg-gray-100 rounded p-1 border shrink-0">
               {TEAMS.filter(team => appUser.initialView === 'all' || team.id === appUser.initialView).map(team => (
-                <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
+                <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-2 sm:px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
               ))}
             </div>
           )}
           {appUser.role === 'staff' && (
-            <div className="flex bg-gray-100 rounded p-1 ml-4 border">
-              <button onClick={() => { setViewMode('personal'); setCurrentView('all'); }} className={`px-3 py-1 text-xs rounded transition ${viewMode==='personal' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>個人</button>
-              <button onClick={() => setViewMode('all')} className={`px-3 py-1 text-xs rounded transition ${viewMode==='all' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>全体</button>
+            <div className="flex bg-gray-100 rounded p-1 border shrink-0 ml-auto sm:ml-0">
+              <button onClick={() => { setViewMode('personal'); setCurrentView('all'); }} className={`px-2 sm:px-3 py-1 text-xs rounded transition ${viewMode==='personal' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>個人</button>
+              <button onClick={() => setViewMode('all')} className={`px-2 sm:px-3 py-1 text-xs rounded transition ${viewMode==='all' ? 'bg-white shadow text-blue-600 font-bold':'text-gray-500 hover:bg-gray-200'}`}>全体</button>
             </div>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
            {appUser.role === 'admin' && (
              <>
-               <button onClick={handleOpenAutoFill} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm" title="AI自動作成" disabled={isAiLoading}>
-                 {isAiLoading ? <Loader2 className="animate-spin" size={18}/> : <Sparkles size={18} />} <span className="hidden sm:inline">AI自動作成</span>
+               <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
+                 {isAiLoading ? <Loader2 className="animate-spin" size={16}/> : <Sparkles size={16} />} <span className="hidden md:inline">AI自動作成</span>
                </button>
-               <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm">
-                 <Bot size={18} /> <span className="hidden sm:inline">AIチャット</span>
+               <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0" title="AIチャット">
+                 <Bot size={16} /> <span className="hidden md:inline">AIチャット</span>
                </button>
-               <button onClick={handleResetSchedule} className="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm" title="シフト全消去">
-                 <Trash2 size={18} /> <span className="hidden sm:inline">全消去</span>
+               <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
+                 <Trash2 size={16} /> <span className="hidden md:inline">全消去</span>
                </button>
-               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm">
-                 <Settings size={18} /> <span className="hidden sm:inline">設定</span>
+               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0" title="設定">
+                 <Settings size={16} /> <span className="hidden md:inline">設定</span>
                </button>
              </>
            )}
            {appUser.role === 'staff' && (
              <button 
                onClick={(e) => { e.stopPropagation(); setShowPasswordChangeModal(true); }} 
-               className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm cursor-pointer z-50 relative"
+               className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm cursor-pointer z-50 relative shrink-0"
+               title="パスワード変更"
              >
                <Key size={16} /> <span className="hidden sm:inline">パスワード変更</span>
              </button>
            )}
-           <div className="h-6 w-px bg-gray-300 mx-2"></div>
-           <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded"><LogOut size={16} /> ログアウト</button>
+           <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
+           <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} /> <span className="hidden sm:inline">ログアウト</span></button>
         </div>
       </header>
 
