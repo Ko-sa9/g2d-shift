@@ -260,7 +260,7 @@ const callGemini = async (prompt, systemInstruction = "", model = "gemini-2.0-fl
   }
 };
 
-const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTINGS }) => {
+const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTINGS, isDataLoaded }) => {
   const [selectedRole, setSelectedRole] = useState('staff');
   const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
@@ -313,7 +313,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
           {error && <p className="text-red-500 text-sm font-bold text-center">{error}</p>}
           
           {/* ★修正: データが読み込まれるまではボタンを押せないようにする */}
-          {staffList.length === 0 ? (
+          {!isDataLoaded ? (
             <button disabled className="w-full py-3 rounded-lg font-bold text-white shadow bg-gray-400 cursor-not-allowed flex items-center justify-center gap-2">
               <Loader2 className="animate-spin" size={18}/> データを読み込み中...
             </button>
@@ -338,6 +338,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 export default function WorkScheduleApp() {
   const [authUser, setAuthUser] = useState(null); 
   const [appUser, setAppUser] = useState(null); 
+  const [isDataLoaded, setIsDataLoaded] = useState(false); // ★追加: データ通信完了フラグ
   
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
@@ -442,6 +443,7 @@ export default function WorkScheduleApp() {
         setAdminSettings(DEFAULT_ADMIN_SETTINGS);
         setTargetCounts({});
       }
+      setIsDataLoaded(true); // ★追加: データの有無に関わらず、通信が終わったらフラグを立てる
     });
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
@@ -1247,6 +1249,7 @@ if (currentView === 'ope') {
         }
       }} 
       staffList={staffList} adminSettings={adminSettings}
+      isDataLoaded={isDataLoaded} // ★追加
     />
   );
   
