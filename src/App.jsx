@@ -1430,7 +1430,17 @@ if (currentView === 'ope') {
                     {displayStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
                       return (
-                        <tr key={staff.id} className="group hover:bg-gray-50">
+                        <tr 
+                          key={staff.id} 
+                          className="group hover:bg-gray-50"
+                          draggable={appUser.role === 'admin'}
+                          onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => { 
+                            e.preventDefault(); 
+                            if(appUser.role === 'admin') handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
+                          }}
+                        >
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r p-2 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
                               <div className="cursor-pointer flex-1" onClick={(e) => { if(appUser.role === 'admin') { e.stopPropagation(); handleEditStaff(staff); } }}>
@@ -1447,7 +1457,8 @@ if (currentView === 'ope') {
                               </div>
                               {appUser.role === 'admin' && (
                                 <div className="flex items-center">
-                                  <div className="cursor-grab active:cursor-grabbing text-gray-400 mr-2 hover:text-gray-600" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); }}>
+                                  {/* ドラッグ処理はtrタグに移したため、ここはアイコン表示のみにする */}
+                                  <div className="cursor-grab text-gray-400 mr-2 hover:text-gray-600">
                                     <GripVertical size={14} />
                                   </div>
                                   <button onClick={(e) => { e.stopPropagation(); removeStaff(staff.id); }} className="text-gray-300 hover:text-red-500 opacity-0 group-hover/cell:opacity-100 px-1"><Trash2 size={12}/></button>
@@ -1707,13 +1718,33 @@ if (currentView === 'ope') {
                         <button onClick={handleAddStaff} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded flex items-center gap-1 hover:bg-blue-700"><Plus size={12}/> 職員追加</button>
                       </div>
                       <div className="flex-1 overflow-auto border rounded-lg">
-                        <table className="w-full border-collapse text-xs">
+                        <table className="w-full border-collapse text-xs bg-white">
                           <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
-                            <tr><th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th><th className="p-2 border text-center w-16">編集</th><th className="p-2 border text-center w-20">AI除外</th><th className="p-2 border text-center w-20">3クール上限</th>{STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}</tr>
+                            <tr>
+                              <th className="p-2 border text-center w-8"></th>
+                              <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
+                              <th className="p-2 border text-center w-16">編集</th>
+                              <th className="p-2 border text-center w-20">AI除外</th>
+                              <th className="p-2 border text-center w-20">3クール上限</th>
+                              {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
+                            </tr>
                           </thead>
                           <tbody>
                             {staffList.map((staff, index) => (
-                              <tr key={staff.id} className="hover:bg-gray-50 border-b">
+                              <tr 
+                                key={staff.id} 
+                                className="hover:bg-gray-50 border-b cursor-grab active:cursor-grabbing"
+                                draggable
+                                onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={(e) => { 
+                                  e.preventDefault(); 
+                                  handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
+                                }}
+                              >
+                                <td className="p-2 border text-center text-gray-400 hover:text-gray-600">
+                                  <GripVertical size={14} className="mx-auto" />
+                                </td>
                                 <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
                                 <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded"><Edit2 size={14}/></button></td>
                                 <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
