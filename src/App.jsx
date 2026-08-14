@@ -102,9 +102,10 @@ const TEAMS = [
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
 
+// 利用できなくなった2.0-flashを削除し、安定して稼働する1.5-flashを推奨として設定します。
 const AI_MODELS = [
-  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (高速・推奨)' },
-  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・バックアップ)' },
+  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・推奨)' },
+  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (高精度)' },
 ];
 
 const INITIAL_STAFF = [
@@ -228,7 +229,8 @@ const generateCalendarDays = (year, month) => {
   return days;
 };
 
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-2.0-flash") => {
+// 引数 model のデフォルト値を 'gemini-1.5-flash' に変更し、エラーを回避します。
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash") => {
   console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded", "Model:", model);
   if (!apiKey) {
     return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
@@ -366,7 +368,7 @@ export default function WorkScheduleApp() {
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
 
-  // 設定モーダル内のタブ管理
+// 設定モーダル内のタブ管理
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [activeSettingsTab, setActiveSettingsTab] = useState('category'); 
 
@@ -381,19 +383,14 @@ export default function WorkScheduleApp() {
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [aiModel, setAiModel] = useState('gemini-2.0-flash'); 
+  // UI上のAIモデル選択の初期値も 1.5-flash に揃えます。
+  const [aiModel, setAiModel] = useState('gemini-1.5-flash'); 
   const chatEndRef = useRef(null);
 
   // AI自動作成の設定条件
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
-  const [autoFillConditions, setAutoFillConditions] = useState([
-    { id: 1, text: '日曜日はシフトを入れない (calendar.isSunday=trueの日は空欄または休日シフト)', active: true },
-    { id: 2, text: '祝日は稼働日として扱う (日曜以外の祝日は平日同様にシフトを入れる)', active: true },
-    { id: 3, text: '「公出」(O)、「出勤」(/) は使用しない', active: true },
-    { id: 4, text: '週休2日を確保する (任意の7日間で2日以上の休み)', active: true },
-    { id: 5, text: '3クール(名前に3を含む)は連続させない', active: true },
-    { id: 6, text: '施設(saka, kimi, kikuri)の人数バランスを均等にする', active: true }
-  ]);
+  // 初期条件をなし（空の配列）に変更し、画面を開いた時は何も設定されていない状態にします。
+  const [autoFillConditions, setAutoFillConditions] = useState([]);
   const [newConditionText, setNewConditionText] = useState('');
 
   useEffect(() => {
@@ -1046,7 +1043,7 @@ if (currentView === 'ope') {
     setShowAutoFillModal(true);
   };
 
-  const executeAutoFill = async () => {
+const executeAutoFill = async () => {
     setShowAutoFillModal(false);
     setIsAiLoading(true);
     try {
@@ -1084,8 +1081,8 @@ if (currentView === 'ope') {
       ${JSON.stringify(data)}
       `;
 
-      // モデルはFlash版を使用（推奨・高速）
-      const result = await callGemini(prompt, systemInstruction, 'gemini-2.0-flash');
+      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash' に変更します。
+      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash');
       
       const res = await applyAiResult(result);
       if (res.success) {
