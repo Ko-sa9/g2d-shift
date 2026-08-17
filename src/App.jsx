@@ -3,9 +3,7 @@ import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, Me
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, addDoc, deleteDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
-
-// Gemini API Key
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // ------------------------------------------------------------------
 // 定数・初期設定
@@ -222,43 +220,31 @@ const generateCalendarDays = (year, month) => {
   for (let i = 1; i <= lastDay.getDate(); i++) {
     days.push({ date: new Date(year, month - 1, i), currentMonth: true, day: i });
   }
-  const remaining = 42 - days.length;
+const remaining = 42 - days.length;
   for (let i = 1; i <= remaining; i++) {
     days.push({ date: new Date(year, month, i), currentMonth: false });
   }
   return days;
 };
 
-// 引数 model のデフォルト値を 'gemini-1.5-flash' に変更し、エラーを回避します。
 const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash") => {
-  console.log("API Key Status:", apiKey ? "Loaded (文字数:" + apiKey.length + ")" : "Not Loaded", "Model:", model);
-  if (!apiKey) {
-    return "⚠️ エラー: APIキーが設定されていません。\n.envファイルを作成し、VITE_GEMINI_API_KEYを設定してください。";
-  }
+  console.log("Model:", model, "バックエンド経由でAIを呼び出します");
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          systemInstruction: { parts: [{ text: systemInstruction }] }
-        })
-      }
-    );
-    if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("Gemini API Error Detail:", errorData);
-        const errorMsg = errorData.error?.message || response.statusText;
-        throw new Error(`${response.status} ${errorMsg}`);
-    }
-    const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response";
+    const functions = getFunctions();
+    const callGeminiAPI = httpsCallable(functions, 'callGeminiAPI');
+
+    const result = await callGeminiAPI({
+      prompt: prompt,
+      systemInstruction: systemInstruction,
+      model: model
+    });
+
+    return result.data.text;
+    
   } catch (error) {
     console.error("Gemini Error:", error);
-    return `⚠️ エラー: AIの呼び出しに失敗しました。\n詳細: ${error.message}\n\n※APIキーが有効か、Google CloudでGemini APIが有効化されているか確認してください。`;
+    return `⚠️ エラー: AIの呼び出しに失敗しました。\n詳細: ${error.message}\n\n※サーバー側の処理でエラーが発生しているか、通信状況を確認してください。`;
   }
 };
 
