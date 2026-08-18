@@ -1073,8 +1073,8 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash-latest' に変更します。
-      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash-latest');
+      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash' に変更します。
+      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash');
       
       const res = await applyAiResult(result);
       if (res.success) {
