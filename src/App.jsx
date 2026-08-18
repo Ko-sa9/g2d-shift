@@ -100,9 +100,11 @@ const TEAMS = [
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
 
+// 画面のドロップダウン等で選択できるAIモデルのリストを定義します
+// （1.5系は廃止されたため、最新の2.5系モデルに更新してエラーを防ぎます）
 const AI_MODELS = [
-  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・推奨)' }, // AIモデルの正式名称に修正します
-  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (高精度)' }, // AIモデルの正式名称に修正します
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (安定・高速)' }, // 高速処理とコストパフォーマンスに優れた最新の標準モデル
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (高精度)' }, // 複雑な推論や高度な分析に強い最新の上位モデル
 ];
 
 const INITIAL_STAFF = [
@@ -369,8 +371,9 @@ export default function WorkScheduleApp() {
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-// AIモデルの選択状態を管理します。初期値を正しいモデル名に修正します。
-  const [aiModel, setAiModel] = useState('gemini-1.5-flash');
+// AIチャットモーダルを開いた際の初期選択モデルを、エラーにならない最新版に設定します
+  const [aiModel, setAiModel] = useState('gemini-2.5-flash');
+  
   const chatEndRef = useRef(null);
 
   // AI自動作成の設定条件
@@ -1073,8 +1076,8 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash' に変更します。
-      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash');
+// シフトの自動生成処理に利用するモデルを最新の gemini-2.5-flash に指定します
+      const result = await callGemini(prompt, systemInstruction, 'gemini-2.5-flash');
       
       const res = await applyAiResult(result);
       if (res.success) {

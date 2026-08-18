@@ -4,12 +4,12 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
   // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収します
   const requestData = data.data || data; 
 
-  // フロントエンドからデータを受け取ります
+// フロントエンドからデータを受け取ります
   const prompt = String(requestData.prompt || "").trim();
   const systemInstruction = String(requestData.systemInstruction || "").trim();
   
-  // モデル名を正しい名称（-latestなし）に修正します
-  const model = requestData.model || "gemini-1.5-flash";
+  // 提供が終了した旧モデル名から、最新の後継モデル（gemini-2.5-flash）に変更してAPIエラーを回避します
+  const model = requestData.model || "gemini-2.5-flash"; 
   
   const apiKey = process.env.GEMINI_API_KEY;
 
