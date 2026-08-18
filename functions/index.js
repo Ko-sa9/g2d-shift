@@ -1,14 +1,13 @@
 const functions = require("firebase-functions");
 
 exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
-  // ★重要修正★ 
-  // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収します。
+  // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収
   const requestData = data.data || data; 
 
-  // フロントエンドからデータを受け取ります
   const prompt = String(requestData.prompt || "").trim();
   const systemInstruction = String(requestData.systemInstruction || "").trim();
-  const model = requestData.model || "gemini-1.5-flash";
+  // ★修正: モデル名に -latest を付与してAPIの仕様に合わせる
+  const model = requestData.model || "gemini-1.5-flash-latest";
   
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -16,7 +15,6 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("internal", "サーバーにAPIキーが設定されていません。");
   }
 
-  // プロンプトが空の場合はAIに送る前にエラーで返します
   if (!prompt) {
     throw new functions.https.HttpsError("invalid-argument", "AIへの指示内容が空です。");
   }

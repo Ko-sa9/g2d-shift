@@ -102,8 +102,8 @@ const TEAMS = [
 
 // 利用できなくなった2.0-flashを削除し、安定して稼働する1.5-flashを推奨として設定します。
 const AI_MODELS = [
-  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・推奨)' },
-  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (高精度)' },
+  { value: 'gemini-1.5-flash-latest', label: 'Gemini 1.5 Flash (安定・推奨)' },
+  { value: 'gemini-1.5-pro-latest', label: 'Gemini 1.5 Pro (高精度)' },
 ];
 
 const INITIAL_STAFF = [
@@ -227,7 +227,7 @@ const remaining = 42 - days.length;
   return days;
 };
 
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash") => {
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash-latest") => {
   console.log("Model:", model, "バックエンド経由でAIを呼び出します");
 
   try {
@@ -370,7 +370,7 @@ export default function WorkScheduleApp() {
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
   // UI上のAIモデル選択の初期値も 1.5-flash に揃えます。
-  const [aiModel, setAiModel] = useState('gemini-1.5-flash'); 
+  const [aiModel, setAiModel] = useState('gemini-1.5-flash-latest');
   const chatEndRef = useRef(null);
 
   // AI自動作成の設定条件
@@ -1073,8 +1073,8 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash' に変更します。
-      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash');
+      // 呼び出しに使用するモデルを、提供終了したものから 'gemini-1.5-flash-latest' に変更します。
+      const result = await callGemini(prompt, systemInstruction, 'gemini-1.5-flash-latest');
       
       const res = await applyAiResult(result);
       if (res.success) {
@@ -1804,7 +1804,6 @@ const executeAutoFill = async () => {
                         <span className={`text-xs ${condition.active ? 'text-gray-800 font-bold' : 'text-gray-400'}`}>{condition.text}</span>
                       </label>
                       <div className="flex items-center gap-1">
-                        {/* ★追加：再編集ボタン */}
                         <button onClick={() => editAutoFillCondition(condition.id, condition.text)} className="text-gray-400 hover:text-blue-500 p-1" title="再編集する">
                           <Edit2 size={14}/>
                         </button>
@@ -1824,23 +1823,10 @@ const executeAutoFill = async () => {
                     value={newConditionText} 
                     onChange={(e) => setNewConditionText(e.target.value)}
                     onKeyDown={(e) => {
-                      // ★修正：日本語変換中のEnterではリストに追加しない
                       if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                         addAutoFillCondition();
                       }
                     }}
-                  />
-                  <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100">追加</button>
-                </div>
-                
-                <div className="flex gap-2 mb-6">
-                  <input 
-                    type="text" 
-                    className="flex-1 border rounded px-2 py-1 text-xs" 
-                    placeholder="新しい条件を追加 (例: 水曜日はAさん休み)" 
-                    value={newConditionText} 
-                    onChange={(e) => setNewConditionText(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && addAutoFillCondition()}
                   />
                   <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100">追加</button>
                 </div>
