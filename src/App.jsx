@@ -1008,7 +1008,7 @@ if (currentView === 'ope') {
     }
   };
 
-  // 条件操作ハンドラ
+// 条件操作ハンドラ
   const addAutoFillCondition = () => {
     if (!newConditionText.trim()) return;
     const newId = Date.now();
@@ -1022,6 +1022,12 @@ if (currentView === 'ope') {
 
   const toggleAutoFillCondition = (id) => {
     setAutoFillConditions(autoFillConditions.map(c => c.id === id ? { ...c, active: !c.active } : c));
+  };
+
+  // ★追加：条件を再編集する機能
+  const editAutoFillCondition = (id, text) => {
+    setNewConditionText(text); // 入力欄に文字を戻す
+    setAutoFillConditions(autoFillConditions.filter(c => c.id !== id)); // リストからは一旦消す
   };
 
   // ワンタップ自動作成
@@ -1797,11 +1803,34 @@ const executeAutoFill = async () => {
                         />
                         <span className={`text-xs ${condition.active ? 'text-gray-800 font-bold' : 'text-gray-400'}`}>{condition.text}</span>
                       </label>
-                      <button onClick={() => deleteAutoFillCondition(condition.id)} className="text-gray-400 hover:text-red-500 p-1">
-                        <Trash2 size={14}/>
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {/* ★追加：再編集ボタン */}
+                        <button onClick={() => editAutoFillCondition(condition.id, condition.text)} className="text-gray-400 hover:text-blue-500 p-1" title="再編集する">
+                          <Edit2 size={14}/>
+                        </button>
+                        <button onClick={() => deleteAutoFillCondition(condition.id)} className="text-gray-400 hover:text-red-500 p-1" title="削除する">
+                          <Trash2 size={14}/>
+                        </button>
+                      </div>
                     </div>
                   ))}
+                </div>
+                
+                <div className="flex gap-2 mb-6">
+                  <input 
+                    type="text" 
+                    className="flex-1 border rounded px-2 py-1 text-xs" 
+                    placeholder="新しい条件を追加 (例: 水曜日はAさん休み)" 
+                    value={newConditionText} 
+                    onChange={(e) => setNewConditionText(e.target.value)}
+                    onKeyDown={(e) => {
+                      // ★修正：日本語変換中のEnterではリストに追加しない
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        addAutoFillCondition();
+                      }
+                    }}
+                  />
+                  <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100">追加</button>
                 </div>
                 
                 <div className="flex gap-2 mb-6">
