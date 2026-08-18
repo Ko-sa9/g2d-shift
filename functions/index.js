@@ -18,16 +18,16 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
   }
 
   try {
-    // 2. Gemini APIへ送るデータ（基本形）を作成
+// 2. Gemini APIへ送るデータ（基本形）を作成
     const requestBody = {
-      contents: [{ parts: [{ text: prompt }] }]
+      contents: [{ parts: [{ text: prompt }] }] // ユーザーからのプロンプトを設定します
     };
 
-    // 3. ★最も重要な修正ポイント★
-    // システム指示（systemInstruction）が存在する場合のみ追加します
+    // 3. システム指示が存在する場合のみ追加します
+    // 補足: Gemini APIは空の文字列を送るとエラーになるため、ここで判定を行います
     if (systemInstruction) {
       requestBody.system_instruction = {
-        parts: [{ text: systemInstruction }]
+        parts: [{ text: systemInstruction }] // システム指示を設定します
       };
     }
 
