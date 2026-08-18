@@ -1,13 +1,15 @@
 const functions = require("firebase-functions");
 
 exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
-  // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収
+  // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収します
   const requestData = data.data || data; 
 
+  // フロントエンドからデータを受け取ります
   const prompt = String(requestData.prompt || "").trim();
   const systemInstruction = String(requestData.systemInstruction || "").trim();
-  // ★修正: モデル名に -latest を付与してAPIの仕様に合わせる
-  const model = requestData.model || "gemini-1.5-flash-latest";
+  
+  // モデル名を正しい名称（-latestなし）に修正します
+  const model = requestData.model || "gemini-1.5-flash";
   
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -15,21 +17,25 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("internal", "サーバーにAPIキーが設定されていません。");
   }
 
+  // プロンプトが空の場合はAIに送る前にエラーで返します
   if (!prompt) {
     throw new functions.https.HttpsError("invalid-argument", "AIへの指示内容が空です。");
   }
 
   try {
+    // Gemini APIへ送るデータ（基本形）を作成します
     const requestBody = {
       contents: [{ parts: [{ text: prompt }] }]
     };
 
+    // システム指示が存在する場合のみ追加します
     if (systemInstruction) {
       requestBody.system_instruction = {
         parts: [{ text: systemInstruction }]
       };
     }
 
+    // APIへ通信を行います
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {

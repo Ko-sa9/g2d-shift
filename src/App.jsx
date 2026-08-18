@@ -100,10 +100,9 @@ const TEAMS = [
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
 
-// 利用できなくなった2.0-flashを削除し、安定して稼働する1.5-flashを推奨として設定します。
 const AI_MODELS = [
-  { value: 'gemini-1.5-flash-latest', label: 'Gemini 1.5 Flash (安定・推奨)' },
-  { value: 'gemini-1.5-pro-latest', label: 'Gemini 1.5 Pro (高精度)' },
+  { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (安定・推奨)' }, // AIモデルの正式名称に修正します
+  { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (高精度)' }, // AIモデルの正式名称に修正します
 ];
 
 const INITIAL_STAFF = [
@@ -227,7 +226,8 @@ const remaining = 42 - days.length;
   return days;
 };
 
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash-latest") => {
+// 共通のAI呼び出し関数（API経由）
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash") => { // デフォルトのモデル名を修正します
   console.log("Model:", model, "バックエンド経由でAIを呼び出します");
 
   try {
@@ -369,8 +369,8 @@ export default function WorkScheduleApp() {
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-  // UI上のAIモデル選択の初期値も 1.5-flash に揃えます。
-  const [aiModel, setAiModel] = useState('gemini-1.5-flash-latest');
+// AIモデルの選択状態を管理します。初期値を正しいモデル名に修正します。
+  const [aiModel, setAiModel] = useState('gemini-1.5-flash');
   const chatEndRef = useRef(null);
 
   // AI自動作成の設定条件
@@ -1823,7 +1823,13 @@ const executeAutoFill = async () => {
                     value={newConditionText} 
                     onChange={(e) => setNewConditionText(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      // 日本語入力（IME）の変換中、または変換確定のEnterキー（keyCodeが229）の場合は処理を中断します
+                      if (e.keyCode === 229 || e.nativeEvent.isComposing) {
+                        return;
+                      }
+                      // 通常のEnterキーが押された場合のみ、リストに条件を追加します
+                      if (e.key === 'Enter') {
+                        e.preventDefault(); // フォームが意図せず送信されるのを防ぎます
                         addAutoFillCondition();
                       }
                     }}
