@@ -1,9 +1,9 @@
 const functions = require("firebase-functions");
 
 exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
-  // 1. フロントエンドからデータを受け取る
-  const prompt = data.prompt || "";
-  const systemInstruction = data.systemInstruction || "";
+  // 1. フロントエンドからデータを受け取り、確実に文字列として処理します
+  const prompt = String(data.prompt || "").trim();
+  const systemInstruction = String(data.systemInstruction || "").trim();
   const model = data.model || "gemini-1.5-flash";
   
   const apiKey = process.env.GEMINI_API_KEY;
@@ -12,8 +12,8 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError("internal", "サーバーにAPIキーが設定されていません。");
   }
 
-  // プロンプト（指示内容）が完全に空の場合はエラーを返す
-  if (!prompt.trim()) {
+  // プロンプト（指示内容）が完全に空の場合は、AIに送る前にエラーで返します
+  if (!prompt) {
     throw new functions.https.HttpsError("invalid-argument", "AIへの指示内容が空です。");
   }
 
@@ -23,10 +23,9 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
       contents: [{ parts: [{ text: prompt }] }]
     };
 
-    // 3. ★修正ポイント★
-    // システム指示（systemInstruction）が空文字でない場合のみ追加する
-    // ※Geminiは空文字("")を送るとエラーになるため、この分岐が必須です。
-    if (systemInstruction.trim() !== "") {
+    // 3. ★最も重要な修正ポイント★
+    // システム指示（systemInstruction）が存在する場合のみ追加します
+    if (systemInstruction) {
       requestBody.system_instruction = {
         parts: [{ text: systemInstruction }]
       };
