@@ -8,8 +8,9 @@ exports.callGeminiAPI = functions.https.onCall(async (data, context) => {
   const prompt = String(requestData.prompt || "").trim();
   const systemInstruction = String(requestData.systemInstruction || "").trim();
   
-  // 提供が終了した旧モデル名から、最新の後継モデル（gemini-2.5-flash）に変更してAPIエラーを回避します
-  const model = requestData.model || "gemini-2.5-flash"; 
+// エラー回避のため、新規利用が制限された旧モデルから最新の推奨モデル（gemini-3.6-flash）に変更します
+  // 複雑な推論が不要な一般的なタスクにおいて、高速かつ安定した応答を返すための指定です
+  const model = requestData.model || "gemini-3.6-flash";
   
   const apiKey = process.env.GEMINI_API_KEY;
 

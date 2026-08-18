@@ -101,10 +101,11 @@ const TEAMS = [
 ];
 
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
-// （1.5系は廃止されたため、最新の2.5系モデルに更新してエラーを防ぎます）
+// ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
+// （2.5系は新規利用が制限されたため、最新の3.6系モデルに更新してAPIエラーを防ぎます）
 const AI_MODELS = [
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (安定・高速)' }, // 高速処理とコストパフォーマンスに優れた最新の標準モデル
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (高精度)' }, // 複雑な推論や高度な分析に強い最新の上位モデル
+  { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (安定・高速)' }, // 日常的なシフト作成や高速なチャット応答に使用する標準モデルです
+  { value: 'gemini-3.6-pro', label: 'Gemini 3.6 Pro (高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
 ];
 
 const INITIAL_STAFF = [
@@ -229,8 +230,11 @@ const remaining = 42 - days.length;
 };
 
 // 共通のAI呼び出し関数（API経由）
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-1.5-flash") => { // デフォルトのモデル名を修正します
-  console.log("Model:", model, "バックエンド経由でAIを呼び出します");
+// アプリ内の各機能からAIを利用する際の窓口となる関数です
+// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-3.6-flash を使用します
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-3.6-flash") => { 
+  // デバッグ用に実行時のモデル名をコンソールに記録し、どのモデルが呼ばれたか確認できるようにします
+  console.log("Model:", model, "バックエンド経由でAIを呼び出します"); 
 
   try {
     const functions = getFunctions();
@@ -371,8 +375,9 @@ export default function WorkScheduleApp() {
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-// AIチャットモーダルを開いた際の初期選択モデルを、エラーにならない最新版に設定します
-  const [aiModel, setAiModel] = useState('gemini-2.5-flash');
+// AIチャットモーダルを開いた際の初期選択モデルを管理する状態変数です
+  // 新規利用制限によるエラーにならないように、APIが推奨する最新版（gemini-3.6-flash）を初期値として設定します
+  const [aiModel, setAiModel] = useState('gemini-3.6-flash');
   
   const chatEndRef = useRef(null);
 
@@ -1076,9 +1081,11 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-// シフトの自動生成処理に利用するモデルを最新の gemini-2.5-flash に指定します
-      const result = await callGemini(prompt, systemInstruction, 'gemini-2.5-flash');
+// ワンタップでのシフト自動生成処理を実行します
+      // 処理速度と安定性を重視し、利用モデルには最新の gemini-3.6-flash を明示的に指定します
+      const result = await callGemini(prompt, systemInstruction, 'gemini-3.6-flash');
       
+      // AIの生成結果を実際のシフト表のデータ形式にパースして適用します
       const res = await applyAiResult(result);
       if (res.success) {
         alert(`✅ 自動作成が完了しました (${res.count}箇所更新)`);
