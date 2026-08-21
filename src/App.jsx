@@ -375,25 +375,23 @@ export default function WorkScheduleApp() {
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
   const [isAiLoading, setIsAiLoading] = useState(false);
-// AIチャットモーダルを開いた際の初期選択モデルを管理する状態変数です
-  // 新規利用制限によるエラーにならないように、APIが推奨する最新版（gemini-3.6-flash）を初期値として設定します
-  const [aiModel, setAiModel] = useState('gemini-3.6-flash');
-  
+  const [aiProgress, setAiProgress] = useState(0); // 【追加】進行状況(%)を管理する状態変数
+
+  const [aiModel, setAiModel] = useState('gemini-3.6-flash'); 
   const chatEndRef = useRef(null);
 
-// AI自動作成の設定条件
-  const [showAutoFillModal, setShowAutoFillModal] = useState(false); // モーダルの表示・非表示状態を管理します
+  const [showAutoFillModal, setShowAutoFillModal] = useState(false);
   
-  // 初期条件の読み込み処理です。
-  // 画面を開いた際、ローカルストレージに保存された条件リスト（文字列）があれば配列に復元（parse）して読み込みます。
-  // 保存されたデータがない場合や、エラーが起きた場合は空の配列（[]）をセットして何も設定されていない状態にします。
   const [autoFillConditions, setAutoFillConditions] = useState(() => {
     const saved = localStorage.getItem('savedAutoFillConditions');
     if (saved) {
       try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("ローカルストレージの条件データの解析に失敗しました", e);
+        const parsed = JSON.parse(saved);
+        // 【追加】過去のデータが単なる文字列だった場合、チェックボックス用のオブジェクト形式に変換します
+        return parsed.map((item, index) => 
+          typeof item === 'string' ? { id: Date.now() + index, text: item, active: true } : item
+        );
+      } catch (e) {        console.error("ローカルストレージの条件データの解析に失敗しました", e);
         return [];
       }
     }
@@ -1068,12 +1066,18 @@ if (currentView === 'ope') {
 const executeAutoFill = async () => {
     setShowAutoFillModal(false);
     setIsAiLoading(true);
+    setAiProgress(0); // 【追加】進捗を0%にリセット
+
+    // 【追加】800ミリ秒ごとにランダムで進捗が増える擬似プログレスバー（最大95%で待機）
+    const progressInterval = setInterval(() => {
+      setAiProgress(prev => (prev >= 95 ? 95 : prev + Math.floor(Math.random() * 8) + 1));
+    }, 800);
+
     try {
       const data = prepareScheduleDataForAi();
-      // systemInstructionに「臨床工学技士のシフト作成の専門家」という役割と、言い訳や挨拶が不要である旨を強化します
-      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。挨拶、言い訳、条件を満たせなかった理由など、JSON以外の文字列は一切出力しないでください。";
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。完璧に埋める必要はありません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
-      // 有効な条件のみを抽出してテキスト化
+      // 有効（activeがtrue）な条件のみを抽出
       const activeConditions = autoFillConditions
         .filter(c => c.active)
         .map((c, index) => `${index + 1}. ${c.text}`)
@@ -1108,20 +1112,23 @@ const executeAutoFill = async () => {
 
       // 処理速度と安定性を重視し、利用モデルには最新の gemini-3.6-flash を明示的に指定します
       const result = await callGemini(prompt, systemInstruction, 'gemini-3.6-flash');
-            
-      // AIの生成結果を実際のシフト表のデータ形式にパースして適用します
+      
+      clearInterval(progressInterval); // 【追加】AIの応答が来たらタイマーを停止
+      setAiProgress(100); // 【追加】100%にする
+
       const res = await applyAiResult(result);
       if (res.success) {
-        alert(`✅ 自動作成が完了しました (${res.count}箇所更新)`);
+        // 【追加】100%の表示をユーザーが認識できるように0.5秒待ってから画面を閉じる
+        setTimeout(() => setIsAiLoading(false), 500); 
       } else {
-        alert(`⚠️ 作成に失敗しました: ${res.message}`);
+        setIsAiLoading(false);
+        alert(`AI結果の適用に失敗しました。\n理由: ${res.error}`);
       }
-
     } catch (error) {
-      console.error(error);
-      alert(`エラーが発生しました: ${error.message}`);
-    } finally {
+      clearInterval(progressInterval); // 【追加】エラー時もタイマー停止
       setIsAiLoading(false);
+      console.error("AI自動入力エラー:", error);
+      alert("通信エラーまたはタイムアウトが発生しました。");
     }
   };
 
@@ -2043,6 +2050,26 @@ const executeAutoFill = async () => {
             </div>
           </div>
         )}
+
+        {isAiLoading && !showAiModal && (
+          <div className="fixed inset-0 bg-black/60 z-[150] flex flex-col items-center justify-center text-white p-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mb-4"></div>
+            <p className="text-lg font-bold">AIがシフトを作成中...</p>
+            <p className="text-sm mt-2 text-gray-200 text-center">
+              複雑な条件を計算しています。<br/>最大1分ほどかかります。
+            </p>
+            
+            {/* プログレスバーのUI */}
+            <div className="w-64 bg-gray-700 rounded-full h-2.5 mt-6 overflow-hidden border border-gray-600">
+              <div 
+                className="bg-blue-500 h-2.5 rounded-full transition-all duration-300 ease-out" 
+                style={{ width: `${aiProgress}%` }}
+              ></div>
+            </div>
+            <p className="mt-2 text-sm font-semibold">{aiProgress}%</p>
+          </div>
+        )}
+        {/* ↑↑↑ ここまで追加 ↑↑↑ */}
 
       </div>
     </div>
