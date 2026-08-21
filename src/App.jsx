@@ -381,11 +381,33 @@ export default function WorkScheduleApp() {
   
   const chatEndRef = useRef(null);
 
-  // AI自動作成の設定条件
-  const [showAutoFillModal, setShowAutoFillModal] = useState(false);
-  // 初期条件をなし（空の配列）に変更し、画面を開いた時は何も設定されていない状態にします。
-  const [autoFillConditions, setAutoFillConditions] = useState([]);
-  const [newConditionText, setNewConditionText] = useState('');
+// AI自動作成の設定条件
+  const [showAutoFillModal, setShowAutoFillModal] = useState(false); // モーダルの表示・非表示状態を管理します
+  
+  // 初期条件の読み込み処理です。
+  // 画面を開いた際、ローカルストレージに保存された条件リスト（文字列）があれば配列に復元（parse）して読み込みます。
+  // 保存されたデータがない場合や、エラーが起きた場合は空の配列（[]）をセットして何も設定されていない状態にします。
+  const [autoFillConditions, setAutoFillConditions] = useState(() => {
+    const saved = localStorage.getItem('savedAutoFillConditions');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("ローカルストレージの条件データの解析に失敗しました", e);
+        return [];
+      }
+    }
+    return [];
+  });
+  
+  const [newConditionText, setNewConditionText] = useState(''); // 新しく入力中の条件テキストを管理します
+
+  // 条件リスト（autoFillConditions）に追加や削除などの変更が加わるたびに、
+  // 最新の配列データを文字列に変換（stringify）してローカルストレージへ自動保存します。
+  // これによりブラウザをリロードしても条件リストが復元されます。
+  useEffect(() => {
+    localStorage.setItem('savedAutoFillConditions', JSON.stringify(autoFillConditions));
+  }, [autoFillConditions]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -1048,7 +1070,8 @@ const executeAutoFill = async () => {
     setIsAiLoading(true);
     try {
       const data = prepareScheduleDataForAi();
-      const systemInstruction = "あなたはシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。JSON以外の文字列（解説など）は一切出力しないでください。";
+      // systemInstructionに「臨床工学技士のシフト作成の専門家」という役割と、言い訳や挨拶が不要である旨を強化します
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。ユーザーから提供されたJSONデータをもとに、未定のシフト（空欄）を埋めた完全なシフト表をJSON形式で返してください。挨拶、言い訳、条件を満たせなかった理由など、JSON以外の文字列は一切出力しないでください。";
       
       // 有効な条件のみを抽出してテキスト化
       const activeConditions = autoFillConditions
@@ -1056,6 +1079,7 @@ const executeAutoFill = async () => {
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
+      // 既存の基本ルールを維持しつつ、出力形式の厳守をさらに強調します
       const prompt = `
       【タスク】
       現在の勤務表データ（staff, shifts, calendar）を分析し、**まだシフトが入っていない日付（空欄）全て**に適切なシフトコードを割り当ててください。
@@ -1066,10 +1090,11 @@ const executeAutoFill = async () => {
       - **各日の必要人数**: targetCounts を満たすようにしてください。
 
       【適用条件】
-      ${activeConditions}
+      ${activeConditions ? activeConditions : '特になし'}
 
       【出力形式】
-      必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json）も含めないでください。
+      必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json や \`\`\`）も含めないでください。
+      条件を満たせない場合でも、可能な限りでシフトを組み、テキストでの言い訳や理由は出力しないでください。
       {
         "shift": {
           "職員ID": { "日付(1-31の数値)": "シフトコード" },
@@ -1081,10 +1106,9 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-// ワンタップでのシフト自動生成処理を実行します
       // 処理速度と安定性を重視し、利用モデルには最新の gemini-3.6-flash を明示的に指定します
       const result = await callGemini(prompt, systemInstruction, 'gemini-3.6-flash');
-      
+            
       // AIの生成結果を実際のシフト表のデータ形式にパースして適用します
       const res = await applyAiResult(result);
       if (res.success) {
