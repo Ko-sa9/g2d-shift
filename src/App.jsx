@@ -1063,12 +1063,11 @@ if (currentView === 'ope') {
     setShowAutoFillModal(true);
   };
 
-const executeAutoFill = async () => {
+  const executeAutoFill = async () => {
     setShowAutoFillModal(false);
     setIsAiLoading(true);
-    setAiProgress(0); // 【追加】進捗を0%にリセット
+    setAiProgress(0); 
 
-    // 【追加】800ミリ秒ごとにランダムで進捗が増える擬似プログレスバー（最大95%で待機）
     const progressInterval = setInterval(() => {
       setAiProgress(prev => (prev >= 95 ? 95 : prev + Math.floor(Math.random() * 8) + 1));
     }, 800);
@@ -1077,21 +1076,23 @@ const executeAutoFill = async () => {
       const data = prepareScheduleDataForAi();
       const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。完璧に埋める必要はありません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
-      // 有効（activeがtrue）な条件のみを抽出
       const activeConditions = autoFillConditions
         .filter(c => c.active)
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      // 既存の基本ルールを維持しつつ、出力形式の厳守をさらに強調します
+      // データの使い方（リーダー、3クール、バランス）のルールを追記しました
       const prompt = `
       【タスク】
-      現在の勤務表データ（staff, shifts, calendar）を分析し、**まだシフトが入っていない日付（空欄）全て**に適切なシフトコードを割り当ててください。
+      現在の勤務表データ（staff, shifts, calendar）を分析し、まだシフトが入っていない日付（空欄）に適切なシフトコードを割り当ててください。
 
       【基本ルール】
-      - **既存データの維持**: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
-      - **AI除外の遵守**: "excludeFromAi": true の職員は変更しないでください。
-      - **各日の必要人数**: targetCounts を満たすようにしてください。
+      - 既存データの維持: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
+      - AI除外の遵守: "excludeFromAi": true の職員は変更しないでください。
+      - 各日の必要人数: targetCounts を可能な限り満たすようにしてください。
+      - リーダー配置: 各施設（坂田、君津、木クリ、じんクリ）には、1日につき必ず「skills.isLeader が true」の職員を最低1名配置してください。
+      - 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: A, F）に入れる月間の上限回数です。各職員の配置回数がこの数値を絶対に超えないようにしてください。
+      - パワーバランス: 特定の職員に負担が偏らないよう、全体の出勤回数やスキルを均等に分散させてください。
 
       【適用条件】
       ${activeConditions ? activeConditions : '特になし'}
@@ -1110,22 +1111,21 @@ const executeAutoFill = async () => {
       ${JSON.stringify(data)}
       `;
 
-      // 処理速度と安定性を重視し、利用モデルには最新の gemini-3.6-flash を明示的に指定します
-      const result = await callGemini(prompt, systemInstruction, 'gemini-3.6-flash');
+      // 固定のFlashではなく、画面上部のドロップダウンで選択されている aiModel (Flash または Pro) を使用するように変更しました
+      const result = await callGemini(prompt, systemInstruction, aiModel);
       
-      clearInterval(progressInterval); // 【追加】AIの応答が来たらタイマーを停止
-      setAiProgress(100); // 【追加】100%にする
+      clearInterval(progressInterval);
+      setAiProgress(100); 
 
       const res = await applyAiResult(result);
       if (res.success) {
-        // 【追加】100%の表示をユーザーが認識できるように0.5秒待ってから画面を閉じる
         setTimeout(() => setIsAiLoading(false), 500); 
       } else {
         setIsAiLoading(false);
         alert(`AI結果の適用に失敗しました。\n理由: ${res.error}`);
       }
     } catch (error) {
-      clearInterval(progressInterval); // 【追加】エラー時もタイマー停止
+      clearInterval(progressInterval);
       setIsAiLoading(false);
       console.error("AI自動入力エラー:", error);
       alert("通信エラーまたはタイムアウトが発生しました。");
