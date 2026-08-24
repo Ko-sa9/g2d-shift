@@ -915,7 +915,7 @@ if (currentView === 'ope') {
     });
   };
 
-  const prepareScheduleDataForAi = () => {
+const prepareScheduleDataForAi = () => {
     const days = getDaysInMonth(year, month);
     const calendarInfo = {};
     for (let d = 1; d <= days; d++) {
@@ -930,18 +930,38 @@ if (currentView === 'ope') {
       };
     }
 
+    // 【追加】各スキルの重み付け（点数）を定義
+    const skillPoints = {
+      isLeader: 5,
+      isVeteran: 3,
+      canEcho: 2,
+      canMachine: 2,
+      canFollow: 1
+    };
+
     return {
       year, month,
       calendar: calendarInfo,
-      staff: staffList.map(s => ({ 
-        id: s.id, // これを使ってほしい
-        name: s.name, 
-        jobTitle: s.jobTitle, 
-        roles: s.roles,
-        skills: s.skills,
-        maxCool3: s.maxCool3, 
-        excludeFromAi: s.excludeFromAi 
-      })),
+      staff: staffList.map(s => {
+        // 【追加】職員のスキルから「パワースコア(総合力)」を計算
+        let powerScore = 0;
+        if (s.skills) {
+          Object.keys(skillPoints).forEach(key => {
+            if (s.skills[key]) powerScore += skillPoints[key];
+          });
+        }
+        
+        return { 
+          id: s.id,
+          name: s.name, 
+          jobTitle: s.jobTitle, 
+          roles: s.roles,
+          skills: s.skills,
+          powerScore: powerScore, // 計算した点数をAIに渡す
+          maxCool3: s.maxCool3, 
+          excludeFromAi: s.excludeFromAi 
+        };
+      }),
       shifts: shiftData, 
       tasks: taskData,
       targetCounts,
@@ -1081,30 +1101,39 @@ if (currentView === 'ope') {
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      // データの使い方（リーダー、3クール、バランス）のルールを追記しました
+// AIに1日ずつ考えさせ、点数（powerScore）とシステム設定の必要人数（targetCounts）でバランスを取らせるプロンプト
       const prompt = `
       【タスク】
-      現在の勤務表データ（staff, shifts, calendar）を分析し、まだシフトが入っていない日付（空欄）に適切なシフトコードを割り当ててください。
+      現在の勤務表データを分析し、空欄に適切なシフトを割り当ててください。
 
       【基本ルール】
-      - 既存データの維持: 既にシフトが入っている箇所（category: 'req', 'off' 含む全て）は絶対に変更しないでください。
-      - AI除外の遵守: "excludeFromAi": true の職員は変更しないでください。
-      - 各日の必要人数: targetCounts を可能な限り満たすようにしてください。
-      - リーダー配置: 各施設（坂田、君津、木クリ、じんクリ）には、1日につき必ず「skills.isLeader が true」の職員を最低1名配置してください。
-      - 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: A, F）に入れる月間の上限回数です。各職員の配置回数がこの数値を絶対に超えないようにしてください。
-      - パワーバランス: 特定の職員に負担が偏らないよう、全体の出勤回数やスキルを均等に分散させてください。
+      1. 既存データの維持: 既にシフトが入っている箇所は絶対に変更しない。
+      2. AI除外: "excludeFromAi": true の職員は変更しない。
+      3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: A, F）の月間上限回数。これを超えないこと。
+      4. パワーバランスの均等化:
+         各職員には「powerScore（総合力）」が設定されています。
+         同じ日において、各施設（例: 坂田、君津など）に出勤するメンバーの合計powerScoreが、極端に偏らないように（同じくらいになるように）配置してください。
+         また、特定の人ばかり出勤しないよう、出勤日数も分散させてください。
+      5. 必要人数の厳守:
+         各曜日・各シフトごとの目標人数は、提供データ内の「targetCounts」を必ず参照して満たすようにしてください。
 
       【適用条件】
       ${activeConditions ? activeConditions : '特になし'}
 
       【出力形式】
-      必ず以下のJSONフォーマットのみを出力してください。Markdownタグ（\`\`\`json や \`\`\`）も含めないでください。
-      条件を満たせない場合でも、可能な限りでシフトを組み、テキストでの言い訳や理由は出力しないでください。
+      必ず以下のJSONフォーマットのみを出力してください。Markdownタグを含めないでください。
+      エラーを防ぎつつ品質を上げるため、必ず「1日ずつ」データ内の「targetCounts」と「powerScore」を参照しながらチェックを行い、その評価を "dailyCheck" に記載してから "shift" を出力してください。
       {
+        "dailyCheck": {
+          "1": "1日のチェック: targetCountsを参照し、◯◯シフトの必要人数◯名を達成。各施設の合計スコアは坂田12、君津10でバランス良好。",
+          "2": "2日のチェック: ...",
+          "3": "..."
+        },
         "shift": {
           "職員ID": { "日付(1-31の数値)": "シフトコード" },
           ...
-        }
+        },
+        "reason": "全体を通した申し送り事項や、targetCountsを満たせなかった日があればその理由を記載"
       }
       
       【データ】
