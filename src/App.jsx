@@ -901,16 +901,38 @@ if (currentView === 'ope') {
     setShowTargetCountModal(false);
   };
 
-  const handleResetSchedule = () => {
+const handleResetSchedule = () => {
     setConfirmModal({
       isOpen: true,
-      title: '勤務表の全消去',
-      message: `${year}年${month}月のシフトとタスクを全て削除しますか？\nこの操作は取り消せません。`,
+      title: '勤務表の消去',
+      // メッセージを変更し、希望シフトが残ることを明記します
+      message: `${year}年${month}月のシフトとタスクを削除しますか？\n\n※個人で入力された「希望」シフトは削除されずに残ります。\nこの操作は取り消せません。`,
       onConfirm: () => {
-        setShiftData({});
+        const newShiftData = {};
+
+        // 現在のシフトデータをループ処理し、希望シフトだけを抽出します
+        Object.keys(shiftData).forEach(staffId => {
+          Object.keys(shiftData[staffId]).forEach(day => {
+            const code = shiftData[staffId][day];
+            const shiftDef = shiftDefs[code];
+
+            // シフト定義が存在し、かつカテゴリが「req(希望)」または「シフト希望に表示」がONの場合に残す
+            if (shiftDef && (shiftDef.category === 'req' || shiftDef.isRequestable)) {
+              // そのスタッフのオブジェクトがまだなければ作成
+              if (!newShiftData[staffId]) {
+                newShiftData[staffId] = {};
+              }
+              // 新しいデータとして希望シフトのコードを引き継ぐ
+              newShiftData[staffId][day] = code;
+            }
+          });
+        });
+
+        // 抽出した希望シフトのみをセットし、タスクは完全に空にして保存します
+        setShiftData(newShiftData);
         setTaskData({});
-        saveSchedule({}, {});
-        alert('全てのシフトデータをリセットしました。');
+        saveSchedule(newShiftData, {});
+        alert('希望シフトを残して、その他のデータをリセットしました。');
       }
     });
   };
