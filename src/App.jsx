@@ -344,6 +344,7 @@ export default function WorkScheduleApp() {
 
   const [shiftData, setShiftData] = useState({});
   const [taskData, setTaskData] = useState({});
+  const [userInputs, setUserInputs] = useState({}); // ★追加：個人が入力した箇所を記憶するリスト
 
   const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
   
@@ -463,6 +464,7 @@ export default function WorkScheduleApp() {
         const data = docSnap.data();
         setShiftData(data.shifts || {});
         setTaskData(data.tasks || {});
+        setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
       } else {
         setShiftData({});
         setTaskData({});
@@ -493,16 +495,18 @@ export default function WorkScheduleApp() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
 
-  const saveSchedule = async (newShifts, newTasks) => {
+// ★引数に newUserInputs を追加し、デフォルト値として現在の userInputs を設定します
+  const saveSchedule = async (newShifts, newTasks, newUserInputs = userInputs) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     
     try {
-      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks });
+      // ★ userInputs も一緒に保存します
+      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs });
     } catch (e) {
       if (e.code === 'not-found') {
-        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks });
+        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs });
       } else {
         console.error("Save error:", e);
       }
@@ -562,46 +566,41 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       // --- ★変更: 締切チェック（毎月○日対応版） ---
       let isAfterDeadline = false;
       const today = new Date();
-      // 今日の日付を YYYY-MM-DD 形式の文字列にする
       const todayStr = today.getFullYear() + '-' + (today.getMonth() + 1).toString().padStart(2, '0') + '-' + today.getDate().toString().padStart(2, '0');
 
-      // 設定された締切日（数値）を取得
       const deadlineDay = parseInt(adminSettings.deadlineDay);
 
       if (deadlineDay && !isNaN(deadlineDay)) {
-        // 締切日の計算: 対象年月(year, month)の「前月」の「deadlineDay」日
-        // monthは1始まり、Dateの月は0始まりなので、前月は month - 2
-        // JavaScriptのDateは自動的に年跨ぎなどを計算してくれます
         const deadlineDate = new Date(year, month - 2, deadlineDay);
-        
-        // 比較用文字列作成
         const deadlineStr = deadlineDate.getFullYear() + '-' + (deadlineDate.getMonth() + 1).toString().padStart(2, '0') + '-' + deadlineDate.getDate().toString().padStart(2, '0');
-        
-        // 今日が締切日より後かどうか判定
         if (todayStr > deadlineStr) {
           isAfterDeadline = true;
         }
       } 
-      // 旧設定（日付指定）の互換性維持（必要なければ削除可）
       else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
         isAfterDeadline = true;
       }
 
       if (isAfterDeadline) {
-        // ★修正: 警告を出して処理を強制終了（return）し、入力をブロックする
         alert("締切日を過ぎているため、入力・変更はできません。\n変更が必要な場合は管理者へご連絡ください。");
         return; 
       }
       // --- ★ここまで ---
       
-if (currentView === 'ope') {
+      if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
         }
       }
-      // ※職員モードの保存時の二重チェック（elseブロック）は削除しました
     }
+
+    // ★追加: 個人の入力(保護対象)かどうかを記憶・更新する変数
+    const nextUserInputs = { ...userInputs };
+    if (!nextUserInputs[staffId]) {
+      nextUserInputs[staffId] = {};
+    }
+
     if (type === 'shift') {
       const nextShifts = { ...shiftData };
       if (nextShifts[staffId]) {
@@ -612,11 +611,19 @@ if (currentView === 'ope') {
 
       if (toolCode) {
         nextShifts[staffId][day] = toolCode;
+        // ★追加: スタッフ本人の入力なら保護フラグをON、管理者なら保護解除
+        if (appUser.role === 'staff') {
+          nextUserInputs[staffId][day] = true;
+        } else {
+          delete nextUserInputs[staffId][day]; 
+        }
       } else {
         delete nextShifts[staffId][day];
+        delete nextUserInputs[staffId][day]; // クリアされた場合は保護も解除
       }
       setShiftData(nextShifts);
-      saveSchedule(nextShifts, taskData);
+      setUserInputs(nextUserInputs); // ★追加
+      saveSchedule(nextShifts, taskData, nextUserInputs); // ★引数追加
     } else {
       const nextTasks = { ...taskData };
       if (nextTasks[staffId]) {
@@ -627,11 +634,19 @@ if (currentView === 'ope') {
 
       if (toolCode) {
         nextTasks[staffId][day] = toolCode;
+        // ★追加: タスク入力時も同様に判定
+        if (appUser.role === 'staff') {
+          nextUserInputs[staffId][day] = true;
+        } else {
+          delete nextUserInputs[staffId][day];
+        }
       } else {
         delete nextTasks[staffId][day];
+        delete nextUserInputs[staffId][day]; // ★追加
       }
       setTaskData(nextTasks);
-      saveSchedule(shiftData, nextTasks);
+      setUserInputs(nextUserInputs); // ★追加
+      saveSchedule(shiftData, nextTasks, nextUserInputs); // ★引数追加
     }
   };
 
@@ -905,34 +920,50 @@ const handleResetSchedule = () => {
     setConfirmModal({
       isOpen: true,
       title: '勤務表の消去',
-      // メッセージを変更し、希望シフトが残ることを明記します
-      message: `${year}年${month}月のシフトとタスクを削除しますか？\n\n※個人で入力された「希望」シフトは削除されずに残ります。\nこの操作は取り消せません。`,
+      message: `${year}年${month}月のシフトとタスクを削除しますか？\n\n※「個人(スタッフ)」が直接入力したシフトは削除されずに残ります。\nこの操作は取り消せません。`,
       onConfirm: () => {
         const newShiftData = {};
+        const newTaskData = {};
+        const newUserInputs = {};
 
-        // 現在のシフトデータをループ処理し、希望シフトだけを抽出します
+        // 現在のシフトデータをループ処理し、スタッフ本人が入力したものだけを抽出します
         Object.keys(shiftData).forEach(staffId => {
           Object.keys(shiftData[staffId]).forEach(day => {
             const code = shiftData[staffId][day];
-            const shiftDef = shiftDefs[code];
 
-            // シフト定義が存在し、かつカテゴリが「req(希望)」または「シフト希望に表示」がONの場合に残す
-            if (shiftDef && (shiftDef.category === 'req' || shiftDef.isRequestable)) {
-              // そのスタッフのオブジェクトがまだなければ作成
-              if (!newShiftData[staffId]) {
-                newShiftData[staffId] = {};
-              }
-              // 新しいデータとして希望シフトのコードを引き継ぐ
+            // ★変更: userInputsに記録されている(＝スタッフが入力した)場合のみ残す
+            if (userInputs[staffId] && userInputs[staffId][day]) {
+              if (!newShiftData[staffId]) newShiftData[staffId] = {};
+              if (!newUserInputs[staffId]) newUserInputs[staffId] = {};
+              
               newShiftData[staffId][day] = code;
+              newUserInputs[staffId][day] = true;
             }
           });
         });
 
-        // 抽出した希望シフトのみをセットし、タスクは完全に空にして保存します
+        // タスクも同様に残します
+        Object.keys(taskData).forEach(staffId => {
+          Object.keys(taskData[staffId]).forEach(day => {
+            const code = taskData[staffId][day];
+            
+            if (userInputs[staffId] && userInputs[staffId][day]) {
+              if (!newTaskData[staffId]) newTaskData[staffId] = {};
+              if (!newUserInputs[staffId]) newUserInputs[staffId] = {}; 
+
+              newTaskData[staffId][day] = code;
+              newUserInputs[staffId][day] = true;
+            }
+          });
+        });
+
+        // 抽出したデータで上書き保存します
         setShiftData(newShiftData);
-        setTaskData({});
-        saveSchedule(newShiftData, {});
-        alert('希望シフトを残して、その他のデータをリセットしました。');
+        setTaskData(newTaskData);
+        setUserInputs(newUserInputs);
+        saveSchedule(newShiftData, newTaskData, newUserInputs);
+        
+        alert('個人が入力したシフトを残して、その他のデータをリセットしました。');
       }
     });
   };
