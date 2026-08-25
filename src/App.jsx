@@ -104,8 +104,8 @@ const TEAMS = [
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
   { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (安定・高速)' }, // 日常的なシフト作成や高速なチャット応答に使用する標準モデルです
-  // APIとして実在する最新のProモデル(2.5)に修正し、エラーを解消します
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
+// エラーメッセージの指示に従い、最新のプレビュー版Proモデルに修正します
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (最新高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
 ];
 
 const INITIAL_STAFF = [
