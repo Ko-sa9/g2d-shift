@@ -104,8 +104,8 @@ const TEAMS = [
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
   { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (安定・高速)' }, // 日常的なシフト作成や高速なチャット応答に使用する標準モデルです
-  // ↓ バージョンを実在する 3.5-pro に修正します
-  { value: 'gemini-3.5-pro', label: 'Gemini 3.5 Pro (高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
+  // APIとして実在する最新のProモデル(2.5)に修正し、エラーを解消します
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
 ];
 
 const INITIAL_STAFF = [
@@ -1886,13 +1886,29 @@ const prepareScheduleDataForAi = () => {
           </div>
         )}
 
-        {/* AI自動作成確認モーダル */}
+{/* AI自動作成確認モーダル */}
         {showAutoFillModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAutoFillModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-yellow-50 to-orange-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2 text-orange-700"><Sparkles size={18}/> AI自動作成 (条件設定)</h3>
-                <button onClick={() => setShowAutoFillModal(false)}><X size={20} className="text-gray-400"/></button>
+                
+                {/* モデル選択リストと閉じるボタンをまとめるコンテナ */}
+                <div className="flex items-center gap-3">
+                  {/* AIモデルを選択するプルダウンを追加（FlashとProの切り替え用） */}
+                  <select 
+                    className="border border-orange-200 p-1 rounded text-xs bg-white/70 text-orange-800 focus:outline-none focus:ring-1 focus:ring-orange-400" 
+                    value={aiModel} 
+                    onChange={(e) => setAiModel(e.target.value)}
+                  >
+                    {AI_MODELS.map(model => (
+                      <option key={model.value} value={model.value}>{model.label}</option>
+                    ))}
+                  </select>
+                  
+                  {/* 閉じるボタン */}
+                  <button onClick={() => setShowAutoFillModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
+                </div>
               </div>
               <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-4 font-bold">以下の条件で、空いているシフトを全て自動で埋めます。</p>
