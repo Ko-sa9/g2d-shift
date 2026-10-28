@@ -124,6 +124,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   'hhd':   { password: 'admin-hhd',   label: 'HHD班管理者' },
   'deadline': '',    // 旧設定（念のため残す）
   'deadlineDay': '', // ★追加: 毎月の締切日 (1-31の数値)
+  'countedOffShifts': ['HOPE'], // 休み希望人数にカウントするシフトコード配列
+  'offRequestAlertCount': '',   // 休み希望人数の強調表示（目安人数）
 };
 
 const TIME_OPTIONS = [];
@@ -262,7 +264,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 
   const handleLogin = () => {
     if (selectedRole === 'admin') {
-      const foundViewKey = Object.keys(adminSettings).find(key => adminSettings[key].password === password);
+      const foundViewKey = Object.keys(adminSettings).find(key => adminSettings[key]?.password === password);
       
       if (foundViewKey) {
         onLogin({ role: 'admin', name: '管理者', initialView: foundViewKey });
@@ -468,6 +470,7 @@ export default function WorkScheduleApp() {
       } else {
         setShiftData({});
         setTaskData({});
+        setUserInputs({});
       }
     });
     return () => {
@@ -559,6 +562,94 @@ export default function WorkScheduleApp() {
     }
   };
 
+  // 個人の入力履歴(userInputs)を { shift?: string, task?: string } 形式に正規化するヘルパー（旧booleanデータ互換）
+  const normalizeUserInputEntry = (rawEntry, currentShiftCode, currentTaskCode) => {
+    if (!rawEntry) return {};
+    if (rawEntry === true) {
+      const migrated = {};
+      if (currentShiftCode) migrated.shift = currentShiftCode;
+      if (currentTaskCode) migrated.task = currentTaskCode;
+      return migrated;
+    }
+    if (typeof rawEntry === 'string') {
+      return { shift: rawEntry };
+    }
+    if (typeof rawEntry === 'object') {
+      return { ...rawEntry };
+    }
+    return {};
+  };
+
+  // 本人が入力した元の希望シフトコードを取得
+  const getUserRequestedShift = (staffId, day) => {
+    const raw = userInputs[staffId]?.[day];
+    if (!raw) return null;
+    if (raw === true) return shiftData[staffId]?.[day] || null;
+    if (typeof raw === 'string') return raw;
+    if (typeof raw === 'object') return raw.shift || null;
+    return null;
+  };
+
+  // 本人が入力した元の希望タスクコードを取得
+  const getUserRequestedTask = (staffId, day) => {
+    const raw = userInputs[staffId]?.[day];
+    if (!raw) return null;
+    if (raw === true) return taskData[staffId]?.[day] || null;
+    if (typeof raw === 'object') return raw.task || null;
+    return null;
+  };
+
+  // 管理者が「希望履歴そのもの」を取り消すハンドラ
+  const handleClearUserRequest = (staffId, day, type = 'shift') => {
+    const currentShiftBefore = shiftData[staffId]?.[day];
+    const currentTaskBefore = taskData[staffId]?.[day];
+    const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
+    const reqCode = type === 'shift' ? entry.shift : entry.task;
+
+    delete entry[type];
+
+    const nextUserInputs = { ...userInputs };
+    if (nextUserInputs[staffId]) {
+      nextUserInputs[staffId] = { ...nextUserInputs[staffId] };
+    } else {
+      nextUserInputs[staffId] = {};
+    }
+
+    if (entry.shift || entry.task) {
+      nextUserInputs[staffId][day] = entry;
+    } else {
+      delete nextUserInputs[staffId][day];
+    }
+
+    let nextShifts = shiftData;
+    let nextTasks = taskData;
+
+    // 現在のシフト・タスクが元の希望と同じままだった場合は、セル自体も空欄にする
+    if (type === 'shift' && reqCode && currentShiftBefore === reqCode) {
+      nextShifts = { ...shiftData, [staffId]: { ...(shiftData[staffId] || {}) } };
+      delete nextShifts[staffId][day];
+      setShiftData(nextShifts);
+    } else if (type === 'task' && reqCode && currentTaskBefore === reqCode) {
+      nextTasks = { ...taskData, [staffId]: { ...(taskData[staffId] || {}) } };
+      delete nextTasks[staffId][day];
+      setTaskData(nextTasks);
+    }
+
+    setUserInputs(nextUserInputs);
+    saveSchedule(nextShifts, nextTasks, nextUserInputs);
+  };
+
+  // 基本設定でカウント対象シフトをON/OFF切り替え
+  const toggleCountedOffShift = (code) => {
+    const currentList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
+    const nextList = currentList.includes(code)
+      ? currentList.filter(c => c !== code)
+      : [...currentList, code];
+    const newSettings = { ...adminSettings, countedOffShifts: nextList };
+    setAdminSettings(newSettings);
+    saveMasterData({ adminSettings: newSettings });
+  };
+
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
@@ -595,9 +686,15 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
       }
     }
 
-    // ★追加: 個人の入力(保護対象)かどうかを記憶・更新する変数
+    // ★追加: 個人の入力(希望履歴)を裏側で保持・更新する変数
+    const currentShiftBefore = shiftData[staffId]?.[day];
+    const currentTaskBefore = taskData[staffId]?.[day];
+    const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
+
     const nextUserInputs = { ...userInputs };
-    if (!nextUserInputs[staffId]) {
+    if (nextUserInputs[staffId]) {
+      nextUserInputs[staffId] = { ...nextUserInputs[staffId] };
+    } else {
       nextUserInputs[staffId] = {};
     }
 
@@ -611,16 +708,24 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
 
       if (toolCode) {
         nextShifts[staffId][day] = toolCode;
-        // ★追加: スタッフ本人の入力なら保護フラグをON、管理者なら保護解除
+        // スタッフ本人の入力なら希望シフトコードを記憶、管理者の編集なら元の本人希望履歴を保持したままにする
         if (appUser.role === 'staff') {
-          nextUserInputs[staffId][day] = true;
-        } else {
-          delete nextUserInputs[staffId][day]; 
+          entry.shift = toolCode;
         }
       } else {
         delete nextShifts[staffId][day];
-        delete nextUserInputs[staffId][day]; // クリアされた場合は保護も解除
+        // スタッフ本人がクリアした場合のみ希望履歴も削除（管理者のクリアでは希望履歴を残す）
+        if (appUser.role === 'staff') {
+          delete entry.shift;
+        }
       }
+
+      if (entry.shift || entry.task) {
+        nextUserInputs[staffId][day] = entry;
+      } else {
+        delete nextUserInputs[staffId][day];
+      }
+
       setShiftData(nextShifts);
       setUserInputs(nextUserInputs); // ★追加
       saveSchedule(nextShifts, taskData, nextUserInputs); // ★引数追加
@@ -634,16 +739,23 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
 
       if (toolCode) {
         nextTasks[staffId][day] = toolCode;
-        // ★追加: タスク入力時も同様に判定
+        // ★追加: タスク入力時もスタッフ本人なら希望コードを記憶、管理者なら元の履歴を保持
         if (appUser.role === 'staff') {
-          nextUserInputs[staffId][day] = true;
-        } else {
-          delete nextUserInputs[staffId][day];
+          entry.task = toolCode;
         }
       } else {
         delete nextTasks[staffId][day];
-        delete nextUserInputs[staffId][day]; // ★追加
+        if (appUser.role === 'staff') {
+          delete entry.task;
+        }
       }
+
+      if (entry.shift || entry.task) {
+        nextUserInputs[staffId][day] = entry;
+      } else {
+        delete nextUserInputs[staffId][day];
+      }
+
       setTaskData(nextTasks);
       setUserInputs(nextUserInputs); // ★追加
       saveSchedule(shiftData, nextTasks, nextUserInputs); // ★引数追加
@@ -926,33 +1038,29 @@ const handleResetSchedule = () => {
         const newTaskData = {};
         const newUserInputs = {};
 
-        // 現在のシフトデータをループ処理し、スタッフ本人が入力したものだけを抽出します
-        Object.keys(shiftData).forEach(staffId => {
-          Object.keys(shiftData[staffId]).forEach(day => {
-            const code = shiftData[staffId][day];
+        // userInputsに記録されているスタッフ本人の希望履歴からシフト・タスクを復元します
+        Object.keys(userInputs).forEach(staffId => {
+          Object.keys(userInputs[staffId] || {}).forEach(day => {
+            const entry = normalizeUserInputEntry(
+              userInputs[staffId][day],
+              shiftData[staffId]?.[day],
+              taskData[staffId]?.[day]
+            );
+            const restoredEntry = {};
 
-            // ★変更: userInputsに記録されている(＝スタッフが入力した)場合のみ残す
-            if (userInputs[staffId] && userInputs[staffId][day]) {
+            if (entry.shift && shiftDefs[entry.shift]) {
               if (!newShiftData[staffId]) newShiftData[staffId] = {};
-              if (!newUserInputs[staffId]) newUserInputs[staffId] = {};
-              
-              newShiftData[staffId][day] = code;
-              newUserInputs[staffId][day] = true;
+              newShiftData[staffId][day] = entry.shift;
+              restoredEntry.shift = entry.shift;
             }
-          });
-        });
-
-        // タスクも同様に残します
-        Object.keys(taskData).forEach(staffId => {
-          Object.keys(taskData[staffId]).forEach(day => {
-            const code = taskData[staffId][day];
-            
-            if (userInputs[staffId] && userInputs[staffId][day]) {
+            if (entry.task && shiftDefs[entry.task]) {
               if (!newTaskData[staffId]) newTaskData[staffId] = {};
-              if (!newUserInputs[staffId]) newUserInputs[staffId] = {}; 
-
-              newTaskData[staffId][day] = code;
-              newUserInputs[staffId][day] = true;
+              newTaskData[staffId][day] = entry.task;
+              restoredEntry.task = entry.task;
+            }
+            if (restoredEntry.shift || restoredEntry.task) {
+              if (!newUserInputs[staffId]) newUserInputs[staffId] = {};
+              newUserInputs[staffId][day] = restoredEntry;
             }
           });
         });
@@ -1057,6 +1165,17 @@ const prepareScheduleDataForAi = () => {
       let updatedCount = 0;
       const ns = { ...shiftData };
       const nt = { ...taskData };
+      const nextUserInputs = { ...userInputs };
+
+      // AIによる上書き前に旧形式(boolean)の希望履歴があればコード形式へ保全する
+      Object.keys(userInputs).forEach(sId => {
+        Object.keys(userInputs[sId] || {}).forEach(d => {
+          if (userInputs[sId][d] === true) {
+            nextUserInputs[sId] = { ...(nextUserInputs[sId] || {}) };
+            nextUserInputs[sId][d] = normalizeUserInputEntry(true, shiftData[sId]?.[d], taskData[sId]?.[d]);
+          }
+        });
+      });
 
       if (changes.shift) {
         Object.keys(changes.shift).forEach(key => {
@@ -1065,7 +1184,7 @@ const prepareScheduleDataForAi = () => {
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
 
           if (staffId && staffList.find(s => s.id === staffId)) { 
-             if (!ns[staffId]) ns[staffId] = {};
+             ns[staffId] = { ...(ns[staffId] || {}) };
              Object.keys(changes.shift[key]).forEach(day => {
                 const code = changes.shift[key][day];
                 if (shiftDefs[code]) {
@@ -1083,7 +1202,7 @@ const prepareScheduleDataForAi = () => {
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
 
           if (staffId && staffList.find(s => s.id === staffId)) {
-             if (!nt[staffId]) nt[staffId] = {};
+             nt[staffId] = { ...(nt[staffId] || {}) };
              Object.keys(changes.task[key]).forEach(day => {
                 const code = changes.task[key][day];
                 if (shiftDefs[code]) {
@@ -1098,7 +1217,8 @@ const prepareScheduleDataForAi = () => {
       if (updatedCount > 0) {
         setShiftData(ns);
         setTaskData(nt);
-        saveSchedule(ns, nt);
+        setUserInputs(nextUserInputs);
+        saveSchedule(ns, nt, nextUserInputs);
         return { success: true, count: updatedCount };
       } else {
         return { success: false, message: "変更が必要な箇所が見つかりませんでした。" };
@@ -1361,6 +1481,57 @@ const prepareScheduleDataForAi = () => {
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
 
+  const countedOffShifts = useMemo(() => {
+    return Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
+  }, [adminSettings.countedOffShifts]);
+
+  // 各日付の休み希望人数をカウント（パートは対象外、管理者が空欄や休みシフトへ変更しても元の希望履歴があれば維持）
+  const dailyOffRequestCounts = useMemo(() => {
+    const counts = {};
+    const countedSet = new Set(countedOffShifts);
+    daysArray.forEach(day => {
+      let count = 0;
+      staffList.forEach(staff => {
+        if (staff.jobTitle === 'パート') return;
+
+        const currentCode = shiftData[staff.id]?.[day] || null;
+        const rawUserEntry = userInputs[staff.id]?.[day];
+        const reqCode = !rawUserEntry ? null
+          : rawUserEntry === true ? currentCode
+          : typeof rawUserEntry === 'string' ? rawUserEntry
+          : rawUserEntry.shift || null;
+
+        const isCurrentCounted = !!(currentCode && countedSet.has(currentCode));
+        const isCurrentBlankOrOff = !currentCode || shiftDefs[currentCode]?.category === 'off' || shiftDefs[currentCode]?.category === 'req';
+        const isOriginalRequestMaintained = !!(reqCode && countedSet.has(reqCode) && isCurrentBlankOrOff);
+
+        if (isCurrentCounted || isOriginalRequestMaintained) {
+          count++;
+        }
+      });
+      counts[day] = count;
+    });
+    return counts;
+  }, [daysArray, staffList, shiftData, userInputs, shiftDefs, countedOffShifts]);
+
+  // 基本設定タブ用: シフトのみ(type === 'shift')をカテゴリごとに整理し、「希望」「休み」カテゴリを先頭に並べる
+  const basicSettingsShiftGroups = useMemo(() => {
+    const priorityOrder = { req: 0, off: 1 };
+    return dynamicPaletteGroups
+      .map(g => ({
+        ...g,
+        color: categoryDefs[g.id]?.color || 'bg-gray-50 text-gray-800',
+        items: g.items.filter(code => shiftDefs[code]?.type === 'shift')
+      }))
+      .filter(g => g.items.length > 0)
+      .sort((a, b) => {
+        const pa = priorityOrder[a.id] ?? 99;
+        const pb = priorityOrder[b.id] ?? 99;
+        if (pa !== pb) return pa - pb;
+        return (categoryDefs[a.id]?.order ?? 99) - (categoryDefs[b.id]?.order ?? 99);
+      });
+  }, [dynamicPaletteGroups, categoryDefs, shiftDefs]);
+
   const getTargetCount = (shiftCode, day) => {
     if (!targetCounts[shiftCode]) return 0;
     const dow = getDayOfWeek(year, month, day);
@@ -1504,6 +1675,17 @@ const prepareScheduleDataForAi = () => {
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
                   <div className="text-xs text-gray-500">残業合計: <span className="font-bold text-red-600 text-sm">{staffOvertimeStats[appUser.id] || 0}h</span></div>
                 </div>
+                <div className="px-4 py-1.5 bg-white border-b flex flex-wrap items-center justify-between gap-1 text-[10px] sm:text-xs text-gray-500">
+                  <span>※日付横の「休○」は現在の休み希望人数（パート除く）</span>
+                  {parseInt(adminSettings.offRequestAlertCount, 10) > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 border border-red-300 font-bold text-[10px] leading-none">
+                        休{parseInt(adminSettings.offRequestAlertCount, 10)}
+                      </span>
+                      <span>以上は希望集中</span>
+                    </span>
+                  )}
+                </div>
                 <div className="grid grid-cols-7 border-b bg-gray-100 text-xs font-bold text-gray-600 text-center py-2">
                   <div className="text-red-500">日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div className="text-blue-500">土</div>
                 </div>
@@ -1514,10 +1696,16 @@ const prepareScheduleDataForAi = () => {
                     const taskCode = day ? taskData[appUser.id]?.[day] : null;
                     const shift = shiftDefs[shiftCode];
                     const task = shiftDefs[taskCode];
+                    const reqShiftCode = day ? getUserRequestedShift(appUser.id, day) : null;
+                    const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
                     const isSun = cell.date.getDay() === 0;
                     const isSat = cell.date.getDay() === 6;
                     const isHol = day && isHoliday(year, month, day);
                     const isEditable = cell.currentMonth && !isSun; 
+                    const offCount = day && !isSun ? (dailyOffRequestCounts[day] || 0) : 0;
+                    const alertThreshold = parseInt(adminSettings.offRequestAlertCount, 10);
+                    const hasAlertThreshold = !isNaN(alertThreshold) && alertThreshold > 0;
+                    const isOffAlert = hasAlertThreshold && offCount >= alertThreshold;
                     let bg = 'bg-white';
                     if(!cell.currentMonth) bg = 'bg-gray-50';
                     else if(isSun || isHol) bg = 'bg-red-50';
@@ -1525,17 +1713,49 @@ const prepareScheduleDataForAi = () => {
 
                     return (
                       <div key={idx} className={`${bg} min-h-[5rem] p-1 flex flex-col relative`}>
-                        <div className={`text-[10px] font-bold mb-1 ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}>{cell.date.getDate()}</div>
+                        <div className="flex items-center justify-between mb-1 gap-0.5 min-h-[14px]">
+                          <div className={`text-[10px] font-bold leading-none ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}>{cell.date.getDate()}</div>
+                          {cell.currentMonth && !isSun && offCount > 0 && (
+                            <span
+                              className={`text-[9px] sm:text-[10px] leading-none px-1 py-0.5 rounded-full font-bold whitespace-nowrap border ${
+                                isOffAlert
+                                  ? 'bg-red-100 text-red-600 border-red-300'
+                                  : hasAlertThreshold
+                                    ? 'bg-gray-100 text-gray-600 border-gray-200'
+                                    : 'bg-pink-100 text-pink-600 border-pink-200'
+                              }`}
+                              title={`現在の休み希望人数: ${offCount}人`}
+                            >
+                              休{offCount}
+                            </span>
+                          )}
+                        </div>
                         {cell.currentMonth && (
                           <div className="flex-1 flex flex-col gap-1">
                             <div 
                               onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, appUser.id, day, 'shift'); }}}
-                              className={`flex-1 rounded border flex flex-col items-center justify-center cursor-pointer transition 
+                              className={`flex-1 rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
                                 ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
-                                  shift ? 'bg-white border-blue-200 shadow-sm' : 'bg-transparent border-dashed border-gray-300'} 
+                                  shift ? 'bg-white border-blue-200 shadow-sm' :
+                                  reqShiftCode ? 'bg-pink-50/60 border-dashed border-pink-300' : 'bg-transparent border-dashed border-gray-300'} 
                                 ${isEditable ? 'hover:border-blue-400' : ''}`}
                             >
-                              {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : <span className="text-[8px] text-gray-300">選択</span>}
+                              {shift ? (
+                                <>
+                                  <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span>
+                                  {reqShiftCode && shiftCode !== reqShiftCode && (
+                                    <span className="text-[8px] text-pink-500 leading-none mt-0.5 truncate max-w-full">
+                                      希:{reqShift?.label || reqShiftCode}
+                                    </span>
+                                  )}
+                                </>
+                              ) : reqShiftCode ? (
+                                <span className="text-[9px] sm:text-[10px] font-bold text-pink-500 leading-tight text-center">
+                                  {reqShiftCode === 'HOPE' ? '希望済' : `${reqShift?.label || reqShiftCode}(希)`}
+                                </span>
+                              ) : (
+                                <span className="text-[8px] text-gray-300">選択</span>
+                              )}
                             </div>
                             {task && <div className="text-[8px] text-center border rounded bg-white text-gray-600">{task.label}</div>}
                           </div>
@@ -1553,6 +1773,12 @@ const prepareScheduleDataForAi = () => {
                       <th className="sticky top-0 left-0 z-30 bg-gray-100 border-b border-r p-2 min-w-[120px] h-24 text-left">
                         <div className="flex flex-col justify-between h-full">
                           <span className="text-xs text-gray-500">職員 / 日付</span>
+                          {appUser.role === 'admin' && (
+                            <div className="text-[9px] font-normal text-gray-500 leading-tight space-y-0.5 my-0.5">
+                              <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力</div>
+                              <div className="flex items-center gap-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>編集前の希望</div>
+                            </div>
+                          )}
                           {appUser.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); handleAddStaff(); }} className="flex items-center gap-1 text-xs bg-white border px-2 py-1 rounded text-blue-600 font-bold"><Plus size={12}/> 職員追加</button>}
                         </div>
                       </th>
@@ -1618,6 +1844,10 @@ const prepareScheduleDataForAi = () => {
                             const taskCode = taskData[staff.id]?.[day];
                             const shift = shiftDefs[shiftCode];
                             const task = shiftDefs[taskCode];
+                            const reqShiftCode = getUserRequestedShift(staff.id, day);
+                            const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
+                            const reqTaskCode = getUserRequestedTask(staff.id, day);
+                            const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
@@ -1632,13 +1862,30 @@ const prepareScheduleDataForAi = () => {
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
                             // ツールチップ用のテキスト生成
-                            let tooltipText = "";
+                            const shiftTooltips = [];
+                            if (appUser.role === 'admin' && reqShiftCode) {
+                              const reqLabel = reqShift?.label || reqShiftCode;
+                              if (shiftCode !== reqShiftCode) {
+                                shiftTooltips.push(`【個人希望】${reqLabel} → 現在: ${shift ? shift.label : '空欄'}`);
+                              } else {
+                                shiftTooltips.push(`【個人希望】${reqLabel}（本人入力）`);
+                              }
+                            }
                             if (targetLog) {
                               const dateObj = targetLog.timestamp ? targetLog.timestamp.toDate() : new Date();
                               const dateStr = `${dateObj.getMonth()+1}/${dateObj.getDate()} ${dateObj.getHours()}:${dateObj.getMinutes().toString().padStart(2,'0')}`;
                               const beforeLabel = shiftDefs[targetLog.before]?.label || targetLog.before || '未設定';
                               const afterLabel = shiftDefs[targetLog.after]?.label || targetLog.after || '未設定';
-                              tooltipText = `【変更履歴】\n日時: ${dateStr}\n内容: ${beforeLabel} → ${afterLabel}`;
+                              shiftTooltips.push(`【変更履歴】\n日時: ${dateStr}\n内容: ${beforeLabel} → ${afterLabel}`);
+                            }
+                            const tooltipText = shiftTooltips.join('\n\n');
+
+                            let taskTooltip = '';
+                            if (appUser.role === 'admin' && reqTaskCode) {
+                              const reqTaskLabel = reqTask?.label || reqTaskCode;
+                              taskTooltip = taskCode !== reqTaskCode
+                                ? `【個人タスク希望】${reqTaskLabel} → 現在: ${task ? task.label : '空欄'}`
+                                : `【個人タスク希望】${reqTaskLabel}（本人入力）`;
                             }
 
                             return (
@@ -1646,18 +1893,42 @@ const prepareScheduleDataForAi = () => {
                                 <div className="w-full h-full flex flex-col">
                                   {/* シフト表示部分(上3/4)にだけスタイルとツールチップを適用 */}
                                   <div 
-                                    className={`h-3/4 flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5 
+                                    className={`h-3/4 relative flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5 
                                       ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10' : ''} 
                                       ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
                                     `}
-                                    title={hasLog ? tooltipText : ''} 
+                                    title={tooltipText} 
                                     onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
                                   >
+                                    {appUser.role === 'admin' && reqShiftCode && (
+                                      shiftCode !== reqShiftCode ? (
+                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[36px] truncate">
+                                          {reqShift?.label || reqShiftCode}
+                                        </span>
+                                      ) : (
+                                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
+                                      )
+                                    )}
                                     {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : null}
                                   </div>
                                   
                                   {/* タスク表示部分(下1/4) */}
-                                  <div className="h-1/4 flex items-center justify-center transition hover:bg-black/5" onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}>
+                                  <div
+                                    className={`h-1/4 relative flex items-center justify-center transition hover:bg-black/5
+                                      ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
+                                    `}
+                                    title={taskTooltip}
+                                    onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
+                                  >
+                                    {appUser.role === 'admin' && reqTaskCode && (
+                                      taskCode !== reqTaskCode && !task ? (
+                                        <span className="px-0.5 rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[36px] truncate">
+                                          {reqTask?.label || reqTaskCode}
+                                        </span>
+                                      ) : (
+                                        <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full pointer-events-none ${taskCode !== reqTaskCode ? 'bg-pink-600 ring-1 ring-pink-200' : 'bg-pink-400'}`} />
+                                      )
+                                    )}
                                     {task ? <span className={`font-bold text-[10px] ${task.text} transform scale-90`}>{task.label}</span> : null}
                                   </div>
                                 </div>
@@ -1679,6 +1950,20 @@ const prepareScheduleDataForAi = () => {
                           <td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td>
                         </tr>
                         <tr><td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>{daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}<td className="bg-gray-50 border-b"></td></tr>
+                        <tr>
+                          <td className="sticky left-0 bg-pink-50 border-r border-b p-2 text-xs font-bold text-right text-pink-700">休み希望数</td>
+                          {daysArray.map(day => {
+                            const count = isSunday(year, month, day) ? 0 : (dailyOffRequestCounts[day] || 0);
+                            const alertThreshold = parseInt(adminSettings.offRequestAlertCount, 10);
+                            const isAlert = !isNaN(alertThreshold) && alertThreshold > 0 && count >= alertThreshold;
+                            return (
+                              <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-100 text-red-600' : 'bg-pink-50/40 text-pink-600'}`}>
+                                {count > 0 ? count : '-'}
+                              </td>
+                            );
+                          })}
+                          <td className="bg-gray-50 border-b"></td>
+                        </tr>
                         {dynamicSummaryGroups.map(group => (
                           <React.Fragment key={group.name}>
                             {group.totalLabel && (
@@ -1720,28 +2005,73 @@ const prepareScheduleDataForAi = () => {
           </div>
         </main>
 
-        {activePopup && (
-          <div 
-            className={`z-50 bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
-              md:absolute md:w-64 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
-            style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 200), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 280) } : {}}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex justify-between items-center mb-2 pb-2 border-b">
-              <div className="text-sm font-bold text-gray-700">
-                {month}月{activePopup.day}日 - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
+        {activePopup && (() => {
+          const popupStaff = staffList.find(s => s.id === activePopup.staffId);
+          const popupCurrentCode = activePopup.type === 'shift'
+            ? shiftData[activePopup.staffId]?.[activePopup.day]
+            : taskData[activePopup.staffId]?.[activePopup.day];
+          const popupReqCode = activePopup.type === 'shift'
+            ? getUserRequestedShift(activePopup.staffId, activePopup.day)
+            : getUserRequestedTask(activePopup.staffId, activePopup.day);
+          const popupReqDef = popupReqCode ? shiftDefs[popupReqCode] : null;
+
+          return (
+            <div 
+              className={`z-50 bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
+                md:absolute md:w-72 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
+              style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 250), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 300) } : {}}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-2 pb-2 border-b">
+                <div className="text-sm font-bold text-gray-700 truncate pr-2">
+                  {month}月{activePopup.day}日{appUser.role === 'admin' && popupStaff ? ` (${popupStaff.name})` : ''} - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
+                </div>
+                <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
-              <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition"><X size={18} /></button>
+              {appUser.role === 'admin' && popupReqCode && (
+                <div className="mb-2 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs flex items-center justify-between gap-2">
+                  <div className="text-pink-800 flex items-center gap-1 min-w-0">
+                    <span className="font-bold shrink-0">個人希望:</span>
+                    <span className={`font-extrabold px-1.5 py-0.5 bg-white rounded border border-pink-200 truncate ${popupReqDef?.text || 'text-pink-700'}`}>
+                      {popupReqDef ? popupReqDef.label : popupReqCode}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {popupCurrentCode !== popupReqCode && popupReqDef && (
+                      <button
+                        onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
+                        className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
+                        title="本人が入力した希望内容に戻します"
+                      >
+                        希望に戻す
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { handleClearUserRequest(activePopup.staffId, activePopup.day, activePopup.type); setActivePopup(null); }}
+                      className="px-2 py-1 bg-white hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-[10px] transition"
+                      title="個人の希望履歴自体を消去します"
+                    >
+                      希望取消
+                    </button>
+                  </div>
+                </div>
+              )}
+              {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto max-h-[40vh] md:max-h-[30vh] p-1">
+                <button
+                  onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
+                  className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
+                  title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴は保持されます）' : 'クリア'}
+                >
+                  クリア
+                </button>
+                {getPopupOptions(activePopup.type).map(shift => (
+                  <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
+                ))}
+              </div>
             </div>
-            {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
-            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto max-h-[40vh] md:max-h-[30vh] p-1">
-              <button onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }} className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold">クリア</button>
-              {getPopupOptions(activePopup.type).map(shift => (
-                <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
-              ))}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* 統合設定モーダル */}
         {showSettingsModal && (
@@ -1765,9 +2095,10 @@ const prepareScheduleDataForAi = () => {
                   {/* ... (設定タブの内容は省略せず表示) */}
                   {/* ★追加：基本設定タブの内容 */}
                   {activeSettingsTab === 'basic' && (
-                    <div className="max-w-md mx-auto mt-8">
-                      <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">基本設定</h4>
-                      <div className="mb-6">
+                    <div className="max-w-xl mx-auto mt-4 space-y-8 pb-6">
+                      <h4 className="font-bold text-gray-700 border-b pb-3">基本設定</h4>
+
+                      <div>
                         <label className="block text-sm font-bold text-gray-700 mb-2">休み希望の締切設定</label>
                         <div className="flex gap-2 items-center">
                           <span className="text-sm">毎月</span>
@@ -1790,6 +2121,73 @@ const prepareScheduleDataForAi = () => {
                         <p className="text-xs text-gray-500 mt-2">
                           ※設定すると、対象月（シフトの月）の<strong>前月の設定日</strong>を締切日とみなします。<br/>
                           （例：毎月20日に設定 → 5月分のシフト希望は4月20日が締切）
+                        </p>
+                      </div>
+
+                      <div className="border-t pt-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-1">休み希望人数としてカウントするシフト</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          個人カレンダーの各日付横に表示される「休○」バッジおよび集計の「休み希望数」にカウントするシフトを選択してください。<br/>
+                          ※パート職員の入力分はカウント対象外となります（バッジ自体はパート職員の画面にも表示されます）。
+                        </p>
+                        <div className="space-y-3 bg-gray-50 p-4 rounded-lg border">
+                          {basicSettingsShiftGroups.map(group => (
+                            <div key={group.id}>
+                              <div className="text-[11px] font-bold text-gray-500 mb-1.5 flex items-center gap-1.5">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] ${group.color}`}>{group.name}</span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {group.items.map(code => {
+                                  const s = shiftDefs[code];
+                                  if (!s) return null;
+                                  const isChecked = countedOffShifts.includes(code);
+                                  return (
+                                    <label
+                                      key={code}
+                                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer transition select-none ${
+                                        isChecked
+                                          ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-400 shadow-sm'
+                                          : 'bg-white border-gray-200 hover:bg-gray-100'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="w-4 h-4 text-blue-600 rounded"
+                                        checked={isChecked}
+                                        onChange={() => toggleCountedOffShift(code)}
+                                      />
+                                      <span className={`text-xs font-bold ${s.text}`}>{s.label}</span>
+                                      <span className="text-[10px] text-gray-400">({s.code})</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="border-t pt-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-2">休み希望人数の強調表示（目安人数）</label>
+                        <div className="flex gap-2 items-center">
+                          <select
+                            className="border p-2 rounded w-36"
+                            value={adminSettings.offRequestAlertCount || ''}
+                            onChange={(e) => {
+                              const newSettings = { ...adminSettings, offRequestAlertCount: e.target.value };
+                              setAdminSettings(newSettings);
+                              saveMasterData({ adminSettings: newSettings });
+                            }}
+                          >
+                            <option value="">未設定（単色）</option>
+                            {[...Array(15)].map((_, i) => (
+                              <option key={i + 1} value={i + 1}>{i + 1}人以上</option>
+                            ))}
+                          </select>
+                          <span className="text-sm text-gray-700">で赤色強調</span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">
+                          ※設定した人数以上に達した日は、個人カレンダーの「休○」バッジが赤色で強調表示されます。
                         </p>
                       </div>
                     </div>
@@ -1912,7 +2310,7 @@ const prepareScheduleDataForAi = () => {
                         <div className="mb-4">
                           <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
                           <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
-                            {Object.keys(adminSettings).filter(key => adminSettings[key].label).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
+                            {Object.keys(adminSettings).filter(key => adminSettings[key]?.label).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
                           </select>
                         </div>
                         <div><label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label><input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></div>
@@ -2093,7 +2491,7 @@ const prepareScheduleDataForAi = () => {
                        onChange={e => setTargetAdminKey(e.target.value)}
                      >
                        {Object.keys(adminSettings)
-                         .filter(key => adminSettings[key].label)
+                         .filter(key => adminSettings[key]?.label)
                          .map(key => (
                            <option key={key} value={key}>{adminSettings[key].label}</option>
                          ))}
