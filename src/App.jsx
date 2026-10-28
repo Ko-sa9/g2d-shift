@@ -458,6 +458,7 @@ export default function WorkScheduleApp() {
 
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
+  const [showStaffShiftDetailRestriction, setShowStaffShiftDetailRestriction] = useState(false);
   const [targetCategory, setTargetCategory] = useState(null); 
   const [newPassword, setNewPassword] = useState('');
 
@@ -538,7 +539,9 @@ export default function WorkScheduleApp() {
           loginId: s.loginId || '',
           skills: s.skills || {},
           maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
-          excludeFromAi: s.excludeFromAi || false 
+          excludeFromAi: s.excludeFromAi || false,
+          excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
+          excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
         }));
 
         setStaffList(loadedStaffList);
@@ -1103,18 +1106,70 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     setNewPassword('');
   };
 
+  // Step 1: 職員ごとのAI配置可能な施設・シフト判定ヘルパー
+  const isShiftAllowedForStaff = (staff, shiftCode) => {
+    if (!staff || !shiftCode) return true;
+    const def = shiftDefs[shiftCode];
+    if (!def || def.type !== 'shift') return true;
+    if (def.category === 'off' || def.category === 'req') return true;
+
+    const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
+    const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
+    if (exCats.includes(def.category)) return false;
+    if (exShifts.includes(shiftCode)) return false;
+
+    const isCool3 = shiftCode === 'A' || shiftCode === 'F' || (def.label && def.label.includes('3')) || (def.endTime && def.endTime >= '21:00');
+    if ((staff.maxCool3 ?? 5) <= 0 && isCool3) return false;
+
+    return true;
+  };
+
+  // 職員に設定されているAI配置制限の概要テキスト（ツールチップ・バッジ表示用）
+  const getStaffRestrictionSummaryText = (staff) => {
+    if (!staff) return '';
+    const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
+    const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
+    const parts = [];
+    if (exCats.length > 0) {
+      const catNames = exCats.map(cid => categoryDefs[cid]?.label || cid);
+      parts.push(`不可施設: ${catNames.join('・')}`);
+    }
+    if (exShifts.length > 0) {
+      const shiftNames = exShifts.map(code => shiftDefs[code]?.label || code);
+      parts.push(`不可シフト: ${shiftNames.join('・')}`);
+    }
+    return parts.join(' / ');
+  };
+
   const handleAddStaff = () => {
-    setTargetStaff({ id: null, loginId: '', name: '', jobTitle: '一般', roles: [], skills: {}, maxCool3: 5, excludeFromAi: false });
+    setTargetStaff({
+      id: null,
+      loginId: '',
+      name: '',
+      jobTitle: '一般',
+      roles: [],
+      skills: {},
+      maxCool3: 5,
+      excludeFromAi: false,
+      excludedCategories: [],
+      excludedShifts: [],
+    });
+    setShowStaffShiftDetailRestriction(false);
     setShowStaffModal(true);
   };
 
   const handleEditStaff = (staff) => {
+    const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
+    const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
     setTargetStaff({ 
       ...staff, 
       skills: staff.skills || {}, 
       maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
-      excludeFromAi: staff.excludeFromAi || false
+      excludeFromAi: staff.excludeFromAi || false,
+      excludedCategories: exCats,
+      excludedShifts: exShifts,
     });
+    setShowStaffShiftDetailRestriction(exShifts.length > 0);
     setShowStaffModal(true);
   };
 
@@ -1446,6 +1501,12 @@ const prepareScheduleDataForAi = () => {
         }
       }
 
+      // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出
+      const allowedWorkShifts = Object.values(shiftDefs)
+        .filter(def => def.type === 'shift' && def.category !== 'off' && def.category !== 'req' && isShiftAllowedForStaff(s, def.code))
+        .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+        .map(def => def.code);
+
       return { 
         id: s.id,
         name: s.name, 
@@ -1455,6 +1516,9 @@ const prepareScheduleDataForAi = () => {
         powerScore,
         maxCool3: s.maxCool3, 
         excludeFromAi: s.excludeFromAi,
+        allowedWorkShifts,
+        excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
+        excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
         currentStats: {
           workDays,
           offDays,
@@ -1605,12 +1669,13 @@ const prepareScheduleDataForAi = () => {
           let staffId = key;
           // IDが見つからない場合、名前として検索
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
+          const staffObj = staffList.find(s => s.id === staffId);
 
-          if (staffId && staffList.find(s => s.id === staffId)) { 
+          if (staffId && staffObj) { 
              ns[staffId] = { ...(ns[staffId] || {}) };
              Object.keys(changes.shift[key]).forEach(day => {
                 const code = changes.shift[key][day];
-                if (shiftDefs[code]) {
+                if (shiftDefs[code] && isShiftAllowedForStaff(staffObj, code)) {
                    ns[staffId][day] = code;
                    updatedCount++;
                 }
@@ -1705,7 +1770,9 @@ const prepareScheduleDataForAi = () => {
 
       【基本ルール】
       1. 既存データ・個人希望の維持と活用: 既にシフトが入っている箇所や staffRequests に希望がある箇所は絶対に変更しないでください。ただし、既存シフトのメンバーとそのpowerScoreも、その日の必要人数とパワーバランスの計算に必ず含めて考慮してください（dailySummary に現在の集計値が入っています）。
-      2. AI除外: "excludeFromAi": true の職員は変更しない。日曜日はシフトを入れない。
+      2. AI除外と配置可能シフト制限（★絶対厳守★）:
+         - "excludeFromAi": true の職員は変更しない。日曜日はシフトを入れない。
+         - 各職員に出勤シフトを割り当てる際は、必ずその職員データの "allowedWorkShifts" 配列に含まれているシフトコードのみから選んでください（許可されていない施設・シフトへの配置は絶対禁止です）。
       3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）。これを超えないこと。
       4. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
          - 坂田 (category: saka): 合計 30点 以上 (目安人数: 6名)
@@ -1849,6 +1916,7 @@ const prepareScheduleDataForAi = () => {
             afterTextClass: normalizedAfter ? (shiftDefs[normalizedAfter]?.text || 'text-gray-800') : 'text-gray-400',
             hasStaffRequest: !!(reqCode && reqCode !== normalizedAfter),
             staffRequestLabel: reqCode ? (shiftDefs[reqCode]?.label || reqCode) : null,
+            isRestrictedShift: !!(kind === 'shift' && normalizedAfter && !isShiftAllowedForStaff(staff, normalizedAfter)),
           });
         });
       });
@@ -2004,6 +2072,7 @@ const prepareScheduleDataForAi = () => {
 【基本ルール】
 - 日曜日はシフト不可（空欄のまま）。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
+- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts" に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 3クール制限: 各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
 - 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)・ME室(me)は人数充足のみ。
 - 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
@@ -2510,6 +2579,13 @@ ${messageText}`;
                                   {staff.jobTitle}
                                   {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
                                   {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
+                                  {getStaffRestrictionSummaryText(staff) && (
+                                    <ListFilter
+                                      size={10}
+                                      className="text-amber-500"
+                                      title={`AI配置制限あり（${getStaffRestrictionSummaryText(staff)}）`}
+                                    />
+                                  )}
                                   {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
                                 </div>
                               </div>
@@ -3269,9 +3345,11 @@ ${messageText}`;
                   )}
                   {activeSettingsTab === 'staff' && (
                     <div className="h-full flex flex-col">
-                      <div className="mb-4 flex justify-between items-center">
-                        <p className="text-xs text-gray-500">スキル、3クール制限、AI除外設定を一括管理します。</p>
-                        <button onClick={handleAddStaff} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded flex items-center gap-1 hover:bg-blue-700"><Plus size={12}/> 職員追加</button>
+                      <div className="mb-4 flex justify-between items-center gap-2">
+                        <p className="text-xs text-gray-500">
+                          スキル、3クール制限、AI配置可能施設、AI除外設定を一括管理します（施設バッジをクリックしてON/OFF切替できます）。
+                        </p>
+                        <button onClick={handleAddStaff} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded flex items-center gap-1 hover:bg-blue-700 shrink-0"><Plus size={12}/> 職員追加</button>
                       </div>
                       <div className="flex-1 overflow-auto border rounded-lg">
                         <table className="w-full border-collapse text-xs bg-white">
@@ -3279,35 +3357,79 @@ ${messageText}`;
                             <tr>
                               <th className="p-2 border text-center w-8"></th>
                               <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
-                              <th className="p-2 border text-center w-16">編集</th>
-                              <th className="p-2 border text-center w-20">AI除外</th>
+                              <th className="p-2 border text-center w-14">編集</th>
+                              <th className="p-2 border text-center w-16">AI除外</th>
                               <th className="p-2 border text-center w-20">3クール上限</th>
-                              {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-20"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
+                              <th className="p-2 border text-left min-w-[210px]">AI配置可能施設 / 制限</th>
+                              {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-16"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
                             </tr>
                           </thead>
                           <tbody>
-                            {staffList.map((staff, index) => (
-                              <tr 
-                                key={staff.id} 
-                                className="hover:bg-gray-50 border-b cursor-grab active:cursor-grabbing"
-                                draggable
-                                onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
-                                onDragOver={(e) => e.preventDefault()}
-                                onDrop={(e) => { 
-                                  e.preventDefault(); 
-                                  handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
-                                }}
-                              >
-                                <td className="p-2 border text-center text-gray-400 hover:text-gray-600">
-                                  <GripVertical size={14} className="mx-auto" />
-                                </td>
-                                <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
-                                <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded"><Edit2 size={14}/></button></td>
-                                <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
-                                <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
-                                {STAFF_SKILLS.map(skill => (<td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => { const newList = [...staffList]; const currentVal = staff.skills?.[skill.key] || false; newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } }; setStaffList(newList); }}>{staff.skills?.[skill.key] ? <Check size={16} className="text-green-600 mx-auto"/> : <div className="w-3 h-3 mx-auto border rounded-sm border-gray-300"></div>}</td>))}
-                              </tr>
-                            ))}
+                            {staffList.map((staff, index) => {
+                              const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
+                              const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
+                              return (
+                                <tr 
+                                  key={staff.id} 
+                                  className="hover:bg-gray-50 border-b cursor-grab active:cursor-grabbing"
+                                  draggable
+                                  onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
+                                  onDragOver={(e) => e.preventDefault()}
+                                  onDrop={(e) => { 
+                                    e.preventDefault(); 
+                                    handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
+                                  }}
+                                >
+                                  <td className="p-2 border text-center text-gray-400 hover:text-gray-600">
+                                    <GripVertical size={14} className="mx-auto" />
+                                  </td>
+                                  <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
+                                  <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="詳細・個別シフト制限を編集"><Edit2 size={14}/></button></td>
+                                  <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
+                                  <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
+                                  <td className="p-2 border">
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                                        const isAllowed = !exCats.includes(group.id);
+                                        return (
+                                          <button
+                                            key={group.id}
+                                            type="button"
+                                            onClick={() => {
+                                              const nextExCats = isAllowed
+                                                ? [...exCats, group.id]
+                                                : exCats.filter(id => id !== group.id);
+                                              const newList = [...staffList];
+                                              newList[index] = { ...staff, excludedCategories: nextExCats };
+                                              setStaffList(newList);
+                                            }}
+                                            className={`px-1.5 py-0.5 rounded border text-[10px] font-bold transition select-none ${
+                                              isAllowed
+                                                ? `${group.headerColor} border-current/20 shadow-xs`
+                                                : 'bg-gray-100 text-gray-400 border-gray-200 line-through opacity-70'
+                                            }`}
+                                            title={isAllowed ? `${group.name}: AI配置OK（クリックで除外）` : `${group.name}: AI配置NG（クリックで許可）`}
+                                          >
+                                            {group.name}
+                                          </button>
+                                        );
+                                      })}
+                                      {exShifts.length > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleEditStaff(staff)}
+                                          className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-300 text-[10px] font-bold hover:bg-amber-100 transition"
+                                          title={`個別除外シフト: ${exShifts.map(c => shiftDefs[c]?.label || c).join('・')}（クリックで編集）`}
+                                        >
+                                          個別NG:{exShifts.length}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </td>
+                                  {STAFF_SKILLS.map(skill => (<td key={skill.key} className="p-2 border text-center cursor-pointer hover:bg-blue-50" onClick={() => { const newList = [...staffList]; const currentVal = staff.skills?.[skill.key] || false; newList[index] = { ...staff, skills: { ...(staff.skills || {}), [skill.key]: !currentVal } }; setStaffList(newList); }}>{staff.skills?.[skill.key] ? <Check size={16} className="text-green-600 mx-auto"/> : <div className="w-3 h-3 mx-auto border rounded-sm border-gray-300"></div>}</td>))}
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -3513,6 +3635,7 @@ ${messageText}`;
                   const isExpanded = !!expandedProposalIds[msgKey];
                   const visibleChanges = isExpanded ? changes : changes.slice(0, 10);
                   const staffReqConflictCount = changes.filter(c => c.hasStaffRequest).length;
+                  const restrictedShiftCount = changes.filter(c => c.isRestrictedShift).length;
 
                   if (msg.role === 'user') {
                     return (
@@ -3587,12 +3710,25 @@ ${messageText}`;
                                   </div>
                                 )}
 
+                                {restrictedShiftCount > 0 && (
+                                  <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-2.5 py-1.5">
+                                    <AlertTriangle size={13} className="text-amber-600 shrink-0 mt-0.5" />
+                                    <span>
+                                      職員の「配置可能施設・シフト制限」外のシフトが <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
+                                    </span>
+                                  </div>
+                                )}
+
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
                                   {visibleChanges.map((item, cIdx) => (
                                     <div
                                       key={`${item.staffId}_${item.day}_${item.kind}_${cIdx}`}
                                       className={`flex items-center justify-between gap-1.5 bg-white border rounded-lg px-2.5 py-1.5 text-xs ${
-                                        item.hasStaffRequest ? 'border-pink-300' : 'border-gray-200'
+                                        item.hasStaffRequest
+                                          ? 'border-pink-300'
+                                          : item.isRestrictedShift
+                                            ? 'border-amber-300'
+                                            : 'border-gray-200'
                                       }`}
                                     >
                                       <div className="flex items-center gap-1.5 min-w-0">
@@ -3613,6 +3749,14 @@ ${messageText}`;
                                             title={`本人希望: ${item.staffRequestLabel}`}
                                           >
                                             希:{item.staffRequestLabel}
+                                          </span>
+                                        )}
+                                        {item.isRestrictedShift && (
+                                          <span
+                                            className="text-[9px] px-1 rounded bg-amber-100 text-amber-800 font-bold shrink-0"
+                                            title="この職員のAI配置制限外のシフトです"
+                                          >
+                                            制限外
                                           </span>
                                         )}
                                       </div>
@@ -3753,17 +3897,147 @@ ${messageText}`;
         {/* スタッフ詳細（サブモーダル） (z-index 110) */}
         {showStaffModal && (
           <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
                 <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
               </div>
-              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label><input type="text" className="w-full border p-2 rounded" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} /></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label><select className="w-full border p-2 rounded" value={targetStaff.jobTitle || '一般'} onChange={e => setTargetStaff({...targetStaff, jobTitle: e.target.value})}>{JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="space-y-2">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-2"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
+              <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} /></div>
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label><select className="w-full border p-2 rounded text-sm" value={targetStaff.jobTitle || '一般'} onChange={e => setTargetStaff({...targetStaff, jobTitle: e.target.value})}>{JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                </div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
+
+                {/* Step 1: AI配置可能な施設・個別シフト制限（B案） */}
+                <div className="border-t pt-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-gray-700 flex items-center gap-1">
+                      <ListFilter size={13} className="text-blue-600" />
+                      AI配置可能な施設・シフト制限
+                    </label>
+                    {((targetStaff.excludedCategories?.length || 0) > 0 || (targetStaff.excludedShifts?.length || 0) > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setTargetStaff({ ...targetStaff, excludedCategories: [], excludedShifts: [] })}
+                        className="text-[10px] text-blue-600 hover:underline font-bold"
+                      >
+                        すべて許可に戻す
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-400 mb-2">
+                    ※AI作成・提案時のみ適用されます（管理者の手動入力時は全シフト選べます）。
+                  </p>
+
+                  <div className="bg-gray-50 border rounded-lg p-3 space-y-2.5">
+                    <div className="text-[11px] font-bold text-gray-600">配置可能な施設（チェックを外すとAI配置対象外）</div>
+                    <div className="flex flex-wrap gap-2">
+                      {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                        const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
+                        const isAllowed = !exCats.includes(group.id);
+                        return (
+                          <label
+                            key={group.id}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer select-none transition ${
+                              isAllowed
+                                ? 'bg-white border-blue-400 text-gray-800 ring-1 ring-blue-300 shadow-xs'
+                                : 'bg-gray-100 border-gray-200 text-gray-400'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="w-3.5 h-3.5 text-blue-600 rounded"
+                              checked={isAllowed}
+                              onChange={() => {
+                                const nextExCats = isAllowed
+                                  ? [...exCats, group.id]
+                                  : exCats.filter(id => id !== group.id);
+                                setTargetStaff({ ...targetStaff, excludedCategories: nextExCats });
+                              }}
+                            />
+                            <span>{group.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    {/* B案: 折りたたみ式の個別シフトOFF設定 */}
+                    <div className="pt-1 border-t border-gray-200">
+                      <button
+                        type="button"
+                        onClick={() => setShowStaffShiftDetailRestriction(prev => !prev)}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 py-1"
+                      >
+                        <span>{showStaffShiftDetailRestriction ? '▼' : '▶'} 個別シフト単位で細かく制限する（2クール不可など）</span>
+                        {(targetStaff.excludedShifts?.length || 0) > 0 && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px]">
+                            除外 {targetStaff.excludedShifts.length}件
+                          </span>
+                        )}
+                      </button>
+
+                      {showStaffShiftDetailRestriction && (
+                        <div className="mt-2 space-y-2.5 bg-white border rounded-lg p-2.5">
+                          <p className="text-[10px] text-gray-400">
+                            チェックを外したシフトにはAIが割り振りません（例：坂田は行けるが「坂2」「坂3」は外して「坂日」のみにする等）。
+                          </p>
+                          {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                            const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
+                            const exShifts = Array.isArray(targetStaff.excludedShifts) ? targetStaff.excludedShifts : [];
+                            const isCatDisabled = exCats.includes(group.id);
+                            return (
+                              <div key={group.id} className={isCatDisabled ? 'opacity-45' : ''}>
+                                <div className="text-[10px] font-bold text-gray-500 mb-1 flex items-center gap-1.5">
+                                  <span className={`px-1.5 py-0.5 rounded ${group.headerColor}`}>{group.name}</span>
+                                  {isCatDisabled && <span className="text-red-500">（施設ごとOFF）</span>}
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {group.items.map(code => {
+                                    const sDef = shiftDefs[code];
+                                    if (!sDef) return null;
+                                    const isShiftChecked = !exShifts.includes(code);
+                                    return (
+                                      <label
+                                        key={code}
+                                        className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs select-none transition ${
+                                          isCatDisabled
+                                            ? 'bg-gray-50 border-gray-200 cursor-not-allowed'
+                                            : isShiftChecked
+                                              ? 'bg-blue-50/60 border-blue-300 cursor-pointer'
+                                              : 'bg-gray-100 border-gray-200 text-gray-400 line-through cursor-pointer'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          disabled={isCatDisabled}
+                                          checked={isShiftChecked}
+                                          onChange={() => {
+                                            const nextExShifts = isShiftChecked
+                                              ? [...exShifts, code]
+                                              : exShifts.filter(c => c !== code);
+                                            setTargetStaff({ ...targetStaff, excludedShifts: nextExShifts });
+                                          }}
+                                          className="w-3 h-3 text-blue-600 rounded"
+                                        />
+                                        <span className={`font-bold ${isShiftChecked && !isCatDisabled ? sDef.text : 'text-gray-400'}`}>
+                                          {sDef.label}
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.password || ''} onChange={e => setTargetStaff({...targetStaff, password: e.target.value})} /></div>
                 <div className="pt-2"><button onClick={saveStaff} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button></div>
                 {targetStaff.id && <button onClick={() => { removeStaff(targetStaff.id); setShowStaffModal(false); }} className="w-full py-2 text-red-500 text-xs hover:underline">この職員を削除</button>}
               </div>
