@@ -136,6 +136,19 @@ const INITIAL_STAFF = [
   { id: '6', loginId: '6', name: '職員F', jobTitle: 'パート', roles: [], skills: {}, password: '1234', maxCool3: 0, excludeFromAi: true },
 ];
 
+const TEAM_ADMIN_LABELS = {
+  ope: 'オペ班管理者',
+  echo: 'エコー班管理者',
+  hhd: 'HHD班管理者',
+};
+
+const DEFAULT_FACILITY_SKILL_TARGETS = {
+  saka: { isLeader: 1, canEcho: 0, canMachine: 0, canFollow: 0, isVeteran: 0 },
+  kimi: { isLeader: 1, canEcho: 0, canMachine: 0, canFollow: 0, isVeteran: 0 },
+  kikuri: { isLeader: 1, canEcho: 0, canMachine: 0, canFollow: 0, isVeteran: 0 },
+  jinkuri: { isLeader: 0, canEcho: 0, canMachine: 0, canFollow: 0, isVeteran: 0 },
+};
+
 const DEFAULT_ADMIN_SETTINGS = {
   'all':   { password: 'admin',       label: '全体管理者' },
   'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
@@ -148,6 +161,7 @@ const DEFAULT_ADMIN_SETTINGS = {
   'clinicClosedDays': [],       // 外来診療休診日設定（祝日と同様に赤表示）
   'maxConsecutiveWorkDays': 5,  // AI作成時の最大連勤数（週休2日標準: 5連勤まで）
   'monthlyRegularOffDays': 'auto', // 月間の基本公休数（日曜除く指定休・振休枠: 'auto' または数値）
+  'facilitySkillTargets': DEFAULT_FACILITY_SKILL_TARGETS, // Step 4: 施設ごとの必須スキル最低人数
 };
 
 const TIME_OPTIONS = [];
@@ -835,7 +849,7 @@ export default function WorkScheduleApp() {
       nextUserInputs[staffId] = {};
     }
 
-    if (entry.shift || entry.task) {
+    if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
       nextUserInputs[staffId][day] = entry;
     } else {
       delete nextUserInputs[staffId][day];
@@ -967,6 +981,37 @@ export default function WorkScheduleApp() {
     return code === 'L' || code === 'G' || normLabel === 'L' || normLabel === 'G' || normLabel === 'Ｌ' || normLabel === 'Ｇ';
   };
 
+  // 現在ログイン中または選択中の班管理者キー（ope / echo / hhd）を取得
+  const getActiveTeamAdminKey = () => {
+    if (!appUser || appUser.role !== 'admin') return null;
+    if (['ope', 'echo', 'hhd'].includes(appUser.initialView)) return appUser.initialView;
+    if (['ope', 'echo', 'hhd'].includes(currentView)) return currentView;
+    return null;
+  };
+
+  // HHD班・エコー班・オペ班管理者が入力したシフトかどうかを判定（AI変更ロック＆条件考慮用）
+  const getTeamLockedShiftSource = (staffId, day, shiftsMap = shiftData, inputsMap = userInputs) => {
+    const currentCode = shiftsMap[staffId]?.[day];
+    if (!currentCode) return null;
+    const raw = inputsMap[staffId]?.[day];
+    if (raw && typeof raw === 'object' && raw.teamShiftBy && TEAM_ADMIN_LABELS[raw.teamShiftBy]) {
+      return raw.teamShiftBy;
+    }
+    if (isMeRoomShiftCode(currentCode)) return 'ope';
+    return null;
+  };
+
+  // HHD班・エコー班・オペ班管理者が入力したタスクかどうかを判定
+  const getTeamLockedTaskSource = (staffId, day, tasksMap = taskData, inputsMap = userInputs) => {
+    const currentCode = tasksMap[staffId]?.[day];
+    if (!currentCode) return null;
+    const raw = inputsMap[staffId]?.[day];
+    if (raw && typeof raw === 'object' && raw.teamTaskBy && TEAM_ADMIN_LABELS[raw.teamTaskBy]) {
+      return raw.teamTaskBy;
+    }
+    return null;
+  };
+
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
@@ -981,10 +1026,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       }
     }
 
-    // ★追加: 個人の入力(希望履歴)を裏側で保持・更新する変数
+    // ★追加: 個人の入力(希望履歴)と班管理者の入力元フラグを裏側で保持・更新する変数
     const currentShiftBefore = shiftData[staffId]?.[day];
     const currentTaskBefore = taskData[staffId]?.[day];
     const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
+    const activeTeamKey = getActiveTeamAdminKey();
 
     const nextUserInputs = { ...userInputs };
     if (nextUserInputs[staffId]) {
@@ -1014,6 +1060,14 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
               delete entry.reason;
             }
           }
+        } else if (appUser.role === 'admin') {
+          if (activeTeamKey) {
+            entry.teamShiftBy = activeTeamKey;
+          } else if (isMeRoomShiftCode(toolCode)) {
+            entry.teamShiftBy = 'ope';
+          } else {
+            delete entry.teamShiftBy;
+          }
         }
       } else {
         delete nextShifts[staffId][day];
@@ -1021,10 +1075,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         if (appUser.role === 'staff') {
           delete entry.shift;
           delete entry.reason;
+        } else if (appUser.role === 'admin') {
+          delete entry.teamShiftBy;
         }
       }
 
-      if (entry.shift || entry.task) {
+      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
         nextUserInputs[staffId][day] = entry;
       } else {
         delete nextUserInputs[staffId][day];
@@ -1046,15 +1102,23 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         // ★追加: タスク入力時もスタッフ本人なら希望コードを記憶、管理者なら元の履歴を保持
         if (appUser.role === 'staff') {
           entry.task = toolCode;
+        } else if (appUser.role === 'admin') {
+          if (activeTeamKey) {
+            entry.teamTaskBy = activeTeamKey;
+          } else {
+            delete entry.teamTaskBy;
+          }
         }
       } else {
         delete nextTasks[staffId][day];
         if (appUser.role === 'staff') {
           delete entry.task;
+        } else if (appUser.role === 'admin') {
+          delete entry.teamTaskBy;
         }
       }
 
-      if (entry.shift || entry.task) {
+      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
         nextUserInputs[staffId][day] = entry;
       } else {
         delete nextUserInputs[staffId][day];
@@ -1436,8 +1500,8 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const saveTargetCounts = () => {
-    saveMasterData({ targetCounts: targetCounts }); // ★修正
-    alert('必要人数設定を保存しました');
+    saveMasterData({ targetCounts: targetCounts, adminSettings: adminSettings });
+    alert('必要人数・必須スキル設定を保存しました');
     setShowTargetCountModal(false);
   };
 
@@ -1504,6 +1568,93 @@ const handleResetSchedule = () => {
     if (!targetCounts[shiftCode]) return 0;
     const dow = getDayOfWeek(year, month, day);
     return targetCounts[shiftCode][dow] || 0;
+  };
+
+  // Step 4: 施設ごとの必須スキル最低人数を取得するヘルパー（初期値: 坂田・君津・木クリはリーダー1名以上）
+  const getFacilitySkillTarget = (catId, skillKey, settingsObj = adminSettings) => {
+    if (!catId || catId === 'me' || catId === 'off' || catId === 'req' || catId === 'role' || catId === 'basic') {
+      return 0;
+    }
+    const customMap = settingsObj?.facilitySkillTargets;
+    if (customMap && customMap[catId] && customMap[catId][skillKey] !== undefined) {
+      return Math.max(0, parseInt(customMap[catId][skillKey], 10) || 0);
+    }
+    return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+  };
+
+  // Step 4: 指定日における各施設のスキル保持者数と必須スキル不足一覧を計算するヘルパー
+  const evaluateFacilitySkillShortagesForDay = (day, shiftsMap = shiftData, settingsObj = adminSettings) => {
+    const skillCountsByCat = {};
+    const shortagesByCat = {};
+    const allShortages = [];
+
+    if (isSunday(year, month, day)) {
+      return { skillCountsByCat, shortagesByCat, allShortages };
+    }
+
+    const facilityCats = Object.values(categoryDefs)
+      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+
+    facilityCats.forEach(cat => {
+      skillCountsByCat[cat.id] = {};
+      STAFF_SKILLS.forEach(sk => {
+        skillCountsByCat[cat.id][sk.key] = 0;
+      });
+    });
+
+    staffList.forEach(s => {
+      const code = shiftsMap[s.id]?.[day];
+      if (!code || !shiftDefs[code]) return;
+      const def = shiftDefs[code];
+      if (def.type !== 'shift' || def.category === 'off' || def.category === 'req') return;
+      if (!skillCountsByCat[def.category]) return;
+
+      STAFF_SKILLS.forEach(sk => {
+        if (s.skills?.[sk.key]) {
+          skillCountsByCat[def.category][sk.key] = (skillCountsByCat[def.category][sk.key] || 0) + 1;
+        }
+      });
+    });
+
+    facilityCats.forEach(cat => {
+      const catShortages = [];
+      const catShiftCodes = Object.values(shiftDefs)
+        .filter(sd => sd.type === 'shift' && sd.category === cat.id)
+        .map(sd => sd.code);
+      if (catShiftCodes.length === 0) return;
+
+      const catTargetHeadcount = catShiftCodes.reduce((sum, code) => sum + getTargetCount(code, day), 0);
+      const catActualHeadcount = catShiftCodes.reduce(
+        (sum, code) => sum + staffList.filter(s => shiftsMap[s.id]?.[day] === code).length,
+        0
+      );
+      if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
+
+      STAFF_SKILLS.forEach(sk => {
+        const reqMin = getFacilitySkillTarget(cat.id, sk.key, settingsObj);
+        if (reqMin > 0) {
+          const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
+          if (actual < reqMin) {
+            const item = {
+              catId: cat.id,
+              catLabel: cat.label,
+              skillKey: sk.key,
+              skillLabel: sk.label,
+              actual,
+              target: reqMin,
+            };
+            catShortages.push(item);
+            allShortages.push(item);
+          }
+        }
+      });
+      if (catShortages.length > 0) {
+        shortagesByCat[cat.id] = catShortages;
+      }
+    });
+
+    return { skillCountsByCat, shortagesByCat, allShortages };
   };
 
   // Step 3: 前月末（最終週の月〜土）からの連勤数・公休消化・3クール連続判定をリアルタイム計算（AI＆管理表バッジ共通）
@@ -1924,9 +2075,12 @@ const prepareScheduleDataForAi = () => {
     });
 
     // スタッフ本人が希望を出した箇所（プライバシー保護のため理由テキストは除外し、希望コードのみ渡す）
+    // およびHHD班・エコー班・オペ班管理者が入力したAI変更不可ロック箇所を抽出
     const staffRequests = {};
+    const teamAdminLocks = {};
     staffList.forEach(s => {
       const staffReq = {};
+      const staffTeamLock = {};
       for (let d = 1; d <= days; d++) {
         const reqShift = getUserRequestedShift(s.id, d);
         const reqTask = getUserRequestedTask(s.id, d);
@@ -1935,13 +2089,51 @@ const prepareScheduleDataForAi = () => {
           if (reqShift) staffReq[d].shift = reqShift;
           if (reqTask) staffReq[d].task = reqTask;
         }
+
+        const teamShiftSrc = getTeamLockedShiftSource(s.id, d);
+        const teamTaskSrc = getTeamLockedTaskSource(s.id, d);
+        if (teamShiftSrc || teamTaskSrc) {
+          staffTeamLock[d] = {};
+          if (teamShiftSrc) {
+            staffTeamLock[d].shift = shiftData[s.id]?.[d];
+            staffTeamLock[d].shiftLockedBy = TEAM_ADMIN_LABELS[teamShiftSrc] || teamShiftSrc;
+          }
+          if (teamTaskSrc) {
+            staffTeamLock[d].task = taskData[s.id]?.[d];
+            staffTeamLock[d].taskLockedBy = TEAM_ADMIN_LABELS[teamTaskSrc] || teamTaskSrc;
+          }
+        }
       }
       if (Object.keys(staffReq).length > 0) {
         staffRequests[s.id] = staffReq;
       }
+      if (Object.keys(staffTeamLock).length > 0) {
+        teamAdminLocks[s.id] = staffTeamLock;
+      }
     });
 
-    // 各日付の施設別スコアと不足状況を事前計算してAIの判断精度を高める
+    // Step 4: 施設ごとの必須スキル最低人数設定を整形
+    const facilitySkillRequirements = {};
+    Object.values(categoryDefs)
+      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+      .forEach(cat => {
+        const reqSkills = {};
+        STAFF_SKILLS.forEach(sk => {
+          const minCnt = getFacilitySkillTarget(cat.id, sk.key);
+          if (minCnt > 0) {
+            reqSkills[sk.key] = { label: sk.label, minCount: minCnt };
+          }
+        });
+        if (Object.keys(reqSkills).length > 0) {
+          facilitySkillRequirements[cat.id] = {
+            facilityLabel: cat.label,
+            requiredSkills: reqSkills,
+          };
+        }
+      });
+
+    // 各日付の施設別スコア・必須スキル充足状況・不足状況を事前計算してAIの判断精度を高める
     const dailySummary = {};
     for (let d = 1; d <= days; d++) {
       if (calendarInfo[d].isSunday) continue;
@@ -1967,6 +2159,8 @@ const prepareScheduleDataForAi = () => {
         }
       });
 
+      const skillEval = evaluateFacilitySkillShortagesForDay(d, shiftData);
+
       const shortages = [];
       Object.keys(targetCounts || {}).forEach(code => {
         // ME室(L/G)はOPE班管理者が入力するため、AIが埋めるべき不足リスト(shortages)からは除外
@@ -1978,6 +2172,9 @@ const prepareScheduleDataForAi = () => {
           shortages.push(`${label}(${code}): ${actual}/${target}名`);
         }
       });
+      skillEval.allShortages.forEach(sh => {
+        shortages.push(`${sh.catLabel} 必須スキル[${sh.skillLabel}]: ${sh.actual}/${sh.target}名`);
+      });
       if (sakaScore < 30) shortages.push(`坂田スコア: ${sakaScore}/30点`);
       if (kimiScore < 30) shortages.push(`君津スコア: ${kimiScore}/30点`);
       if (kikuriScore < 40) shortages.push(`木クリスコア: ${kikuriScore}/40点`);
@@ -1988,6 +2185,7 @@ const prepareScheduleDataForAi = () => {
         sakaScore,
         kimiScore,
         kikuriScore,
+        facilitySkillCounts: skillEval.skillCountsByCat,
         shortages
       };
     }
@@ -2005,13 +2203,15 @@ const prepareScheduleDataForAi = () => {
           ? `${baseRegularOffMin}日`
           : `${baseRegularOffMin}〜${baseRegularOffMax}日`,
         offDayRepresentation: '空欄（SやH等のコードは入れず未入力のまま残す）',
-        meRoomRule: 'ME室(L, G)はOPE班管理者が別途組むためAIでの自動入力・既存変更は禁止（祝日のME室必要人数はG:1名/L:0名）'
+        meRoomRule: 'ME室(L, G)およびHHD班・エコー班・オペ班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止（条件・スコア・スキル・連勤計算には必ず含める）'
       },
+      facilitySkillRequirements,
       calendar: calendarInfo,
       calendarWeeks,
       cool3ShiftCodes,
       staff: enrichedStaff,
       staffRequests,
+      teamAdminLocks,
       dailySummary,
       shifts: shiftData, 
       tasks: taskData,
@@ -2162,7 +2362,7 @@ const prepareScheduleDataForAi = () => {
              Object.keys(changes.task[key]).forEach(day => {
                 const dayNum = parseInt(day, 10);
                 if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
-                if (taskData[staffId]?.[dayNum] || getUserRequestedTask(staffId, dayNum)) return;
+                if (taskData[staffId]?.[dayNum] || getUserRequestedTask(staffId, dayNum) || getTeamLockedTaskSource(staffId, dayNum)) return;
 
                 const code = changes.task[key][day];
                 if (shiftDefs[code]) {
@@ -2179,7 +2379,7 @@ const prepareScheduleDataForAi = () => {
         setTaskData(nt);
         setUserInputs(nextUserInputs);
         saveSchedule(ns, nt, nextUserInputs);
-        return { success: true, count: updatedCount };
+        return { success: true, count: updatedCount, nextShifts: ns };
       } else {
         return { success: false, message: "変更が必要な箇所が見つかりませんでした。" };
       }
@@ -2229,6 +2429,11 @@ const prepareScheduleDataForAi = () => {
       const data = prepareScheduleDataForAi();
       const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
       const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
+      const skillReqLines = Object.values(data.facilitySkillRequirements || {}).map(fReq => {
+        const parts = Object.values(fReq.requiredSkills || {}).map(sr => `${sr.label}${sr.minCount}名以上`);
+        return `${fReq.facilityLabel}: ${parts.join('・')}`;
+      });
+      const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
       const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
       const activeConditions = autoFillConditions
@@ -2236,15 +2441,15 @@ const prepareScheduleDataForAi = () => {
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・最大連勤・前月末引き継ぎ・週休2日（空欄残し）・3クール連続禁止・ME室除外を行わせるプロンプト
+      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・施設別必須スキル・最大連勤・前月末引き継ぎ・週休2日（空欄残し）・3クール連続禁止・班管理ロックを行わせるプロンプト
       const prompt = `
       【タスク】
-      現在の勤務表データを分析し、各職員の前月末からの引き継ぎ・週休2日（日曜＋週1日休み＝空欄）・最大連勤制限・3クール連続禁止を守りながら、必要な出勤シフトのみを割り当ててください。
+      現在の勤務表データを分析し、各職員の前月末からの引き継ぎ・週休2日（日曜＋週1日休み＝空欄）・最大連勤制限・3クール連続禁止・施設ごとの必須スキル配置を守りながら、必要な出勤シフトのみを割り当ててください。
 
       【基本ルール】
-      1. 既存データ・個人希望の維持と活用（★絶対厳守★）:
-         - 既にシフトが入っている箇所（管理者が事前入力したME室のL/G、年休Y、リフレR、指定休S、振休Hなど全て）や staffRequests に希望がある箇所は絶対に変更しないでください。
-         - ただし、既存シフトのメンバー（L/G等も含む）とそのpowerScore・出勤日数・連勤数は、計算に必ず含めて考慮してください（dailySummary と currentStats に事前集計済みです）。
+      1. 既存データ・各班管理者入力・個人希望の維持と活用（★絶対厳守★）:
+         - 既にシフト・タスクが入っている箇所（全体管理者やHHD班・エコー班・オペ班管理者が入力したシフト・タスク、ME室のL/G、年休Y、リフレR、指定休S、振休Hなど全て）や、"teamAdminLocks"・"staffRequests" にある箇所は絶対に変更しないでください。
+         - ただし、既存シフトのメンバー（HHD班・エコー班・オペ班管理者が入力した分やME室のL/G等も含む）の人数・powerScore・保持スキル（リーダー等）・出勤日数・連勤数は、すべての条件計算に必ず含めて考慮してください（dailySummary と currentStats に事前集計済みです）。
       2. AI除外・配置可能シフト制限・ME室除外（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のためシフトを入れない。
          - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
@@ -2267,12 +2472,19 @@ const prepareScheduleDataForAi = () => {
          - 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）です。これを超えないこと。
          - 同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てることは絶対禁止です（日曜休診を挟む場合を除く）。
          - 特に月またぎの条件として、"prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを絶対に入れないでください（1日に出勤させる場合は必ず "day1AllowedWorkShifts" から選ぶこと）。
-      5. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
+      5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
+         - 各施設の1日あたりの必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】
+         - まず各施設に該当スキル保持者（例: skills.isLeader === true のリーダー）が最低人数以上入るように優先して割り振ってください。
+         - 【どうしても全員揃えられない日の次善策（重要）】:
+           ・希望休・年休・既存シフト・ME室・配置不可施設制限・最大${maxStreak}連勤上限を破ってまで無理やり出勤させることは絶対にしないでください。
+           ・出勤可能なスキル保持者が足りない日は、1つの施設に2名以上偏らせず「まず各施設に1名ずつ分散配置」して不足施設数を最小限に抑えてください。
+           ・どうしても必須スキル保持者が0名になってしまう施設には、代わりに「ベテラン（skills.isVeteran: true）」または powerScore の高いスタッフを優先配置してカバーし、エラーにせず最後までシフトを組み切ってください。
+      6. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
          - 坂田 (category: saka): 合計 30点 以上 (目安人数: 6名)
          - 君津 (category: kimi): 合計 30点 以上 (目安人数: 6名)
          - 木クリ (category: kikuri): 合計 40点 以上 (目安人数: 8名)
-         ※「じんクリ (jinkuri)」については必要人数の充足のみ行い、パワーバランス(スコア計算)は不要です。「ME室 (me)」はOPE班管理のためAI配置対象外です。
-      6. 必要人数と負担の分散: 各曜日・各シフトごとの目標人数は「targetCounts」および「dailySummary.shortages」を参照して満たしつつ、出勤日数・3クール回数・残業時間が特定の人に偏らないよう分散させてください。
+         ※「じんクリ (jinkuri)」については必要人数の充足（および必須スキル設定がある場合のみその充足）を行い、パワーバランス(スコア計算)は不要です。「ME室 (me)」はOPE班管理のためAI配置対象外です。
+      7. 必要人数と負担の分散: 各曜日・各シフトごとの目標人数は「targetCounts」および「dailySummary.shortages」を参照して満たしつつ、出勤日数・3クール回数・残業時間が特定の人に偏らないよう分散させてください。
 
       【適用条件（★何よりも優先すべき絶対ルール★）】
       以下の条件は、上記の基本ルール（パワーバランスや必要人数の確保など）よりも優先して「絶対」に守ってください。ルールが競合した場合でも、必ずこちらの条件を優先します。
@@ -2280,17 +2492,17 @@ const prepareScheduleDataForAi = () => {
 
       【出力形式】
       必ず以下のJSONフォーマットのみを出力してください。Markdownタグを含めないでください。
-      エラーを防ぎつつ品質を上げるため、必ず「1日ずつ」データ内の「targetCounts」「powerScore（既存シフト分も含む）」「連勤上限（${maxStreak}連勤まで）・週休の空欄確保」をチェックし、その評価を "dailyCheck" に記載してから、出勤させるセルのみ "shift" に出力してください（休みの日は空欄のままにするため "shift" に含めないこと）。
+      エラーを防ぎつつ品質を上げるため、必ず「1日ずつ」データ内の「targetCounts」「施設ごとの必須スキル（リーダー等）」「powerScore（既存シフト分も含む）」「連勤上限（${maxStreak}連勤まで）・週休の空欄確保」をチェックし、その評価を "dailyCheck" に記載してから、出勤させるセルのみ "shift" に出力してください（休みの日は空欄のままにするため "shift" に含めないこと）。
       {
         "dailyCheck": {
-          "1": "1日のチェック: 既存シフトも含めて計算。坂田は必要人数達成(スコア32点)、君津は必要人数達成(スコア31点)、木クリはスコア42点。週休対象者は空欄を維持し連勤上限もクリア。",
+          "1": "1日のチェック: 既存シフトも含めて計算。坂田・君津・木クリともリーダー1名以上配置、必要人数・目標スコア達成。週休対象者は空欄を維持し連勤上限もクリア。",
           "2": "2日のチェック: ...",
           "3": "..."
         },
         "shift": {
           "職員ID": { "日付(1-31の数値)": "出勤シフトコード" }
         },
-        "reason": "全体を通した申し送り事項や、targetCounts・パワーバランス・週休確保の兼ね合いで調整した点があれば記載"
+        "reason": "全体を通した申し送り事項や、リーダー不足日・スコア・週休確保の兼ね合いで調整した点があれば記載"
       }
       
       【データ】
@@ -2304,7 +2516,32 @@ const prepareScheduleDataForAi = () => {
 
       const res = await applyAiResult(result);
       if (res.success) {
-        setTimeout(() => setIsAiLoading(false), 500); 
+        const appliedShifts = res.nextShifts || shiftData;
+        const totalDays = getDaysInMonth(year, month);
+        const unresolvedSkillLines = [];
+        for (let d = 1; d <= totalDays; d++) {
+          if (isSunday(year, month, d)) continue;
+          const evalDay = evaluateFacilitySkillShortagesForDay(d, appliedShifts);
+          if (evalDay.allShortages.length > 0) {
+            const dowLbl = ['日', '月', '火', '水', '木', '金', '土'][getDayOfWeek(year, month, d)];
+            const detail = evalDay.allShortages
+              .map(sh => `${sh.catLabel}(${sh.skillLabel} ${sh.actual}/${sh.target}名)`)
+              .join('・');
+            unresolvedSkillLines.push(`・${month}/${d}(${dowLbl}): ${detail}`);
+          }
+        }
+        setTimeout(() => {
+          setIsAiLoading(false);
+          if (unresolvedSkillLines.length > 0) {
+            const previewList = unresolvedSkillLines.slice(0, 8).join('\n');
+            const moreLine = unresolvedSkillLines.length > 8 ? `\n…ほか ${unresolvedSkillLines.length - 8} 日` : '';
+            alert(
+              `シフトの自動作成が完了しました（${res.count}箇所を入力）。\n\n` +
+              `※希望休・既存シフト・連勤制限を優先したため、以下の日程・施設で必須スキル（リーダー等）が不足しています。勤務表下部の集計欄（オレンジ色表示）をご確認ください：\n\n` +
+              `${previewList}${moreLine}`
+            );
+          }
+        }, 500);
       } else {
         setIsAiLoading(false);
         alert(`AI結果の適用に失敗しました。\n理由: ${res.message || res.error || '不明なエラー'}`);
@@ -2389,6 +2626,14 @@ const prepareScheduleDataForAi = () => {
 
           const currentCode = (kind === 'shift' ? shiftData[staffId]?.[dayNum] : taskData[staffId]?.[dayNum]) || null;
           if (currentCode === normalizedAfter) return;
+
+          // HHD班・エコー班・オペ班管理者が入力したシフト・タスク、およびME室(L/G)の新規自動配置はAIチャットからも変更不可とする
+          if (kind === 'shift') {
+            if (getTeamLockedShiftSource(staffId, dayNum)) return;
+            if (normalizedAfter && isMeRoomShiftCode(normalizedAfter)) return;
+          } else {
+            if (getTeamLockedTaskSource(staffId, dayNum)) return;
+          }
 
           const reqCode = kind === 'shift'
             ? getUserRequestedShift(staffId, dayNum)
@@ -2479,6 +2724,7 @@ const prepareScheduleDataForAi = () => {
 
     targetMsg.proposedChanges.forEach(item => {
       if (item.kind === 'shift') {
+        if (getTeamLockedShiftSource(item.staffId, item.day)) return;
         ns[item.staffId] = { ...(ns[item.staffId] || {}) };
         if (item.afterCode) {
           ns[item.staffId][item.day] = item.afterCode;
@@ -2486,6 +2732,7 @@ const prepareScheduleDataForAi = () => {
           delete ns[item.staffId][item.day];
         }
       } else {
+        if (getTeamLockedTaskSource(item.staffId, item.day)) return;
         nt[item.staffId] = { ...(nt[item.staffId] || {}) };
         if (item.afterCode) {
           nt[item.staffId][item.day] = item.afterCode;
@@ -2571,6 +2818,11 @@ const prepareScheduleDataForAi = () => {
       const data = prepareScheduleDataForAi();
       const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
       const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
+      const skillReqLines = Object.values(data.facilitySkillRequirements || {}).map(fReq => {
+        const parts = Object.values(fReq.requiredSkills || {}).map(sr => `${sr.label}${sr.minCount}名以上`);
+        return `${fReq.facilityLabel}: ${parts.join('・')}`;
+      });
+      const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
 
       const activeConditions = autoFillConditions
         .filter(c => c.active)
@@ -2585,8 +2837,8 @@ const prepareScheduleDataForAi = () => {
 2. "reply" には管理者に語りかける自然な日本語メッセージを書いてください。内部のシフトコード（A, P, HOPEなど）や職員IDは使わず、必ず表示名（坂3、坂2、希望 など）と職員名（職員Aさん など）で分かりやすく伝えてください。
 3. 質問への回答、現状の診断、または複数候補の比較相談の段階では、"shift" と "task" は空オブジェクト {} のままにし、まず会話で相談に乗ってください。
 4. 管理者が「変更案を作って」「仮組みして」「その案で進めて」「〇〇さんを△△に変えて」などシフト変更を求めた場合や、具体的な変更プレビューを提示した方が話が早い場合は、"reply" で理由や配慮点を説明した上で、"shift"（および必要なら "task"）に変更する箇所の差分だけを入れてください（管理者が画面上の「勤務表に反映する」ボタンを押すまで実際の表は書き換わらない安心設計になっています）。
-5. "staffRequests" にある箇所はスタッフ本人の希望ですので、管理者から明示的な変更指示がない限り動かさず尊重してください。
-6. 無理な条件やトレードオフがある場合は黙って無視せず、「〇〇日にスコアが少し足りませんが、希望休を優先して〜のように組む案はいかがでしょうか？」と現場目線で代替案を添えてください。`;
+5. "staffRequests" にある箇所はスタッフ本人の希望ですので、管理者から明示的な変更指示がない限り動かさず尊重してください。また、"teamAdminLocks" にある箇所（HHD班・エコー班・オペ班管理者が入力したシフト・タスク）はAIからは絶対に変更できませんのでそのまま維持してください。
+6. 無理な条件やトレードオフがある場合は黙って無視せず、「〇〇日にリーダーやスコアが少し足りませんが、希望休と連勤上限を優先してベテランの〜さんを配置する案はいかがでしょうか？」と現場目線で代替案を添えてください。`;
 
       const currentContextPrompt = `
 【現在の対象年月】${year}年${month}月
@@ -2594,7 +2846,9 @@ const prepareScheduleDataForAi = () => {
 【基本ルール】
 - 日曜日は透析休診（空欄のまま）。祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜以外は通常通り透析を実施するため出勤日として扱います。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
-- ME室（category: me / コード: L, G）の扱い（重要）: ME室はOPE班のシフト管理者が別途組むシフトです。AIから L・G を自動配置しないでください。また、既に管理者から L・G（や他の既存シフト）が入力されているセルは、今回の会話で管理者が名指しで変更指示しない限り絶対に変更しないでください（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。ただし既に入力済みの L・G 等も、その職員の出勤日数・連勤数には含めて計算してください。
+- 各班管理者（HHD班・エコー班・オペ班管理者）が入力したシフト・タスクおよびME室（L, G）の扱い（★絶対厳守★）:
+  ・"teamAdminLocks" に記載されているセルおよびME室（category: me / コード: L, G）は、各班の管理者が確定入力した枠です。AIから新規に L・G を入れたり、"teamAdminLocks" のシフト・タスクを変更・移動・削除することは絶対禁止です（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。
+  ・ただし、それら各班管理者が入力したシフトも、該当施設の人数・powerScore・必須スキル（リーダー等）・その職員の出勤日数・連勤数・3クール回数には必ず含めて考慮してください。
 - 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
   ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
@@ -2604,6 +2858,9 @@ const prepareScheduleDataForAi = () => {
 - 3クール制限・連続3クール禁止（月またぎ含む・重要）:
   ・各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
   ・同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てないでください（日曜休診を挟む場合を除く）。特に "prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを入れず "day1AllowedWorkShifts" から選んでください。
+- 施設ごとの必須スキル配置（Step 4）と不足時の次善策:
+  ・各施設の必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】（dailySummary[d].facilitySkillCounts と shortages に現状が計算済みです）。
+  ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
 - 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)は人数充足のみ。
 - 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
@@ -2738,6 +2995,95 @@ ${messageText}`;
     });
     return stats;
   }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
+
+  // Step 4: 各日・各施設のスキル保持者数と必須スキル不足（オレンジ警告表示用）をメモ化
+  const dailyFacilitySkillSummary = useMemo(() => {
+    const summary = {};
+    const facilityCats = Object.values(categoryDefs)
+      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const customSkillMap = adminSettings?.facilitySkillTargets;
+
+    const readSkillMin = (catId, skillKey) => {
+      if (customSkillMap && customSkillMap[catId] && customSkillMap[catId][skillKey] !== undefined) {
+        return Math.max(0, parseInt(customSkillMap[catId][skillKey], 10) || 0);
+      }
+      return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+    };
+
+    daysArray.forEach(day => {
+      const skillCountsByCat = {};
+      const shortagesByCat = {};
+      const allShortages = [];
+
+      if (isSunday(year, month, day)) {
+        summary[day] = { skillCountsByCat, shortagesByCat, allShortages };
+        return;
+      }
+
+      const dow = getDayOfWeek(year, month, day);
+      facilityCats.forEach(cat => {
+        skillCountsByCat[cat.id] = {};
+        STAFF_SKILLS.forEach(sk => {
+          skillCountsByCat[cat.id][sk.key] = 0;
+        });
+      });
+
+      const actualHeadcountByCat = {};
+      staffList.forEach(s => {
+        const code = shiftData[s.id]?.[day];
+        if (!code || !shiftDefs[code]) return;
+        const def = shiftDefs[code];
+        if (def.type !== 'shift' || def.category === 'off' || def.category === 'req') return;
+        if (skillCountsByCat[def.category] === undefined) return;
+
+        actualHeadcountByCat[def.category] = (actualHeadcountByCat[def.category] || 0) + 1;
+        STAFF_SKILLS.forEach(sk => {
+          if (s.skills?.[sk.key]) {
+            skillCountsByCat[def.category][sk.key] = (skillCountsByCat[def.category][sk.key] || 0) + 1;
+          }
+        });
+      });
+
+      facilityCats.forEach(cat => {
+        const catShiftCodes = Object.values(shiftDefs)
+          .filter(sd => sd.type === 'shift' && sd.category === cat.id)
+          .map(sd => sd.code);
+        if (catShiftCodes.length === 0) return;
+
+        const catTargetHeadcount = catShiftCodes.reduce((sum, code) => sum + (targetCounts[code]?.[dow] || 0), 0);
+        const catActualHeadcount = actualHeadcountByCat[cat.id] || 0;
+        if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
+
+        const catShortages = [];
+        STAFF_SKILLS.forEach(sk => {
+          const reqMin = readSkillMin(cat.id, sk.key);
+          if (reqMin > 0) {
+            const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
+            if (actual < reqMin) {
+              const item = {
+                catId: cat.id,
+                catLabel: cat.label,
+                skillKey: sk.key,
+                skillLabel: sk.label,
+                actual,
+                target: reqMin,
+              };
+              catShortages.push(item);
+              allShortages.push(item);
+            }
+          }
+        });
+        if (catShortages.length > 0) {
+          shortagesByCat[cat.id] = catShortages;
+        }
+      });
+
+      summary[day] = { skillCountsByCat, shortagesByCat, allShortages };
+    });
+
+    return summary;
+  }, [daysArray, shiftData, staffList, shiftDefs, categoryDefs, targetCounts, adminSettings, year, month]);
 
   const countedOffShifts = useMemo(() => {
     return Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
@@ -3061,8 +3407,9 @@ ${messageText}`;
                           <span className="text-xs text-gray-500">職員 / 日付</span>
                           {appUser.role === 'admin' && (
                             <div className="text-[9px] font-normal text-gray-500 leading-tight space-y-0.5 my-0.5">
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1 flex-wrap">
                                 <span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block ml-1"></span>班管理固定
                                 <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><MessageSquare size={9} className="fill-pink-100"/>理由あり</span>
                               </div>
                               <div className="flex items-center gap-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>編集前の希望</div>
@@ -3194,6 +3541,8 @@ ${messageText}`;
                             const reqReason = getUserRequestedReason(staff.id, day);
                             const reqTaskCode = getUserRequestedTask(staff.id, day);
                             const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
+                            const teamShiftLock = appUser.role === 'admin' ? getTeamLockedShiftSource(staff.id, day) : null;
+                            const teamTaskLock = appUser.role === 'admin' ? getTeamLockedTaskSource(staff.id, day) : null;
                             const isSun = isSunday(year, month, day);
                             const isHol = isHoliday(year, month, day, clinicClosedDays);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
@@ -3210,6 +3559,9 @@ ${messageText}`;
 
                             // ツールチップ用のテキスト生成（希望履歴・理由は管理者のみ表示。スタッフ自身は自分のセルのみ理由を確認可能）
                             const shiftTooltips = [];
+                            if (teamShiftLock) {
+                              shiftTooltips.push(`【${TEAM_ADMIN_LABELS[teamShiftLock]}入力】AI変更ロック中（条件計算には反映）`);
+                            }
                             if (appUser.role === 'admin' && reqShiftCode) {
                               const reqLabel = reqShift?.label || reqShiftCode;
                               if (shiftCode !== reqShiftCode) {
@@ -3230,13 +3582,19 @@ ${messageText}`;
                             }
                             const tooltipText = shiftTooltips.join('\n\n');
 
-                            let taskTooltip = '';
+                            const taskTooltips = [];
+                            if (teamTaskLock) {
+                              taskTooltips.push(`【${TEAM_ADMIN_LABELS[teamTaskLock]}タスク】AI変更ロック中`);
+                            }
                             if (appUser.role === 'admin' && reqTaskCode) {
                               const reqTaskLabel = reqTask?.label || reqTaskCode;
-                              taskTooltip = taskCode !== reqTaskCode
-                                ? `【個人タスク希望】${reqTaskLabel} → 現在: ${task ? task.label : '空欄'}`
-                                : `【個人タスク希望】${reqTaskLabel}（本人入力）`;
+                              taskTooltips.push(
+                                taskCode !== reqTaskCode
+                                  ? `【個人タスク希望】${reqTaskLabel} → 現在: ${task ? task.label : '空欄'}`
+                                  : `【個人タスク希望】${reqTaskLabel}（本人入力）`
+                              );
                             }
+                            const taskTooltip = taskTooltips.join('\n');
 
                             return (
                               <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
@@ -3250,6 +3608,9 @@ ${messageText}`;
                                     title={tooltipText} 
                                     onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
                                   >
+                                    {teamShiftLock && (
+                                      <span className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
+                                    )}
                                     {appUser.role === 'admin' && reqShiftCode && (
                                       shiftCode !== reqShiftCode ? (
                                         <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[38px] inline-flex items-center gap-0.5">
@@ -3273,6 +3634,9 @@ ${messageText}`;
                                     title={taskTooltip}
                                     onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
                                   >
+                                    {teamTaskLock && (
+                                      <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
+                                    )}
                                     {appUser.role === 'admin' && reqTaskCode && (
                                       taskCode !== reqTaskCode && !task ? (
                                         <span className="px-0.5 rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[36px] truncate">
@@ -3326,7 +3690,36 @@ ${messageText}`;
                                   const total = group.items.reduce((sum, code) => sum + (dailyStats[day][code] || 0), 0);
                                   const targetTotal = group.items.reduce((sum, code) => sum + getTargetCount(code, day), 0);
                                   const isAlert = targetTotal > 0 && total < targetTotal;
-                                  return <td key={day} className={`border-r border-b text-center text-xs font-bold ${isAlert ? 'bg-red-200 text-red-700' : 'bg-gray-50'}`}>{total > 0 ? total : '-'}</td>;
+                                  const skillShortages = dailyFacilitySkillSummary[day]?.shortagesByCat?.[group.id] || [];
+                                  const isSkillShort = !isSunday(year, month, day) && skillShortages.length > 0;
+
+                                  const tooltipParts = [];
+                                  if (isAlert) {
+                                    tooltipParts.push(`【${group.name} 人数不足】現在 ${total}名 / 必要 ${targetTotal}名`);
+                                  }
+                                  if (isSkillShort) {
+                                    tooltipParts.push(
+                                      `【${group.name} 必須スキル不足】` +
+                                      skillShortages.map(s => `${s.skillLabel}: ${s.actual}/${s.target}名`).join('・')
+                                    );
+                                  }
+
+                                  const summaryCellClass = isAlert
+                                    ? 'bg-red-200 text-red-700'
+                                    : isSkillShort
+                                      ? 'bg-amber-100 text-amber-800 ring-1 ring-inset ring-amber-400'
+                                      : 'bg-gray-50';
+
+                                  return (
+                                    <td
+                                      key={day}
+                                      title={tooltipParts.length > 0 ? tooltipParts.join('\n') : undefined}
+                                      className={`border-r border-b text-center text-xs font-bold ${summaryCellClass}`}
+                                    >
+                                      {total > 0 ? total : '-'}
+                                      {!isAlert && isSkillShort && <span className="text-[9px] ml-0.5 align-top">⚠</span>}
+                                    </td>
+                                  );
                                 })}
                                 <td className="bg-gray-50 border-b"></td>
                               </tr>
@@ -4132,7 +4525,8 @@ ${messageText}`;
                 <div className="mb-4 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
                   <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
                   <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
-                  <div>・<strong>保護ルール：</strong>既存シフト・本人希望は変更せず、<strong>ME室(L/G)</strong>はAI配置対象外です</div>
+                  <div>・<strong>必須スキル配置：</strong>各施設の必須スキル（<strong>リーダー等</strong>）を確保し、不足日は分散配置＋ベテラン補完します</div>
+                  <div>・<strong>保護ルール：</strong>本人希望・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは条件に反映しつつ変更不可（ME室はAI対象外）</div>
                 </div>
                 <div className="space-y-2 mb-4">
                   {autoFillConditions.map((condition) => (
@@ -4740,7 +5134,10 @@ ${messageText}`;
                  <button onClick={() => setShowTargetCountModal(false)}><X size={20} className="text-gray-400"/></button>
                </div>
                <div className="p-4 overflow-y-auto">
-                 <p className="text-xs text-gray-500 mb-4">各シフト・曜日ごとの必要人数を設定してください。<br/>設定値を下回ると集計欄が赤く表示されます。</p>
+                 <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                   各シフト・曜日ごとの必要人数と、施設ごとの必須スキル最低人数を設定してください。<br/>
+                   ※人数不足は<strong className="text-red-600">赤色</strong>、人数は足りているが必須スキル（リーダー等）が不足している日は集計欄が<strong className="text-amber-700">オレンジ色（⚠）</strong>で表示されます。
+                 </p>
                  <div className="space-y-6">
                    {dynamicSummaryGroups.map(group => (
                      <div key={group.id} className="border rounded-lg overflow-hidden">
@@ -4775,6 +5172,65 @@ ${messageText}`;
                            })}
                          </tbody>
                        </table>
+                       {group.id !== 'me' && (
+                         <div className="bg-amber-50/50 border-t px-3 py-2.5">
+                           <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+                             <span className="text-xs font-bold text-amber-900 flex items-center gap-1">
+                               <ShieldCheck size={14} className="text-amber-600" />
+                               必須スキル最低人数（月〜土・AI配置＆集計チェック）
+                             </span>
+                             <span className="text-[10px] text-amber-700">
+                               ※0名の項目はチェックなし（揃わない日は分散配置＋ベテラン補完しオレンジ⚠表示）
+                             </span>
+                           </div>
+                           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                             {STAFF_SKILLS.map(sk => {
+                               const reqVal = getFacilitySkillTarget(group.id, sk.key);
+                               return (
+                                 <label
+                                   key={sk.key}
+                                   className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded border text-xs ${
+                                     reqVal > 0
+                                       ? 'bg-white border-amber-400 text-amber-900 font-bold'
+                                       : 'bg-white/70 border-gray-200 text-gray-600'
+                                   }`}
+                                 >
+                                   <span className="truncate">{sk.label}</span>
+                                   <div className="flex items-center gap-0.5 shrink-0">
+                                     <input
+                                       type="number"
+                                       min="0"
+                                       max="5"
+                                       className="w-11 p-0.5 border rounded text-center text-xs font-bold"
+                                       value={reqVal}
+                                       onChange={(e) => {
+                                         const nextNum = Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0));
+                                         setAdminSettings(prev => {
+                                           const baseTargets = prev.facilitySkillTargets || DEFAULT_FACILITY_SKILL_TARGETS;
+                                           const currentCatTargets = {
+                                             ...(DEFAULT_FACILITY_SKILL_TARGETS[group.id] || {}),
+                                             ...(baseTargets[group.id] || {}),
+                                             [sk.key]: nextNum,
+                                           };
+                                           return {
+                                             ...prev,
+                                             facilitySkillTargets: {
+                                               ...DEFAULT_FACILITY_SKILL_TARGETS,
+                                               ...baseTargets,
+                                               [group.id]: currentCatTargets,
+                                             },
+                                           };
+                                         });
+                                       }}
+                                     />
+                                     <span className="text-[10px] text-gray-500">名</span>
+                                   </div>
+                                 </label>
+                               );
+                             })}
+                           </div>
+                         </div>
+                       )}
                      </div>
                    ))}
                  </div>
