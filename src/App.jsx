@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
@@ -352,6 +352,7 @@ export default function WorkScheduleApp() {
   
   const [activePopup, setActivePopup] = useState(null);
   const [popupReasonText, setPopupReasonText] = useState('');
+  const popupRef = useRef(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
@@ -823,8 +824,6 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   const handleCellClick = (e, staffId, day, type) => {
     if (isSunday(year, month, day)) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const left = Math.min(rect.left + window.scrollX, window.innerWidth - 270);
-    const top = Math.min(rect.bottom + window.scrollY, window.innerHeight + window.scrollY - 150);
     if (type === 'shift') {
       setPopupReasonText(getUserRequestedReason(staffId, day));
     } else {
@@ -834,10 +833,64 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       staffId,
       day,
       type,
-      x: left,
-      y: top,
+      cellRect: {
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height,
+      },
     });
   };
+
+  // PC表示時: ポップアップの実測サイズをもとに、選択セルのすぐ横（右端では左横）かつ画面内に必ず収まる座標へ配置
+  useLayoutEffect(() => {
+    const popupEl = popupRef.current;
+    if (!activePopup || !popupEl || !activePopup.cellRect) return;
+
+    const updatePosition = () => {
+      if (window.innerWidth < 768) {
+        popupEl.style.top = '';
+        popupEl.style.left = '';
+        return;
+      }
+
+      const gap = 6;
+      const margin = 12;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const pw = popupEl.offsetWidth;
+      const ph = popupEl.offsetHeight;
+      const { top: cTop, left: cLeft, right: cRight } = activePopup.cellRect;
+
+      // 横方向: 基本はセルの右横、右側に収まらない場合はセルの左横へ自動反転
+      let left = cRight + gap;
+      if (left + pw > vw - margin) {
+        const leftSide = cLeft - pw - gap;
+        if (leftSide >= margin) {
+          left = leftSide;
+        } else {
+          left = Math.max(margin, vw - pw - margin);
+        }
+      }
+      left = Math.max(margin, Math.min(left, vw - pw - margin));
+
+      // 縦方向: 基本はセル上端揃え、画面下端からはみ出す場合は下端に収まる高さまで上へスライド
+      let top = cTop;
+      if (top + ph > vh - margin) {
+        top = vh - ph - margin;
+      }
+      top = Math.max(margin, top);
+
+      popupEl.style.top = `${Math.round(top)}px`;
+      popupEl.style.left = `${Math.round(left)}px`;
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    return () => window.removeEventListener('resize', updatePosition);
+  }, [activePopup, popupReasonText]);
 
   const handleChangePassword = () => {
     if (!newPassword.trim()) {
@@ -2101,19 +2154,19 @@ const prepareScheduleDataForAi = () => {
 
           return (
             <div 
-              className={`z-50 bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
-                md:absolute md:w-80 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
-              style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 290), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 340) } : {}}
+              ref={popupRef}
+              className={`z-[80] bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full max-h-[80vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
+                md:w-80 md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex justify-between items-center mb-2 pb-2 border-b">
+              <div className="flex justify-between items-center mb-2 pb-2 border-b shrink-0">
                 <div className="text-sm font-bold text-gray-700 truncate pr-2">
                   {month}月{activePopup.day}日{appUser.role === 'admin' && popupStaff ? ` (${popupStaff.name})` : ''} - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
                 </div>
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
               {appUser.role === 'admin' && popupReqCode && (
-                <div className="mb-2.5 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs">
+                <div className="mb-2.5 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs shrink-0">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-pink-800 flex items-center gap-1 min-w-0">
                       <span className="font-bold shrink-0">個人希望:</span>
@@ -2152,7 +2205,7 @@ const prepareScheduleDataForAi = () => {
                 </div>
               )}
               {appUser.role === 'staff' && activePopup.type === 'shift' && activePopup.staffId === appUser.id && (
-                <div className="mb-2.5">
+                <div className="mb-2.5 shrink-0">
                   <label className="text-[11px] font-bold text-gray-600 mb-1 flex items-center gap-1">
                     <MessageSquare size={12} className="text-pink-500" />
                     <span>希望理由</span>
@@ -2194,7 +2247,7 @@ const prepareScheduleDataForAi = () => {
                 </div>
               )}
               {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
-              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto max-h-[40vh] md:max-h-[30vh] p-1">
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
                 <button
                   onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
                   className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
