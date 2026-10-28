@@ -103,9 +103,28 @@ const TEAMS = [
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
-  { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (安定・高速)' }, // 日常的なシフト作成や高速なチャット応答に使用する標準モデルです
-// エラーメッセージの指示に従い、最新のプレビュー版Proモデルに修正します
-  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (最新高精度)' }, // 複雑な条件が絡むシフト調整など、より高度な推論が必要な場合に使用する上位モデルです
+  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (最新高速・相談推奨)' },
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (最高性能・推論重視)' },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (高精度推論)' },
+];
+
+const AI_QUICK_PROMPTS = [
+  {
+    label: '🔍 不足日・スコア割れを診断',
+    text: '今月の勤務表で、必要人数が足りていない日や各施設（坂田・君津・木クリ）の目標スコアを下回っている日をチェックして、どう補うとよさそうか相談させてください。',
+  },
+  {
+    label: '⚖️ 出勤・3クール・残業の偏り確認',
+    text: 'スタッフごとの出勤日数・3クール回数・残業時間のバランスを見て、負担が偏っている人がいないか確認してください。',
+  },
+  {
+    label: '🧩 空欄を仮組みして提案して',
+    text: 'スタッフ本人の希望箇所と既存のシフトを尊重しつつ、現在空欄になっている箇所をルールに沿って埋める変更案を作成してください。',
+  },
+  {
+    label: '💡 今月の注意点・改善ポイント',
+    text: '現在のシフト表全体を見て、連勤やスキル配置（リーダー・エコー等）の観点から気をつけた方がよい日や改善アイデアがあれば教えてください。',
+  },
 ];
 
 const INITIAL_STAFF = [
@@ -291,20 +310,28 @@ const remaining = 42 - days.length;
 
 // 共通のAI呼び出し関数（API経由）
 // アプリ内の各機能からAIを利用する際の窓口となる関数です
-// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-3.6-flash を使用します
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-3.6-flash") => { 
+// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-3.8-flash を使用します
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-3.8-flash", options = {}) => { 
   // デバッグ用に実行時のモデル名をコンソールに記録し、どのモデルが呼ばれたか確認できるようにします
   console.log("Model:", model, "バックエンド経由でAIを呼び出します"); 
 
   try {
     const functions = getFunctions();
-    const callGeminiAPI = httpsCallable(functions, 'callGeminiAPI');
+    const callGeminiAPI = httpsCallable(functions, 'callGeminiAPI', { timeout: 300000 });
 
-    const result = await callGeminiAPI({
+    const payload = {
       prompt: prompt,
       systemInstruction: systemInstruction,
-      model: model
-    });
+      model: model,
+    };
+    if (Array.isArray(options.contents) && options.contents.length > 0) {
+      payload.contents = options.contents;
+    }
+    if (options.responseMimeType) {
+      payload.responseMimeType = options.responseMimeType;
+    }
+
+    const result = await callGeminiAPI(payload);
 
     return result.data.text;
     
@@ -450,13 +477,13 @@ export default function WorkScheduleApp() {
   });
   const [closedLabelInput, setClosedLabelInput] = useState('');
   
-  const [aiChatMode, setAiChatMode] = useState('create');
   const [aiInput, setAiInput] = useState('');
   const [aiMessages, setAiMessages] = useState([]);
+  const [expandedProposalIds, setExpandedProposalIds] = useState({});
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiProgress, setAiProgress] = useState(0); // 【追加】進行状況(%)を管理する状態変数
 
-  const [aiModel, setAiModel] = useState('gemini-3.6-flash'); 
+  const [aiModel, setAiModel] = useState('gemini-3.8-flash'); 
   const chatEndRef = useRef(null);
 
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
@@ -1370,6 +1397,12 @@ const prepareScheduleDataForAi = () => {
       };
     }
 
+    // 3クール該当シフトコードを動的抽出（A:坂3, F:君3 や21時以降終了・表示名に3を含むシフト）
+    const cool3ShiftCodes = Object.values(shiftDefs)
+      .filter(s => s.type === 'shift' && (s.code === 'A' || s.code === 'F' || (s.label && s.label.includes('3')) || (s.endTime && s.endTime >= '21:00')))
+      .map(s => s.code);
+    const cool3Set = new Set(cool3ShiftCodes);
+
     // 【追加】各スキルの重み付け（点数）を定義
     const skillPoints = {
       isLeader: 5,
@@ -1379,33 +1412,144 @@ const prepareScheduleDataForAi = () => {
       canFollow: 1
     };
 
+    const staffPowerMap = {};
+    const enrichedStaff = staffList.map(s => {
+      let powerScore = 0;
+      if (s.skills) {
+        Object.keys(skillPoints).forEach(key => {
+          if (s.skills[key]) powerScore += skillPoints[key];
+        });
+      }
+      staffPowerMap[s.id] = powerScore;
+
+      // AIが数え間違いを起こさないよう、現時点の個人別集計値を事前計算して渡す
+      let workDays = 0;
+      let offDays = 0;
+      let blankDays = 0;
+      let cool3Count = 0;
+      let overtimeHours = 0;
+
+      for (let d = 1; d <= days; d++) {
+        if (calendarInfo[d].isSunday) continue;
+        const code = shiftData[s.id]?.[d];
+        if (!code || !shiftDefs[code]) {
+          blankDays++;
+        } else {
+          const def = shiftDefs[code];
+          if (def.category === 'off' || def.category === 'req') {
+            offDays++;
+          } else {
+            workDays++;
+          }
+          if (cool3Set.has(code)) cool3Count++;
+          if (def.overtime) overtimeHours += parseFloat(def.overtime) || 0;
+        }
+      }
+
+      return { 
+        id: s.id,
+        name: s.name, 
+        jobTitle: s.jobTitle, 
+        roles: s.roles,
+        skills: s.skills,
+        powerScore,
+        maxCool3: s.maxCool3, 
+        excludeFromAi: s.excludeFromAi,
+        currentStats: {
+          workDays,
+          offDays,
+          blankDays,
+          cool3Count,
+          remainingCool3: Math.max(0, (s.maxCool3 ?? 0) - cool3Count),
+          overtimeHours
+        }
+      };
+    });
+
+    // スタッフ本人が希望を出した箇所（プライバシー保護のため理由テキストは除外し、希望コードのみ渡す）
+    const staffRequests = {};
+    staffList.forEach(s => {
+      const staffReq = {};
+      for (let d = 1; d <= days; d++) {
+        const reqShift = getUserRequestedShift(s.id, d);
+        const reqTask = getUserRequestedTask(s.id, d);
+        if (reqShift || reqTask) {
+          staffReq[d] = {};
+          if (reqShift) staffReq[d].shift = reqShift;
+          if (reqTask) staffReq[d].task = reqTask;
+        }
+      }
+      if (Object.keys(staffReq).length > 0) {
+        staffRequests[s.id] = staffReq;
+      }
+    });
+
+    // 各日付の施設別スコアと不足状況を事前計算してAIの判断精度を高める
+    const dailySummary = {};
+    for (let d = 1; d <= days; d++) {
+      if (calendarInfo[d].isSunday) continue;
+      let sakaScore = 0;
+      let kimiScore = 0;
+      let kikuriScore = 0;
+      let workingCount = 0;
+      const codeCounts = {};
+
+      staffList.forEach(s => {
+        const code = shiftData[s.id]?.[d];
+        if (!code || !shiftDefs[code]) return;
+        const def = shiftDefs[code];
+        codeCounts[code] = (codeCounts[code] || 0) + 1;
+        if (def.category !== 'off' && def.category !== 'req') {
+          workingCount++;
+          const pScore = staffPowerMap[s.id] || 0;
+          if (def.category === 'saka') sakaScore += pScore;
+          else if (def.category === 'kimi') kimiScore += pScore;
+          else if (def.category === 'kikuri') kikuriScore += pScore;
+        }
+      });
+
+      const dow = new Date(year, month - 1, d).getDay();
+      const shortages = [];
+      Object.keys(targetCounts || {}).forEach(code => {
+        const target = targetCounts[code]?.[dow] || 0;
+        const actual = codeCounts[code] || 0;
+        if (target > 0 && actual < target) {
+          const label = shiftDefs[code]?.label || code;
+          shortages.push(`${label}(${code}): ${actual}/${target}名`);
+        }
+      });
+      if (sakaScore < 30) shortages.push(`坂田スコア: ${sakaScore}/30点`);
+      if (kimiScore < 30) shortages.push(`君津スコア: ${kimiScore}/30点`);
+      if (kikuriScore < 40) shortages.push(`木クリスコア: ${kikuriScore}/40点`);
+
+      dailySummary[d] = {
+        workingCount,
+        sakaScore,
+        kimiScore,
+        kikuriScore,
+        shortages
+      };
+    }
+
     return {
       year, month,
       calendar: calendarInfo,
-      staff: staffList.map(s => {
-        // 【追加】職員のスキルから「パワースコア(総合力)」を計算
-        let powerScore = 0;
-        if (s.skills) {
-          Object.keys(skillPoints).forEach(key => {
-            if (s.skills[key]) powerScore += skillPoints[key];
-          });
-        }
-        
-        return { 
-          id: s.id,
-          name: s.name, 
-          jobTitle: s.jobTitle, 
-          roles: s.roles,
-          skills: s.skills,
-          powerScore: powerScore, // 計算した点数をAIに渡す
-          maxCool3: s.maxCool3, 
-          excludeFromAi: s.excludeFromAi 
-        };
-      }),
+      cool3ShiftCodes,
+      staff: enrichedStaff,
+      staffRequests,
+      dailySummary,
       shifts: shiftData, 
       tasks: taskData,
       targetCounts,
-      definitions: Object.keys(shiftDefs).reduce((acc, key) => { acc[key] = { label: shiftDefs[key].label, type: shiftDefs[key].type, category: shiftDefs[key].category }; return acc; }, {})
+      definitions: Object.keys(shiftDefs).reduce((acc, key) => {
+        acc[key] = {
+          label: shiftDefs[key].label,
+          type: shiftDefs[key].type,
+          category: shiftDefs[key].category,
+          overtime: shiftDefs[key].overtime || 0
+        };
+        return acc;
+      }, {})
     };
   };
 
@@ -1546,6 +1690,7 @@ const prepareScheduleDataForAi = () => {
 
     try {
       const data = prepareScheduleDataForAi();
+      const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
       const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。完璧に埋める必要はありません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
       const activeConditions = autoFillConditions
@@ -1553,22 +1698,22 @@ const prepareScheduleDataForAi = () => {
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-// AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）と既存シフトの考慮を行わせるプロンプト
+      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）と既存シフトの考慮を行わせるプロンプト
       const prompt = `
       【タスク】
-      現在の勤務表データを分析し、空欄に適切なシフトを割り当ててください。
+      現在の勤務表データを分析し、空欄（日曜以外）に適切なシフトを割り当ててください。
 
       【基本ルール】
-      1. 既存データの維持と活用: 既にシフトが入っている箇所は絶対に変更しないでください。ただし、既存のシフトのメンバーとそのpowerScoreも、その日の必要人数とパワーバランスの計算に必ず含めて考慮してください。
-      2. AI除外: "excludeFromAi": true の職員は変更しない。
-      3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: 1, 6）の月間上限回数。これを超えないこと。
+      1. 既存データ・個人希望の維持と活用: 既にシフトが入っている箇所や staffRequests に希望がある箇所は絶対に変更しないでください。ただし、既存シフトのメンバーとそのpowerScoreも、その日の必要人数とパワーバランスの計算に必ず含めて考慮してください（dailySummary に現在の集計値が入っています）。
+      2. AI除外: "excludeFromAi": true の職員は変更しない。日曜日はシフトを入れない。
+      3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）。これを超えないこと。
       4. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
          - 坂田 (category: saka): 合計 30点 以上 (目安人数: 6名)
          - 君津 (category: kimi): 合計 30点 以上 (目安人数: 6名)
          - 木クリ (category: kikuri): 合計 40点 以上 (目安人数: 8名)
          ※「じんクリ (jinkuri)」と「ME室 (me)」については、必要人数の充足のみ行い、パワーバランス(スコア計算)を考慮する必要はありません。
-      5. 負担の分散: 特定の人ばかりが出勤・休まないよう、1ヶ月を通した各個人の出勤日数を分散させてください。
-      6. 必要人数: 各曜日・各シフトごとの目標人数は、提供データ内の「targetCounts」を参照して満たすようにしてください。
+      5. 負担の分散: 特定の人ばかりが出勤・連勤・休まないよう、1ヶ月を通した各個人の出勤日数（currentStats.workDays）を分散させてください。
+      6. 必要人数: 各曜日・各シフトごとの目標人数は、提供データ内の「targetCounts」および「dailySummary.shortages」を参照して満たすようにしてください。
 
       【適用条件（★何よりも優先すべき絶対ルール★）】
       以下の条件は、上記の基本ルール（パワーバランスや必要人数の確保など）よりも優先して「絶対」に守ってください。ルールが競合した場合でも、必ずこちらの条件を優先します。
@@ -1584,8 +1729,7 @@ const prepareScheduleDataForAi = () => {
           "3": "..."
         },
         "shift": {
-          "職員ID": { "日付(1-31の数値)": "シフトコード" },
-          ...
+          "職員ID": { "日付(1-31の数値)": "シフトコード" }
         },
         "reason": "全体を通した申し送り事項や、targetCountsやパワーバランスを満たせなかった日があればその理由を記載"
       }
@@ -1594,8 +1738,7 @@ const prepareScheduleDataForAi = () => {
       ${JSON.stringify(data)}
       `;
 
-      // 固定のFlashではなく、画面上部のドロップダウンで選択されている aiModel (Flash または Pro) を使用するように変更しました
-      const result = await callGemini(prompt, systemInstruction, aiModel);
+      const result = await callGemini(prompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
       
       clearInterval(progressInterval);
       setAiProgress(100); 
@@ -1605,7 +1748,7 @@ const prepareScheduleDataForAi = () => {
         setTimeout(() => setIsAiLoading(false), 500); 
       } else {
         setIsAiLoading(false);
-        alert(`AI結果の適用に失敗しました。\n理由: ${res.error}`);
+        alert(`AI結果の適用に失敗しました。\n理由: ${res.message || res.error || '不明なエラー'}`);
       }
     } catch (error) {
       clearInterval(progressInterval);
@@ -1615,93 +1758,330 @@ const prepareScheduleDataForAi = () => {
     }
   };
 
-  const handleAiSend = async () => {
-    if (!aiInput.trim()) return;
-    const userMsg = { role: 'user', text: aiInput };
+  // AIチャットの応答文字列から、人間向けの返答文・変更案・返信候補チップを安全に抽出
+  const parseAiChatResponse = (rawString) => {
+    if (typeof rawString !== 'string') {
+      return { reply: '応答を取得できませんでした。', shift: {}, task: {}, quickReplies: [] };
+    }
+    if (rawString.startsWith('⚠️')) {
+      return { reply: rawString, shift: {}, task: {}, quickReplies: [] };
+    }
+
+    const stripped = rawString.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const firstBrace = stripped.indexOf('{');
+    const lastBrace = stripped.lastIndexOf('}');
+
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        const parsed = JSON.parse(stripped.substring(firstBrace, lastBrace + 1));
+        const shiftObj = parsed.shift && typeof parsed.shift === 'object' ? parsed.shift : {};
+        const taskObj = parsed.task && typeof parsed.task === 'object' ? parsed.task : {};
+        const replyText =
+          typeof parsed.reply === 'string' && parsed.reply.trim()
+            ? parsed.reply.trim()
+            : typeof parsed.reason === 'string' && parsed.reason.trim()
+              ? parsed.reason.trim()
+              : '条件をもとに確認・調整案を作成しました。内容をご確認ください。';
+        const quickReplies = Array.isArray(parsed.quickReplies)
+          ? parsed.quickReplies.filter(q => typeof q === 'string' && q.trim()).slice(0, 4)
+          : [];
+        return { reply: replyText, shift: shiftObj, task: taskObj, quickReplies };
+      } catch (e) {
+        console.warn('AI Chat JSON parse fallback:', e);
+      }
+    }
+
+    return { reply: stripped || rawString, shift: {}, task: {}, quickReplies: [] };
+  };
+
+  // AIが出力した shift / task 変更差分をプレビューカード用の配列へ変換
+  const buildProposedChangesList = (shiftChanges = {}, taskChanges = {}) => {
+    const nameToIdMap = {};
+    const staffOrderMap = {};
+    staffList.forEach((s, idx) => {
+      nameToIdMap[s.name] = s.id;
+      staffOrderMap[s.id] = idx;
+    });
+    const maxDay = getDaysInMonth(year, month);
+    const items = [];
+
+    const processKind = (changesMap, kind) => {
+      if (!changesMap || typeof changesMap !== 'object') return;
+      Object.keys(changesMap).forEach(rawKey => {
+        let staffId = rawKey;
+        if (!staffList.find(s => s.id === staffId)) {
+          staffId = nameToIdMap[rawKey];
+        }
+        const staff = staffList.find(s => s.id === staffId);
+        if (!staff) return;
+
+        const dayMap = changesMap[rawKey];
+        if (!dayMap || typeof dayMap !== 'object') return;
+
+        Object.keys(dayMap).forEach(dayKey => {
+          const dayNum = parseInt(dayKey, 10);
+          if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay) return;
+          if (isSunday(year, month, dayNum)) return;
+
+          const rawCode = dayMap[dayKey];
+          const isClear = rawCode === null || rawCode === '' || rawCode === 'CLEAR' || rawCode === 'NONE';
+          const normalizedAfter = isClear ? null : String(rawCode);
+          if (normalizedAfter && !shiftDefs[normalizedAfter]) return;
+
+          const currentCode = (kind === 'shift' ? shiftData[staffId]?.[dayNum] : taskData[staffId]?.[dayNum]) || null;
+          if (currentCode === normalizedAfter) return;
+
+          const reqCode = kind === 'shift'
+            ? getUserRequestedShift(staffId, dayNum)
+            : getUserRequestedTask(staffId, dayNum);
+
+          items.push({
+            staffId,
+            staffName: staff.name,
+            staffOrder: staffOrderMap[staffId] ?? 999,
+            day: dayNum,
+            dowLabel: ['日', '月', '火', '水', '木', '金', '土'][getDayOfWeek(year, month, dayNum)],
+            kind,
+            beforeCode: currentCode,
+            beforeLabel: currentCode ? (shiftDefs[currentCode]?.label || currentCode) : '空欄',
+            afterCode: normalizedAfter,
+            afterLabel: normalizedAfter ? (shiftDefs[normalizedAfter]?.label || normalizedAfter) : '空欄',
+            afterTextClass: normalizedAfter ? (shiftDefs[normalizedAfter]?.text || 'text-gray-800') : 'text-gray-400',
+            hasStaffRequest: !!(reqCode && reqCode !== normalizedAfter),
+            staffRequestLabel: reqCode ? (shiftDefs[reqCode]?.label || reqCode) : null,
+          });
+        });
+      });
+    };
+
+    processKind(shiftChanges, 'shift');
+    processKind(taskChanges, 'task');
+
+    items.sort((a, b) => (a.day !== b.day ? a.day - b.day : a.staffOrder - b.staffOrder));
+    return items;
+  };
+
+  // 案A: 変更案カードの「勤務表に反映する」ボタン押下時にシフトへ書き込む
+  const handleApplyAiProposal = (msgId) => {
+    const targetMsg = aiMessages.find(m => m.id === msgId);
+    if (!targetMsg || !Array.isArray(targetMsg.proposedChanges) || targetMsg.proposedChanges.length === 0) return;
+
+    const ns = { ...shiftData };
+    const nt = { ...taskData };
+    const nextUserInputs = { ...userInputs };
+
+    // 旧形式(boolean)の希望履歴があれば事前にコード形式へ保全
+    Object.keys(userInputs).forEach(sId => {
+      Object.keys(userInputs[sId] || {}).forEach(d => {
+        if (userInputs[sId][d] === true) {
+          nextUserInputs[sId] = { ...(nextUserInputs[sId] || {}) };
+          nextUserInputs[sId][d] = normalizeUserInputEntry(true, shiftData[sId]?.[d], taskData[sId]?.[d]);
+        }
+      });
+    });
+
+    // 元に戻す(Undo)用に、反映直前の該当セル値を記録
+    const snapshot = targetMsg.proposedChanges.map(item => ({
+      staffId: item.staffId,
+      day: item.day,
+      kind: item.kind,
+      prevCode: (item.kind === 'shift' ? shiftData[item.staffId]?.[item.day] : taskData[item.staffId]?.[item.day]) || null,
+    }));
+
+    targetMsg.proposedChanges.forEach(item => {
+      if (item.kind === 'shift') {
+        ns[item.staffId] = { ...(ns[item.staffId] || {}) };
+        if (item.afterCode) {
+          ns[item.staffId][item.day] = item.afterCode;
+        } else {
+          delete ns[item.staffId][item.day];
+        }
+      } else {
+        nt[item.staffId] = { ...(nt[item.staffId] || {}) };
+        if (item.afterCode) {
+          nt[item.staffId][item.day] = item.afterCode;
+        } else {
+          delete nt[item.staffId][item.day];
+        }
+      }
+    });
+
+    setShiftData(ns);
+    setTaskData(nt);
+    setUserInputs(nextUserInputs);
+    saveSchedule(ns, nt, nextUserInputs);
+
+    setAiMessages(prev =>
+      prev.map(m => (m.id === msgId ? { ...m, status: 'applied', appliedSnapshot: snapshot } : m))
+    );
+  };
+
+  // 反映済みの変更案を元に戻す(Undo)
+  const handleUndoAiProposal = (msgId) => {
+    const targetMsg = aiMessages.find(m => m.id === msgId);
+    if (!targetMsg || !Array.isArray(targetMsg.appliedSnapshot)) return;
+
+    const ns = { ...shiftData };
+    const nt = { ...taskData };
+
+    targetMsg.appliedSnapshot.forEach(snap => {
+      if (snap.kind === 'shift') {
+        ns[snap.staffId] = { ...(ns[snap.staffId] || {}) };
+        if (snap.prevCode) {
+          ns[snap.staffId][snap.day] = snap.prevCode;
+        } else {
+          delete ns[snap.staffId][snap.day];
+        }
+      } else {
+        nt[snap.staffId] = { ...(nt[snap.staffId] || {}) };
+        if (snap.prevCode) {
+          nt[snap.staffId][snap.day] = snap.prevCode;
+        } else {
+          delete nt[snap.staffId][snap.day];
+        }
+      }
+    });
+
+    setShiftData(ns);
+    setTaskData(nt);
+    saveSchedule(ns, nt, userInputs);
+
+    setAiMessages(prev =>
+      prev.map(m => (m.id === msgId ? { ...m, status: 'reverted' } : m))
+    );
+  };
+
+  // チャットでの指示を自動作成の条件リストにもワンクリック保存
+  const handleSaveMessageAsRule = (msgId, text) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return;
+    const alreadyExists = autoFillConditions.some(c => c.text === trimmed);
+    if (!alreadyExists) {
+      setAutoFillConditions(prev => [...prev, { id: Date.now(), text: trimmed, active: true }]);
+    }
+    setAiMessages(prev =>
+      prev.map(m => (m.id === msgId ? { ...m, savedAsRule: true } : m))
+    );
+  };
+
+  const handleAiSend = async (overrideText = null) => {
+    const messageText = typeof overrideText === 'string' ? overrideText.trim() : aiInput.trim();
+    if (!messageText || isAiLoading) return;
+
+    const userMsgId = `msg_${Date.now()}_u`;
+    const userMsg = { id: userMsgId, role: 'user', text: messageText };
+    const previousHistory = [...aiMessages];
+
     setAiMessages(prev => [...prev, userMsg]);
     setIsAiLoading(true);
-    setAiInput('');
+    if (typeof overrideText !== 'string') {
+      setAiInput('');
+    }
 
     try {
       const data = prepareScheduleDataForAi();
-      
-      // ★追加：ワンクリック自動作成と同じように、チェックボックスで有効になっている条件をテキスト化します
+      const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
+
       const activeConditions = autoFillConditions
         .filter(c => c.active)
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      let systemInstruction = "あなたはプロの勤務表管理者です。";
-      let prompt = "";
+      const systemInstruction = `あなたは透析クリニック・臨床工学技士部門の経験豊富で頼れる副技士長（シフト作成アシスタント）です。
+管理者と人間らしく丁寧で温かみのあるキャッチボールを行いながら、勤務表の相談・分析・調整案の作成をサポートしてください。
 
-      if (aiChatMode === 'create') {
-        systemInstruction = "あなたはシフト管理システムのデータ生成エンジンです。ユーザーの指示に従い、シフト表の変更内容をJSON形式でのみ出力してください。";
-        // ★修正：ユーザーの指示と適用条件を最優先ルールとして明記します
-        prompt = `
-        【役割】
-        あなたは熟練の勤務表管理者です。「ユーザーからの指示」と「適用条件」を最優先にしつつ、以下の基本ルールを守ってシフト表(JSON)を作成・修正してください。
+【会話と出力の鉄則】
+1. 出力は必ず指定されたJSONオブジェクト形式のみとしてください（Markdownコードブロックは不要）。
+2. "reply" には管理者に語りかける自然な日本語メッセージを書いてください。内部のシフトコード（A, P, HOPEなど）や職員IDは使わず、必ず表示名（坂3、坂2、希望 など）と職員名（職員Aさん など）で分かりやすく伝えてください。
+3. 質問への回答、現状の診断、または複数候補の比較相談の段階では、"shift" と "task" は空オブジェクト {} のままにし、まず会話で相談に乗ってください。
+4. 管理者が「変更案を作って」「仮組みして」「その案で進めて」「〇〇さんを△△に変えて」などシフト変更を求めた場合や、具体的な変更プレビューを提示した方が話が早い場合は、"reply" で理由や配慮点を説明した上で、"shift"（および必要なら "task"）に変更する箇所の差分だけを入れてください（管理者が画面上の「勤務表に反映する」ボタンを押すまで実際の表は書き換わらない安心設計になっています）。
+5. "staffRequests" にある箇所はスタッフ本人の希望ですので、管理者から明示的な変更指示がない限り動かさず尊重してください。
+6. 無理な条件やトレードオフがある場合は黙って無視せず、「〇〇日にスコアが少し足りませんが、希望休を優先して〜のように組む案はいかがでしょうか？」と現場目線で代替案を添えてください。`;
 
-        【基本ルール】
-        1. ユーザー指示の優先: ユーザーが特定のシフト変更を指示した場合、それは必ず実行してください。
-        2. AI除外: "excludeFromAi": true の職員は原則変更不可ですが、ユーザーが名指しで指示した場合は例外とします。
-        3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: 1, 6）の月間上限回数。これを超えないようにしてください。
-        4. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが以下を下回らないよう調整してください。（坂田:30点、君津:30点、木クリ:40点）
-        5. 必要人数の厳守: データ内の「targetCounts」を参照して満たすようにしてください。
-        6. 日曜日はシフト不可。
+      const currentContextPrompt = `
+【現在の対象年月】${year}年${month}月
 
-        【適用条件（★ユーザー指示と同等の最優先ルール★）】
-        以下の条件は、基本ルール(パワーバランスや必要人数など)よりも優先して必ず守ってください。
-        ${activeConditions ? activeConditions : '特になし'}
+【基本ルール】
+- 日曜日はシフト不可（空欄のまま）。
+- "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
+- 3クール制限: 各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
+- 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)・ME室(me)は人数充足のみ。
+- 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
-        【重要: データ形式】
-        1. 出力はJSONのみ。Markdownタグ（\`\`\`json など）や解説文は一切含めないでください。
-        2. JSON構造: 
-        {
-          "shift": { "職員ID": { "日付(1-31の数値)": "シフトコード" } },
-          "reason": "指示を満たせなかった理由や、ルール上の問題があればここに記載"
+【現在有効な優先適用条件】
+${activeConditions ? activeConditions : '特になし'}
+
+【出力JSONスキーマ】
+{
+  "reply": "管理者に向けた丁寧で分かりやすい返答メッセージ（改行可）",
+  "shift": {
+    "職員ID": { "日付(1-31の数値文字列)": "シフトコード（空欄に戻す場合のみ null）" }
+  },
+  "task": {
+    "職員ID": { "日付(1-31の数値文字列)": "タスクコード（空欄に戻す場合のみ null）" }
+  },
+  "quickReplies": ["管理者が次に押しやすい短い返信候補1(20文字以内)", "返信候補2"]
+}
+
+【最新の勤務表データ（集計値・希望箇所つき）】
+${JSON.stringify(data)}
+
+【管理者からの今回のメッセージ】
+${messageText}`;
+
+      // マルチターン履歴の組み立て（直近10件のやりとりを引き継ぐ）
+      const recentTurns = previousHistory.slice(-10).map(m => {
+        let historyText = m.text || '';
+        if (m.role === 'model' && Array.isArray(m.proposedChanges) && m.proposedChanges.length > 0) {
+          const summary = m.proposedChanges
+            .slice(0, 15)
+            .map(c => `${month}/${c.day} ${c.staffName}: ${c.beforeLabel}→${c.afterLabel}`)
+            .join(', ');
+          const statusLabel = m.status === 'applied' ? '反映済' : m.status === 'reverted' ? '取消済' : '未反映(プレビュー中)';
+          historyText += `\n[提示した変更案(${m.proposedChanges.length}件・${statusLabel}): ${summary}${m.proposedChanges.length > 15 ? ' ほか' : ''}]`;
         }
+        return {
+          role: m.role === 'model' ? 'model' : 'user',
+          parts: [{ text: historyText }],
+        };
+      });
 
-        【データ】
-        ${JSON.stringify(data)}
-        
-        【ユーザーからの指示】
-        ${userMsg.text}
-        `;
-      } else {
-        // ★修正：分析モードの時も、ルールに違反していないかチェックできるように条件を渡します
-        prompt = `
-        以下の勤務表データ、およびシステムの基本ルール（パワーバランスや必要人数）を分析し、改善点や問題点を指摘してください。
-        
-        【基本ルール（参考）】
-        - 坂田、君津は合計30点以上、木クリは合計40点以上が必要。
-        - 3クール制限（maxCool3）や、必要人数（targetCounts）の設定が存在します。
-        - 自動作成の条件: ${activeConditions ? activeConditions : '特になし'}
-        
-        【データ】
-        ${JSON.stringify(data)}
-        
-        【ユーザーの指示】
-        ${userMsg.text}
-        `;
-      }
+      const contents = [
+        ...recentTurns,
+        { role: 'user', parts: [{ text: currentContextPrompt }] },
+      ];
 
-      const result = await callGemini(prompt, systemInstruction, aiModel);
-      
-      let aiText = result;
-      
-      if (aiChatMode === 'create') {
-        const res = await applyAiResult(result);
-        if (res.success) {
-           aiText = `✅ ${res.count}箇所のシフトを更新しました。\n\n(AIの応答)\n${result}`;
-        } else {
-           aiText = `⚠️ ${res.message}\n(AIの応答)\n${result}`;
-        }
-      }
+      // バックエンド未再デプロイ時でも会話履歴が通じるよう、フォールバック用の統合promptも生成
+      const transcriptText = recentTurns
+        .map(t => `${t.role === 'user' ? '管理者' : 'AIアシスタント'}: ${t.parts[0].text}`)
+        .join('\n\n');
+      const fallbackPrompt = transcriptText
+        ? `【これまでの会話履歴】\n${transcriptText}\n\n${currentContextPrompt}`
+        : currentContextPrompt;
 
-      setAiMessages(prev => [...prev, { role: 'model', text: aiText }]);
+      const result = await callGemini(fallbackPrompt, systemInstruction, aiModel, {
+        contents,
+        responseMimeType: 'application/json',
+      });
 
+      const parsed = parseAiChatResponse(result);
+      const proposedChanges = buildProposedChangesList(parsed.shift, parsed.task);
+
+      const aiMsg = {
+        id: `msg_${Date.now()}_m`,
+        role: 'model',
+        text: parsed.reply,
+        proposedChanges,
+        status: proposedChanges.length > 0 ? 'pending' : null,
+        quickReplies: parsed.quickReplies,
+      };
+
+      setAiMessages(prev => [...prev, aiMsg]);
     } catch (e) {
-      setAiMessages(prev => [...prev, { role: 'model', text: `エラーが発生しました: ${e.message}` }]);
+      setAiMessages(prev => [
+        ...prev,
+        { id: `msg_${Date.now()}_err`, role: 'model', text: `エラーが発生しました: ${e.message}` },
+      ]);
     }
     setIsAiLoading(false);
   };
@@ -3048,35 +3428,322 @@ const prepareScheduleDataForAi = () => {
         {/* AI アシスタントモーダル */}
         {showAiModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col h-[80vh]" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50">
-                <h3 className="font-bold text-lg flex items-center gap-2 text-indigo-800"><Bot className="text-indigo-600"/> AIアシスタント</h3>
-                <div className="flex items-center gap-4">
-                  <select className="border p-1 rounded text-xs bg-white/50" value={aiModel} onChange={(e) => setAiModel(e.target.value)}>{AI_MODELS.map(model => (<option key={model.value} value={model.value}>{model.label}</option>))}</select>
-                  <button onClick={() => setShowAiModal(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50 gap-2">
+                <div className="min-w-0">
+                  <h3 className="font-bold text-base sm:text-lg flex items-center gap-2 text-indigo-800">
+                    <Bot className="text-indigo-600 shrink-0"/> AIシフト相談アシスタント
+                  </h3>
+                  <p className="text-[11px] text-indigo-600/80 hidden sm:block">
+                    相談だけでは勤務表は書き換わりません（変更案カードの「反映する」を押した時のみ適用）
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {aiMessages.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('チャットの会話履歴をリセットしますか？（勤務表のデータは消えません）')) {
+                          setAiMessages([]);
+                          setExpandedProposalIds({});
+                        }
+                      }}
+                      className="px-2 py-1 text-xs text-gray-500 hover:text-red-600 bg-white/80 hover:bg-white border border-gray-200 rounded flex items-center gap-1 transition"
+                      title="会話履歴をクリア"
+                    >
+                      <RotateCcw size={12} /> <span className="hidden sm:inline">リセット</span>
+                    </button>
+                  )}
+                  <select
+                    className="border border-indigo-200 p-1.5 rounded text-xs bg-white/80 text-indigo-900 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                  >
+                    {AI_MODELS.map(model => (
+                      <option key={model.value} value={model.value}>{model.label}</option>
+                    ))}
+                  </select>
+                  <button onClick={() => setShowAiModal(false)} className="p-1 text-gray-400 hover:text-gray-600">
+                    <X size={20} />
+                  </button>
                 </div>
               </div>
+
               <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
                 {aiMessages.length === 0 && (
-                  <div className="text-center text-gray-400 mt-10"><Sparkles size={48} className="mx-auto mb-2 opacity-20"/><p>シフト作成や分析について話しかけてください。</p></div>
+                  <div className="max-w-lg mx-auto mt-4 space-y-4">
+                    <div className="bg-white border border-indigo-100 rounded-xl p-4 shadow-sm text-center">
+                      <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-2">
+                        <Sparkles size={20} />
+                      </div>
+                      <p className="font-bold text-gray-800 text-sm mb-1">
+                        {year}年{month}月のシフト相談・作成をお手伝いします
+                      </p>
+                      <p className="text-xs text-gray-500 leading-relaxed">
+                        「15日の木クリに誰か回せる？」「さっきの案でBさんは固定して」など、普段の言葉でやりとりできます。<br/>
+                        まずは下のボタンからワンタップで相談を始めることもできます。
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {AI_QUICK_PROMPTS.map((qp, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          disabled={isAiLoading}
+                          onClick={() => handleAiSend(qp.text)}
+                          className="text-left p-3 bg-white hover:bg-indigo-50/70 border border-gray-200 hover:border-indigo-300 rounded-xl shadow-sm transition group"
+                        >
+                          <div className="text-xs font-bold text-indigo-700 group-hover:text-indigo-800 mb-0.5">
+                            {qp.label}
+                          </div>
+                          <div className="text-[11px] text-gray-500 line-clamp-2">
+                            {qp.text}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
-                {aiMessages.map((msg, idx) => (
-                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[80%] rounded-lg p-3 text-sm whitespace-pre-wrap ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border text-gray-800 shadow-sm'}`}>{msg.text}</div></div>
-                ))}
-                {isAiLoading && <div className="flex justify-start"><div className="bg-white border rounded-lg p-3 shadow-sm"><Loader2 className="animate-spin text-indigo-500" size={20}/></div></div>}
+
+                {aiMessages.map((msg, idx) => {
+                  const msgKey = msg.id || idx;
+                  const isLastModelMsg = msg.role === 'model' && idx === aiMessages.length - 1;
+                  const changes = Array.isArray(msg.proposedChanges) ? msg.proposedChanges : [];
+                  const isExpanded = !!expandedProposalIds[msgKey];
+                  const visibleChanges = isExpanded ? changes : changes.slice(0, 10);
+                  const staffReqConflictCount = changes.filter(c => c.hasStaffRequest).length;
+
+                  if (msg.role === 'user') {
+                    return (
+                      <div key={msgKey} className="flex flex-col items-end gap-1">
+                        <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm whitespace-pre-wrap bg-indigo-600 text-white shadow-sm">
+                          {msg.text}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveMessageAsRule(msg.id, msg.text)}
+                          disabled={msg.savedAsRule}
+                          className={`text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 transition ${
+                            msg.savedAsRule
+                              ? 'text-emerald-600 bg-emerald-50 border border-emerald-200 cursor-default'
+                              : 'text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'
+                          }`}
+                          title="この発言を「AI自動作成」の条件リストにも追加します"
+                        >
+                          {msg.savedAsRule ? (
+                            <>
+                              <Check size={10} /> 自動作成条件に保存済
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={10} /> 自動作成の条件にも保存
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={msgKey} className="flex items-start gap-2.5">
+                      <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0 mt-0.5">
+                        <Bot size={16} />
+                      </div>
+                      <div className="flex-1 min-w-0 max-w-[90%] space-y-2">
+                        <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm p-3.5 text-sm text-gray-800 shadow-sm whitespace-pre-wrap leading-relaxed">
+                          {msg.text}
+
+                          {/* 案A: シフト変更案プレビュー＆承認カード */}
+                          {changes.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-gray-100 whitespace-normal">
+                              <div className="bg-indigo-50/60 border border-indigo-200 rounded-xl p-3 space-y-2.5">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                                    <Sparkles size={14} className="text-indigo-600 shrink-0" />
+                                    <span>シフト変更案（{changes.length}箇所）</span>
+                                  </div>
+                                  {msg.status === 'applied' ? (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                      ✅ 反映済み
+                                    </span>
+                                  ) : msg.status === 'reverted' ? (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                                      ↩ 元に戻しました
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                                      未反映（確認待ち）
+                                    </span>
+                                  )}
+                                </div>
+
+                                {staffReqConflictCount > 0 && (
+                                  <div className="flex items-start gap-1.5 text-[11px] bg-pink-50 border border-pink-200 text-pink-800 rounded-lg px-2.5 py-1.5">
+                                    <AlertTriangle size={13} className="text-pink-600 shrink-0 mt-0.5" />
+                                    <span>
+                                      スタッフ本人の希望箇所に対する変更が <strong>{staffReqConflictCount}件</strong> 含まれています（希望履歴自体は裏側で保持されます）。
+                                    </span>
+                                  </div>
+                                )}
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
+                                  {visibleChanges.map((item, cIdx) => (
+                                    <div
+                                      key={`${item.staffId}_${item.day}_${item.kind}_${cIdx}`}
+                                      className={`flex items-center justify-between gap-1.5 bg-white border rounded-lg px-2.5 py-1.5 text-xs ${
+                                        item.hasStaffRequest ? 'border-pink-300' : 'border-gray-200'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="font-bold text-gray-600 shrink-0">
+                                          {month}/{item.day}({item.dowLabel})
+                                        </span>
+                                        <span className="font-bold text-gray-800 truncate">
+                                          {item.staffName}
+                                        </span>
+                                        {item.kind === 'task' && (
+                                          <span className="text-[9px] px-1 rounded bg-gray-100 text-gray-500 shrink-0">
+                                            タスク
+                                          </span>
+                                        )}
+                                        {item.hasStaffRequest && (
+                                          <span
+                                            className="text-[9px] px-1 rounded bg-pink-100 text-pink-700 font-bold shrink-0"
+                                            title={`本人希望: ${item.staffRequestLabel}`}
+                                          >
+                                            希:{item.staffRequestLabel}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-1 shrink-0 font-bold">
+                                        <span className="text-gray-400 text-[11px]">{item.beforeLabel}</span>
+                                        <span className="text-gray-400 text-[10px]">→</span>
+                                        <span className={`px-1.5 py-0.5 rounded bg-gray-50 border border-gray-200 ${item.afterTextClass}`}>
+                                          {item.afterLabel}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {changes.length > 10 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedProposalIds(prev => ({
+                                        ...prev,
+                                        [msgKey]: !prev[msgKey],
+                                      }))
+                                    }
+                                    className="w-full text-center text-[11px] font-bold text-indigo-600 hover:text-indigo-800 py-1"
+                                  >
+                                    {isExpanded ? '▲ 表示を折りたたむ' : `▼ 他 ${changes.length - 10} 箇所をすべて表示する`}
+                                  </button>
+                                )}
+
+                                <div className="pt-1 flex items-center justify-end gap-2">
+                                  {msg.status === 'applied' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUndoAiProposal(msg.id)}
+                                      className="px-3 py-1.5 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-sm"
+                                    >
+                                      <RotateCcw size={13} /> 元に戻す
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApplyAiProposal(msg.id)}
+                                      className="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition shadow-sm"
+                                    >
+                                      <Check size={15} />
+                                      <span>
+                                        {msg.status === 'reverted'
+                                          ? `もう一度勤務表に反映する（${changes.length}箇所）`
+                                          : `この変更案を勤務表に反映する（${changes.length}箇所）`}
+                                      </span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* AIからのワンタップ返答候補チップ */}
+                        {isLastModelMsg && !isAiLoading && Array.isArray(msg.quickReplies) && msg.quickReplies.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-0.5">
+                            {msg.quickReplies.map((qr, qIdx) => (
+                              <button
+                                key={qIdx}
+                                type="button"
+                                onClick={() => handleAiSend(qr)}
+                                className="px-3 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full text-xs font-medium transition shadow-sm"
+                              >
+                                {qr}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {isAiLoading && (
+                  <div className="flex items-start gap-2.5">
+                    <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                      <Bot size={16} />
+                    </div>
+                    <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm flex items-center gap-2 text-xs text-gray-500">
+                      <Loader2 className="animate-spin text-indigo-500" size={16}/>
+                      <span>勤務表と条件を確認しながら考えています...</span>
+                    </div>
+                  </div>
+                )}
                 <div ref={chatEndRef} />
               </div>
-              <div className="p-4 border-t bg-white">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-gray-500">モード:</span>
-                  <div className="flex bg-gray-100 rounded p-1">
-                    <button onClick={() => setAiChatMode('create')} className={`px-3 py-1 text-xs rounded transition ${aiChatMode === 'create' ? 'bg-white shadow text-indigo-600 font-bold' : 'text-gray-500'}`}>シフト作成</button>
-                    <button onClick={() => setAiChatMode('analyze')} className={`px-3 py-1 text-xs rounded transition ${aiChatMode === 'analyze' ? 'bg-white shadow text-purple-600 font-bold' : 'text-gray-500'}`}>分析のみ</button>
+
+              <div className="p-3 sm:p-4 border-t bg-white space-y-2">
+                {aiMessages.length > 0 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                    {AI_QUICK_PROMPTS.map((qp, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        disabled={isAiLoading}
+                        onClick={() => handleAiSend(qp.text)}
+                        className="px-2.5 py-1 bg-gray-100 hover:bg-indigo-50 hover:text-indigo-700 text-gray-600 rounded-full text-[11px] font-medium whitespace-nowrap transition shrink-0 disabled:opacity-50"
+                      >
+                        {qp.label}
+                      </button>
+                    ))}
                   </div>
-                </div>
-                <div className="flex gap-2">
-                  <input type="text" className="flex-1 border rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-300 outline-none transition" placeholder={aiChatMode === 'create' ? "例: 全ての空欄を埋めてください" : "例: 今月の残業状況を教えて"} value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleAiSend(); }} />
-                  <button onClick={() => handleAiSend()} disabled={isAiLoading || !aiInput.trim()} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg transition disabled:opacity-50"><Send size={18}/></button>
+                )}
+                <div className="flex gap-2 items-end">
+                  <textarea
+                    rows={2}
+                    className="flex-1 border rounded-xl px-3.5 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 outline-none transition resize-none"
+                    placeholder="相談や指示を入力（例: 15日の木クリに誰か回せる？ / さっきの案でお願い）※Shift+Enterで改行"
+                    value={aiInput}
+                    onChange={e => setAiInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.keyCode === 229 || e.nativeEvent.isComposing) return;
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAiSend();
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => handleAiSend()}
+                    disabled={isAiLoading || !aiInput.trim()}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl transition disabled:opacity-50 flex items-center justify-center shrink-0 h-10"
+                    title="送信"
+                  >
+                    <Send size={18}/>
+                  </button>
                 </div>
               </div>
             </div>
