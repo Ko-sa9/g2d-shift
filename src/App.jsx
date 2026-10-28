@@ -351,6 +351,7 @@ export default function WorkScheduleApp() {
   const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
   
   const [activePopup, setActivePopup] = useState(null);
+  const [popupReasonText, setPopupReasonText] = useState('');
   const [showAiModal, setShowAiModal] = useState(false);
   const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
@@ -599,6 +600,73 @@ export default function WorkScheduleApp() {
     return null;
   };
 
+  // 本人が入力した希望理由を取得
+  const getUserRequestedReason = (staffId, day) => {
+    const raw = userInputs[staffId]?.[day];
+    if (raw && typeof raw === 'object' && typeof raw.reason === 'string') {
+      return raw.reason;
+    }
+    return '';
+  };
+
+  // スタッフ入力時の締切日超過チェック共通関数
+  const checkIsAfterDeadlineForStaff = () => {
+    let isAfterDeadline = false;
+    const today = new Date();
+    const todayStr = today.getFullYear() + '-' + (today.getMonth() + 1).toString().padStart(2, '0') + '-' + today.getDate().toString().padStart(2, '0');
+    const deadlineDay = parseInt(adminSettings.deadlineDay);
+
+    if (deadlineDay && !isNaN(deadlineDay)) {
+      const deadlineDate = new Date(year, month - 2, deadlineDay);
+      const deadlineStr = deadlineDate.getFullYear() + '-' + (deadlineDate.getMonth() + 1).toString().padStart(2, '0') + '-' + deadlineDate.getDate().toString().padStart(2, '0');
+      if (todayStr > deadlineStr) {
+        isAfterDeadline = true;
+      }
+    } else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
+      isAfterDeadline = true;
+    }
+
+    if (isAfterDeadline) {
+      alert("締切日を過ぎているため、入力・変更はできません。\n変更が必要な場合は管理者へご連絡ください。");
+      return true;
+    }
+    return false;
+  };
+
+  // スタッフが既存の希望に対して「希望理由のみ」を追記・更新・削除するハンドラ
+  const handleSaveStaffReason = (staffId, day, newReason) => {
+    if (appUser.role === 'staff') {
+      if (staffId !== appUser.id) return;
+      if (checkIsAfterDeadlineForStaff()) return;
+    }
+
+    const currentShiftBefore = shiftData[staffId]?.[day];
+    const currentTaskBefore = taskData[staffId]?.[day];
+    const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
+
+    const targetShift = entry.shift || currentShiftBefore;
+    if (!targetShift) return;
+    entry.shift = targetShift;
+
+    const trimmed = (newReason || '').trim().slice(0, 50);
+    if (trimmed) {
+      entry.reason = trimmed;
+    } else {
+      delete entry.reason;
+    }
+
+    const nextUserInputs = {
+      ...userInputs,
+      [staffId]: {
+        ...(userInputs[staffId] || {}),
+        [day]: entry
+      }
+    };
+
+    setUserInputs(nextUserInputs);
+    saveSchedule(shiftData, taskData, nextUserInputs);
+  };
+
   // 管理者が「希望履歴そのもの」を取り消すハンドラ
   const handleClearUserRequest = (staffId, day, type = 'shift') => {
     const currentShiftBefore = shiftData[staffId]?.[day];
@@ -607,6 +675,9 @@ export default function WorkScheduleApp() {
     const reqCode = type === 'shift' ? entry.shift : entry.task;
 
     delete entry[type];
+    if (type === 'shift') {
+      delete entry.reason;
+    }
 
     const nextUserInputs = { ...userInputs };
     if (nextUserInputs[staffId]) {
@@ -650,33 +721,11 @@ export default function WorkScheduleApp() {
     saveMasterData({ adminSettings: newSettings });
   };
 
-const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
+const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
       // 締切チェック
-      // --- ★変更: 締切チェック（毎月○日対応版） ---
-      let isAfterDeadline = false;
-      const today = new Date();
-      const todayStr = today.getFullYear() + '-' + (today.getMonth() + 1).toString().padStart(2, '0') + '-' + today.getDate().toString().padStart(2, '0');
-
-      const deadlineDay = parseInt(adminSettings.deadlineDay);
-
-      if (deadlineDay && !isNaN(deadlineDay)) {
-        const deadlineDate = new Date(year, month - 2, deadlineDay);
-        const deadlineStr = deadlineDate.getFullYear() + '-' + (deadlineDate.getMonth() + 1).toString().padStart(2, '0') + '-' + deadlineDate.getDate().toString().padStart(2, '0');
-        if (todayStr > deadlineStr) {
-          isAfterDeadline = true;
-        }
-      } 
-      else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
-        isAfterDeadline = true;
-      }
-
-      if (isAfterDeadline) {
-        alert("締切日を過ぎているため、入力・変更はできません。\n変更が必要な場合は管理者へご連絡ください。");
-        return; 
-      }
-      // --- ★ここまで ---
+      if (checkIsAfterDeadlineForStaff()) return;
       
       if (currentView === 'ope') {
         if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
@@ -708,15 +757,24 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
 
       if (toolCode) {
         nextShifts[staffId][day] = toolCode;
-        // スタッフ本人の入力なら希望シフトコードを記憶、管理者の編集なら元の本人希望履歴を保持したままにする
+        // スタッフ本人の入力なら希望シフトコードと希望理由を記憶、管理者の編集なら元の本人希望履歴・理由を保持したままにする
         if (appUser.role === 'staff') {
           entry.shift = toolCode;
+          if (reasonOverride !== undefined) {
+            const trimmedReason = reasonOverride.trim().slice(0, 50);
+            if (trimmedReason) {
+              entry.reason = trimmedReason;
+            } else {
+              delete entry.reason;
+            }
+          }
         }
       } else {
         delete nextShifts[staffId][day];
-        // スタッフ本人がクリアした場合のみ希望履歴も削除（管理者のクリアでは希望履歴を残す）
+        // スタッフ本人がクリアした場合のみ希望履歴・希望理由も削除（管理者のクリアでは希望履歴・理由を残す）
         if (appUser.role === 'staff') {
           delete entry.shift;
+          delete entry.reason;
         }
       }
 
@@ -767,6 +825,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift') => {
     const rect = e.currentTarget.getBoundingClientRect();
     const left = Math.min(rect.left + window.scrollX, window.innerWidth - 270);
     const top = Math.min(rect.bottom + window.scrollY, window.innerHeight + window.scrollY - 150);
+    if (type === 'shift') {
+      setPopupReasonText(getUserRequestedReason(staffId, day));
+    } else {
+      setPopupReasonText('');
+    }
     setActivePopup({
       staffId,
       day,
@@ -1052,6 +1115,9 @@ const handleResetSchedule = () => {
               if (!newShiftData[staffId]) newShiftData[staffId] = {};
               newShiftData[staffId][day] = entry.shift;
               restoredEntry.shift = entry.shift;
+              if (entry.reason) {
+                restoredEntry.reason = entry.reason;
+              }
             }
             if (entry.task && shiftDefs[entry.task]) {
               if (!newTaskData[staffId]) newTaskData[staffId] = {};
@@ -1698,6 +1764,7 @@ const prepareScheduleDataForAi = () => {
                     const task = shiftDefs[taskCode];
                     const reqShiftCode = day ? getUserRequestedShift(appUser.id, day) : null;
                     const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
+                    const reqReason = day ? getUserRequestedReason(appUser.id, day) : '';
                     const isSun = cell.date.getDay() === 0;
                     const isSat = cell.date.getDay() === 6;
                     const isHol = day && isHoliday(year, month, day);
@@ -1734,12 +1801,16 @@ const prepareScheduleDataForAi = () => {
                           <div className="flex-1 flex flex-col gap-1">
                             <div 
                               onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, appUser.id, day, 'shift'); }}}
-                              className={`flex-1 rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
+                              title={reqReason ? `希望理由: ${reqReason}` : ''}
+                              className={`flex-1 relative rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
                                 ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
                                   shift ? 'bg-white border-blue-200 shadow-sm' :
                                   reqShiftCode ? 'bg-pink-50/60 border-dashed border-pink-300' : 'bg-transparent border-dashed border-gray-300'} 
                                 ${isEditable ? 'hover:border-blue-400' : ''}`}
                             >
+                              {reqReason && (
+                                <MessageSquare size={9} className="absolute top-1 right-1 text-pink-500 fill-pink-100 pointer-events-none" />
+                              )}
                               {shift ? (
                                 <>
                                   <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span>
@@ -1775,7 +1846,10 @@ const prepareScheduleDataForAi = () => {
                           <span className="text-xs text-gray-500">職員 / 日付</span>
                           {appUser.role === 'admin' && (
                             <div className="text-[9px] font-normal text-gray-500 leading-tight space-y-0.5 my-0.5">
-                              <div className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力</div>
+                              <div className="flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力
+                                <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><MessageSquare size={9} className="fill-pink-100"/>理由あり</span>
+                              </div>
                               <div className="flex items-center gap-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>編集前の希望</div>
                             </div>
                           )}
@@ -1846,6 +1920,7 @@ const prepareScheduleDataForAi = () => {
                             const task = shiftDefs[taskCode];
                             const reqShiftCode = getUserRequestedShift(staff.id, day);
                             const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
+                            const reqReason = getUserRequestedReason(staff.id, day);
                             const reqTaskCode = getUserRequestedTask(staff.id, day);
                             const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
                             const isSun = isSunday(year, month, day);
@@ -1861,7 +1936,7 @@ const prepareScheduleDataForAi = () => {
                             else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
-                            // ツールチップ用のテキスト生成
+                            // ツールチップ用のテキスト生成（希望履歴・理由は管理者のみ表示。スタッフ自身は自分のセルのみ理由を確認可能）
                             const shiftTooltips = [];
                             if (appUser.role === 'admin' && reqShiftCode) {
                               const reqLabel = reqShift?.label || reqShiftCode;
@@ -1870,6 +1945,9 @@ const prepareScheduleDataForAi = () => {
                               } else {
                                 shiftTooltips.push(`【個人希望】${reqLabel}（本人入力）`);
                               }
+                            }
+                            if (reqReason && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id))) {
+                              shiftTooltips.push(`【希望理由】${reqReason}`);
                             }
                             if (targetLog) {
                               const dateObj = targetLog.timestamp ? targetLog.timestamp.toDate() : new Date();
@@ -1902,9 +1980,12 @@ const prepareScheduleDataForAi = () => {
                                   >
                                     {appUser.role === 'admin' && reqShiftCode && (
                                       shiftCode !== reqShiftCode ? (
-                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[36px] truncate">
-                                          {reqShift?.label || reqShiftCode}
+                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[38px] inline-flex items-center gap-0.5">
+                                          <span className="truncate">{reqShift?.label || reqShiftCode}</span>
+                                          {reqReason && <MessageSquare size={8} className="shrink-0 text-pink-600 fill-pink-200" />}
                                         </span>
+                                      ) : reqReason ? (
+                                        <MessageSquare size={10} className="absolute top-0.5 right-0.5 text-pink-500 fill-pink-100 pointer-events-none" />
                                       ) : (
                                         <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
                                       )
@@ -2014,12 +2095,15 @@ const prepareScheduleDataForAi = () => {
             ? getUserRequestedShift(activePopup.staffId, activePopup.day)
             : getUserRequestedTask(activePopup.staffId, activePopup.day);
           const popupReqDef = popupReqCode ? shiftDefs[popupReqCode] : null;
+          const popupReqReason = activePopup.type === 'shift'
+            ? getUserRequestedReason(activePopup.staffId, activePopup.day)
+            : '';
 
           return (
             <div 
               className={`z-50 bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
-                md:absolute md:w-72 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
-              style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 250), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 300) } : {}}
+                md:absolute md:w-80 md:rounded-lg md:bottom-auto md:left-auto md:right-auto md:shadow-xl md:border-gray-200`}
+              style={window.innerWidth >= 768 ? { top: Math.min(activePopup.y + 10, window.innerHeight + window.scrollY - 290), left: Math.min(activePopup.x - 100, window.innerWidth + window.scrollX - 340) } : {}}
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-center mb-2 pb-2 border-b">
@@ -2029,30 +2113,83 @@ const prepareScheduleDataForAi = () => {
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
               {appUser.role === 'admin' && popupReqCode && (
-                <div className="mb-2 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs flex items-center justify-between gap-2">
-                  <div className="text-pink-800 flex items-center gap-1 min-w-0">
-                    <span className="font-bold shrink-0">個人希望:</span>
-                    <span className={`font-extrabold px-1.5 py-0.5 bg-white rounded border border-pink-200 truncate ${popupReqDef?.text || 'text-pink-700'}`}>
-                      {popupReqDef ? popupReqDef.label : popupReqCode}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {popupCurrentCode !== popupReqCode && popupReqDef && (
+                <div className="mb-2.5 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-pink-800 flex items-center gap-1 min-w-0">
+                      <span className="font-bold shrink-0">個人希望:</span>
+                      <span className={`font-extrabold px-1.5 py-0.5 bg-white rounded border border-pink-200 truncate ${popupReqDef?.text || 'text-pink-700'}`}>
+                        {popupReqDef ? popupReqDef.label : popupReqCode}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {popupCurrentCode !== popupReqCode && popupReqDef && (
+                        <button
+                          onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
+                          className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
+                          title="本人が入力した希望内容に戻します"
+                        >
+                          希望に戻す
+                        </button>
+                      )}
                       <button
-                        onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
-                        className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
-                        title="本人が入力した希望内容に戻します"
+                        onClick={() => { handleClearUserRequest(activePopup.staffId, activePopup.day, activePopup.type); setActivePopup(null); }}
+                        className="px-2 py-1 bg-white hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-[10px] transition"
+                        title="個人の希望履歴自体を消去します"
                       >
-                        希望に戻す
+                        希望取消
+                      </button>
+                    </div>
+                  </div>
+                  {popupReqReason && (
+                    <div className="mt-1.5 pt-1.5 border-t border-pink-200/80 text-pink-900 flex items-start gap-1.5 break-words">
+                      <MessageSquare size={13} className="text-pink-500 fill-pink-100 shrink-0 mt-0.5" />
+                      <div className="leading-snug min-w-0 flex-1">
+                        <span className="font-bold text-pink-700">理由: </span>
+                        <span>{popupReqReason}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {appUser.role === 'staff' && activePopup.type === 'shift' && activePopup.staffId === appUser.id && (
+                <div className="mb-2.5">
+                  <label className="text-[11px] font-bold text-gray-600 mb-1 flex items-center gap-1">
+                    <MessageSquare size={12} className="text-pink-500" />
+                    <span>希望理由</span>
+                    <span className="font-normal text-gray-400 text-[10px]">（任意・50文字まで）</span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      maxLength={50}
+                      value={popupReasonText}
+                      onChange={(e) => setPopupReasonText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.keyCode === 229 || e.nativeEvent.isComposing) return;
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (popupCurrentCode || popupReqCode) {
+                            handleSaveStaffReason(activePopup.staffId, activePopup.day, popupReasonText);
+                            setActivePopup(null);
+                          } else {
+                            e.currentTarget.blur();
+                          }
+                        }
+                      }}
+                      placeholder="例: 通院、学校行事など"
+                      className="flex-1 min-w-0 border border-gray-300 rounded-md px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                    />
+                    {(popupCurrentCode || popupReqCode) && popupReasonText.trim() !== popupReqReason && (
+                      <button
+                        onClick={() => {
+                          handleSaveStaffReason(activePopup.staffId, activePopup.day, popupReasonText);
+                          setActivePopup(null);
+                        }}
+                        className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-bold shrink-0 transition"
+                      >
+                        理由保存
                       </button>
                     )}
-                    <button
-                      onClick={() => { handleClearUserRequest(activePopup.staffId, activePopup.day, activePopup.type); setActivePopup(null); }}
-                      className="px-2 py-1 bg-white hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-[10px] transition"
-                      title="個人の希望履歴自体を消去します"
-                    >
-                      希望取消
-                    </button>
                   </div>
                 </div>
               )}
@@ -2061,12 +2198,28 @@ const prepareScheduleDataForAi = () => {
                 <button
                   onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
                   className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
-                  title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴は保持されます）' : 'クリア'}
+                  title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
                 >
                   クリア
                 </button>
                 {getPopupOptions(activePopup.type).map(shift => (
-                  <button key={shift.code} onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, shift.code, activePopup.type); setActivePopup(null); }} className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`} title={shift.label}>{shift.label}</button>
+                  <button
+                    key={shift.code}
+                    onClick={() => {
+                      handleUpdateCell(
+                        activePopup.staffId,
+                        activePopup.day,
+                        shift.code,
+                        activePopup.type,
+                        appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
+                      );
+                      setActivePopup(null);
+                    }}
+                    className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
+                    title={shift.label}
+                  >
+                    {shift.label}
+                  </button>
                 ))}
               </div>
             </div>
