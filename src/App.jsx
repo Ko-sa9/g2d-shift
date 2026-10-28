@@ -146,6 +146,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   'countedOffShifts': ['HOPE'], // 休み希望人数にカウントするシフトコード配列
   'offRequestAlertCount': '',   // 休み希望人数の強調表示（目安人数）
   'clinicClosedDays': [],       // 外来診療休診日設定（祝日と同様に赤表示）
+  'maxConsecutiveWorkDays': 5,  // AI作成時の最大連勤数（週休2日標準: 5連勤まで）
+  'monthlyRegularOffDays': 'auto', // 月間の基本公休数（日曜除く指定休・振休枠: 'auto' または数値）
 };
 
 const TIME_OPTIONS = [];
@@ -1436,10 +1438,30 @@ const handleResetSchedule = () => {
     });
   };
 
+  const getTargetCount = (shiftCode, day) => {
+    if (isSunday(year, month, day)) return 0;
+    const def = shiftDefs[shiftCode];
+    const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    // 祝日・外来休診日のME室は「Gのみ1人（Lは0人）」として判定
+    if (def?.category === 'me' && isHoliday(year, month, day, closedRules)) {
+      return (shiftCode === 'G' || def.label === 'G') ? 1 : 0;
+    }
+    if (!targetCounts[shiftCode]) return 0;
+    const dow = getDayOfWeek(year, month, day);
+    return targetCounts[shiftCode][dow] || 0;
+  };
+
 const prepareScheduleDataForAi = () => {
     const days = getDaysInMonth(year, month);
     const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    const maxConsecutiveWorkDays = Number(adminSettings.maxConsecutiveWorkDays) || 5;
+    const monthlyOffSetting = adminSettings.monthlyRegularOffDays || 'auto';
+
     const calendarInfo = {};
+    let operatingDaysCount = 0;
+    const calendarWeeks = [];
+    let currentWeekDays = [];
+
     for (let d = 1; d <= days; d++) {
       const date = new Date(year, month - 1, d);
       const dayOfWeek = date.getDay(); 
@@ -1450,13 +1472,50 @@ const prepareScheduleDataForAi = () => {
         isSunday: dayOfWeek === 0,
         isHoliday: isHol
       };
+
+      if (dayOfWeek === 0) {
+        if (currentWeekDays.length > 0) {
+          calendarWeeks.push({
+            weekIndex: calendarWeeks.length + 1,
+            label: `${month}/${currentWeekDays[0]}〜${month}/${currentWeekDays[currentWeekDays.length - 1]}`,
+            days: currentWeekDays,
+            isFullWeek: currentWeekDays.length === 6,
+          });
+          currentWeekDays = [];
+        }
+      } else {
+        operatingDaysCount++;
+        currentWeekDays.push(d);
+      }
     }
+    if (currentWeekDays.length > 0) {
+      calendarWeeks.push({
+        weekIndex: calendarWeeks.length + 1,
+        label: `${month}/${currentWeekDays[0]}〜${month}/${currentWeekDays[currentWeekDays.length - 1]}`,
+        days: currentWeekDays,
+        isFullWeek: currentWeekDays.length === 6,
+      });
+    }
+
+    // Step 2: 週休2日（日曜＋週1日公休＝空欄）に基づく月間の基本公休数・標準出勤日数の算出
+    const parsedFixedOff = monthlyOffSetting !== 'auto' ? parseInt(monthlyOffSetting, 10) : NaN;
+    const baseRegularOffMin = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.floor(operatingDaysCount / 6);
+    const baseRegularOffMax = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.ceil(operatingDaysCount / 6);
+    const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
+    const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
 
     // 3クール該当シフトコードを動的抽出（A:坂3, F:君3 や21時以降終了・表示名に3を含むシフト）
     const cool3ShiftCodes = Object.values(shiftDefs)
       .filter(s => s.type === 'shift' && (s.code === 'A' || s.code === 'F' || (s.label && s.label.includes('3')) || (s.endTime && s.endTime >= '21:00')))
       .map(s => s.code);
     const cool3Set = new Set(cool3ShiftCodes);
+
+    // 指定(S)・振休(H)・希望カテゴリ(HOPE等)は「週1日の通常公休枠」、年休(Y)・リフレ(R)等は「公休とは別枠の有休」として区別
+    const isPaidLeaveShiftCode = (code) => {
+      if (!code || !shiftDefs[code]) return false;
+      const def = shiftDefs[code];
+      return def.category === 'off' && code !== 'S' && code !== 'H';
+    };
 
     // 【追加】各スキルの重み付け（点数）を定義
     const skillPoints = {
@@ -1477,35 +1536,108 @@ const prepareScheduleDataForAi = () => {
       }
       staffPowerMap[s.id] = powerScore;
 
-      // AIが数え間違いを起こさないよう、現時点の個人別集計値を事前計算して渡す
+      // AIが数え間違いを起こさないよう、現時点の個人別集計値・連勤数・残りの目標出勤/空欄休みを事前計算して渡す
       let workDays = 0;
       let offDays = 0;
+      let regularOffEnteredDays = 0;
+      let paidLeaveDays = 0;
       let blankDays = 0;
+      let assignableBlankDays = 0;
+      let lockedBlankOffDays = 0;
       let cool3Count = 0;
       let overtimeHours = 0;
+      let currentStreak = 0;
+      let currentMaxStreak = 0;
+
+      // 各日の状態マップ（週ごとの公休チェック用）
+      const dayStateMap = {};
 
       for (let d = 1; d <= days; d++) {
-        if (calendarInfo[d].isSunday) continue;
+        if (calendarInfo[d].isSunday) {
+          currentStreak = 0;
+          continue;
+        }
         const code = shiftData[s.id]?.[d];
+        const reqShift = getUserRequestedShift(s.id, d);
+
         if (!code || !shiftDefs[code]) {
           blankDays++;
+          currentStreak = 0;
+          // 管理者がHOPE等をクリアして空欄にした（希望履歴が残っている）セルは、既に休み確定の空欄として扱う
+          if (reqShift && shiftDefs[reqShift] && (shiftDefs[reqShift].category === 'off' || shiftDefs[reqShift].category === 'req')) {
+            lockedBlankOffDays++;
+            if (isPaidLeaveShiftCode(reqShift)) {
+              paidLeaveDays++;
+              dayStateMap[d] = 'paid_off';
+            } else {
+              regularOffEnteredDays++;
+              dayStateMap[d] = 'regular_off';
+            }
+          } else if (reqShift) {
+            dayStateMap[d] = 'locked_req';
+          } else {
+            assignableBlankDays++;
+            dayStateMap[d] = 'assignable_blank';
+          }
         } else {
           const def = shiftDefs[code];
           if (def.category === 'off' || def.category === 'req') {
             offDays++;
+            currentStreak = 0;
+            if (isPaidLeaveShiftCode(code)) {
+              paidLeaveDays++;
+              dayStateMap[d] = 'paid_off';
+            } else {
+              regularOffEnteredDays++;
+              dayStateMap[d] = 'regular_off';
+            }
           } else {
             workDays++;
+            currentStreak++;
+            if (currentStreak > currentMaxStreak) currentMaxStreak = currentStreak;
+            dayStateMap[d] = 'work';
           }
           if (cool3Set.has(code)) cool3Count++;
           if (def.overtime) overtimeHours += parseFloat(def.overtime) || 0;
         }
       }
 
-      // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出
+      // 年休(Y)・リフレ(R)等の有休分は基本目標出勤日数から差し引く（週1日の公休とは別枠で休めるようにする）
+      const targetWorkDaysMin = Math.max(workDays, standardWorkDaysMin - paidLeaveDays);
+      const targetWorkDaysMax = Math.max(workDays, standardWorkDaysMax - paidLeaveDays);
+      const remainingWorkDaysMin = Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMin - workDays));
+      const remainingWorkDaysMax = Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMax - workDays));
+      const blankOffDaysToKeepMin = Math.max(0, assignableBlankDays - remainingWorkDaysMax);
+      const blankOffDaysToKeepMax = Math.max(0, assignableBlankDays - remainingWorkDaysMin);
+
+      // 週単位で「まだ週1日の通常公休(S/H/HOPE等)が入っておらず、AIが空欄を残すべき週」を特定
+      const weeksNeedingBlankOff = [];
+      calendarWeeks.forEach(w => {
+        const weekRegOff = w.days.filter(d => dayStateMap[d] === 'regular_off').length;
+        const weekAnyOff = w.days.filter(d => dayStateMap[d] === 'regular_off' || dayStateMap[d] === 'paid_off').length;
+        const weekAssignable = w.days.filter(d => dayStateMap[d] === 'assignable_blank');
+        if (w.isFullWeek && weekRegOff === 0 && weekAssignable.length > 0) {
+          weeksNeedingBlankOff.push({
+            week: w.label,
+            candidateBlankDays: weekAssignable,
+            minBlankToKeep: 1,
+          });
+        } else if (!w.isFullWeek && w.days.length > maxConsecutiveWorkDays && weekAnyOff === 0 && weekAssignable.length > 0) {
+          weeksNeedingBlankOff.push({
+            week: w.label,
+            candidateBlankDays: weekAssignable,
+            minBlankToKeep: 1,
+          });
+        }
+      });
+
+      // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出（※ME室 category:'me' はOPE班管理のため常時除外）
       const allowedWorkShifts = Object.values(shiftDefs)
-        .filter(def => def.type === 'shift' && def.category !== 'off' && def.category !== 'req' && isShiftAllowedForStaff(s, def.code))
+        .filter(def => def.type === 'shift' && def.category !== 'off' && def.category !== 'req' && def.category !== 'me' && isShiftAllowedForStaff(s, def.code))
         .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
         .map(def => def.code);
+
+      const fmtRange = (minV, maxV) => (minV === maxV ? `${minV}日` : `${minV}〜${maxV}日`);
 
       return { 
         id: s.id,
@@ -1522,7 +1654,16 @@ const prepareScheduleDataForAi = () => {
         currentStats: {
           workDays,
           offDays,
+          regularOffEnteredDays,
+          paidLeaveDays,
           blankDays,
+          assignableBlankDays,
+          lockedBlankOffDays,
+          targetWorkDaysRange: fmtRange(targetWorkDaysMin, targetWorkDaysMax),
+          remainingWorkDaysRange: fmtRange(remainingWorkDaysMin, remainingWorkDaysMax),
+          blankOffDaysToKeepRange: fmtRange(blankOffDaysToKeepMin, blankOffDaysToKeepMax),
+          weeksNeedingBlankOff,
+          currentMaxStreak,
           cool3Count,
           remainingCool3: Math.max(0, (s.maxCool3 ?? 0) - cool3Count),
           overtimeHours
@@ -1556,6 +1697,7 @@ const prepareScheduleDataForAi = () => {
       let kimiScore = 0;
       let kikuriScore = 0;
       let workingCount = 0;
+      let meWorkingCount = 0;
       const codeCounts = {};
 
       staffList.forEach(s => {
@@ -1565,6 +1707,7 @@ const prepareScheduleDataForAi = () => {
         codeCounts[code] = (codeCounts[code] || 0) + 1;
         if (def.category !== 'off' && def.category !== 'req') {
           workingCount++;
+          if (def.category === 'me') meWorkingCount++;
           const pScore = staffPowerMap[s.id] || 0;
           if (def.category === 'saka') sakaScore += pScore;
           else if (def.category === 'kimi') kimiScore += pScore;
@@ -1572,10 +1715,11 @@ const prepareScheduleDataForAi = () => {
         }
       });
 
-      const dow = new Date(year, month - 1, d).getDay();
       const shortages = [];
       Object.keys(targetCounts || {}).forEach(code => {
-        const target = targetCounts[code]?.[dow] || 0;
+        // ME室(L/G)はOPE班管理者が入力するため、AIが埋めるべき不足リスト(shortages)からは除外
+        if (shiftDefs[code]?.category === 'me') return;
+        const target = getTargetCount(code, d);
         const actual = codeCounts[code] || 0;
         if (target > 0 && actual < target) {
           const label = shiftDefs[code]?.label || code;
@@ -1588,6 +1732,7 @@ const prepareScheduleDataForAi = () => {
 
       dailySummary[d] = {
         workingCount,
+        meWorkingCount,
         sakaScore,
         kimiScore,
         kikuriScore,
@@ -1597,7 +1742,20 @@ const prepareScheduleDataForAi = () => {
 
     return {
       year, month,
+      pacingRules: {
+        maxConsecutiveWorkDays,
+        operatingDaysCount,
+        standardMonthlyWorkDays: standardWorkDaysMin === standardWorkDaysMax
+          ? `${standardWorkDaysMin}日`
+          : `${standardWorkDaysMin}〜${standardWorkDaysMax}日`,
+        standardMonthlyRegularOffDays: baseRegularOffMin === baseRegularOffMax
+          ? `${baseRegularOffMin}日`
+          : `${baseRegularOffMin}〜${baseRegularOffMax}日`,
+        offDayRepresentation: '空欄（SやH等のコードは入れず未入力のまま残す）',
+        meRoomRule: 'ME室(L, G)はOPE班管理者が別途組むためAIでの自動入力・既存変更は禁止（祝日のME室必要人数はG:1名/L:0名）'
+      },
       calendar: calendarInfo,
+      calendarWeeks,
       cool3ShiftCodes,
       staff: enrichedStaff,
       staffRequests,
@@ -1617,7 +1775,7 @@ const prepareScheduleDataForAi = () => {
     };
   };
 
-// 共通のAI結果反映ロジック
+// 共通のAI結果反映ロジック（ワンタップAI自動作成用）
   const applyAiResult = async (jsonString) => {
     // 【追加】デバッグ用にコンソールに生の応答を出す
     console.log("AI Raw Response:", jsonString);
@@ -1648,6 +1806,7 @@ const prepareScheduleDataForAi = () => {
       const changes = JSON.parse(cleanJson);
       const nameToIdMap = {};
       staffList.forEach(s => nameToIdMap[s.name] = s.id);
+      const maxDay = getDaysInMonth(year, month);
       
       let updatedCount = 0;
       const ns = { ...shiftData };
@@ -1671,12 +1830,23 @@ const prepareScheduleDataForAi = () => {
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
           const staffObj = staffList.find(s => s.id === staffId);
 
-          if (staffId && staffObj) { 
+          // AI除外スタッフは自動作成で書き換えない
+          if (staffId && staffObj && !staffObj.excludeFromAi) { 
              ns[staffId] = { ...(ns[staffId] || {}) };
              Object.keys(changes.shift[key]).forEach(day => {
+                const dayNum = parseInt(day, 10);
+                if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
+                // 既に管理者・本人が入力済みのセル（ME室のL/G、年休Y、指定S、希望HOPEなど）や希望履歴があるセルは絶対に変更しない
+                if (shiftData[staffId]?.[dayNum] || getUserRequestedShift(staffId, dayNum)) return;
+
                 const code = changes.shift[key][day];
-                if (shiftDefs[code] && isShiftAllowedForStaff(staffObj, code)) {
-                   ns[staffId][day] = code;
+                if (!code || !shiftDefs[code]) return;
+                const def = shiftDefs[code];
+                // Step 2: AI自動作成ではME室(me)の自動入力を禁止し、休みは空欄のまま残すため休みコード(off/req)も書き込まない
+                if (def.category === 'me' || def.category === 'off' || def.category === 'req') return;
+
+                if (isShiftAllowedForStaff(staffObj, code)) {
+                   ns[staffId][dayNum] = code;
                    updatedCount++;
                 }
              });
@@ -1688,13 +1858,18 @@ const prepareScheduleDataForAi = () => {
         Object.keys(changes.task).forEach(key => {
           let staffId = key;
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
+          const staffObj = staffList.find(s => s.id === staffId);
 
-          if (staffId && staffList.find(s => s.id === staffId)) {
+          if (staffId && staffObj && !staffObj.excludeFromAi) {
              nt[staffId] = { ...(nt[staffId] || {}) };
              Object.keys(changes.task[key]).forEach(day => {
+                const dayNum = parseInt(day, 10);
+                if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
+                if (taskData[staffId]?.[dayNum] || getUserRequestedTask(staffId, dayNum)) return;
+
                 const code = changes.task[key][day];
                 if (shiftDefs[code]) {
-                   nt[staffId][day] = code;
+                   nt[staffId][dayNum] = code;
                    updatedCount++;
                 }
              });
@@ -1756,31 +1931,44 @@ const prepareScheduleDataForAi = () => {
     try {
       const data = prepareScheduleDataForAi();
       const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
-      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。完璧に埋める必要はありません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
+      const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
       const activeConditions = autoFillConditions
         .filter(c => c.active)
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）と既存シフトの考慮を行わせるプロンプト
+      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・最大連勤・週休2日（空欄残し）・ME室除外を行わせるプロンプト
       const prompt = `
       【タスク】
-      現在の勤務表データを分析し、空欄（日曜以外）に適切なシフトを割り当ててください。
+      現在の勤務表データを分析し、各職員の週休2日（日曜＋週1日休み＝空欄）と最大連勤制限を守りながら、必要な出勤シフトのみを割り当ててください。
 
       【基本ルール】
-      1. 既存データ・個人希望の維持と活用: 既にシフトが入っている箇所や staffRequests に希望がある箇所は絶対に変更しないでください。ただし、既存シフトのメンバーとそのpowerScoreも、その日の必要人数とパワーバランスの計算に必ず含めて考慮してください（dailySummary に現在の集計値が入っています）。
-      2. AI除外と配置可能シフト制限（★絶対厳守★）:
-         - "excludeFromAi": true の職員は変更しない。日曜日はシフトを入れない。
-         - 各職員に出勤シフトを割り当てる際は、必ずその職員データの "allowedWorkShifts" 配列に含まれているシフトコードのみから選んでください（許可されていない施設・シフトへの配置は絶対禁止です）。
-      3. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）。これを超えないこと。
-      4. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
+      1. 既存データ・個人希望の維持と活用（★絶対厳守★）:
+         - 既にシフトが入っている箇所（管理者が事前入力したME室のL/G、年休Y、リフレR、指定休S、振休Hなど全て）や staffRequests に希望がある箇所は絶対に変更しないでください。
+         - ただし、既存シフトのメンバー（L/G等も含む）とそのpowerScore・出勤日数・連勤数は、計算に必ず含めて考慮してください（dailySummary と currentStats に事前集計済みです）。
+      2. AI除外・配置可能シフト制限・ME室除外（★絶対厳守★）:
+         - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のためシフトを入れない。
+         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
+         - 「ME室 (category: me / コード: L, G)」はOPE班のシフト管理者が別途組むシフトです。AIから L や G を自動入力することは絶対禁止とし、既に L や G が入っているセルも絶対に変更しないでください。
+         - 各職員に出勤シフトを割り当てる際は、必ずその職員データの "allowedWorkShifts" 配列に含まれているシフトコードのみから選んでください。
+      3. 週休2日・最大連勤制限・休みの「空欄」表現（★最重要★）:
+         - 週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までとします。${maxStreak + 1}連勤以上は絶対に作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+         - AIが休ませる日（指定休・祝日の振替休にあたる日）には、S や H などの休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
+         - 全ての空欄を出勤シフトで埋めてはいけません！各職員の currentStats にある:
+           ・targetWorkDaysRange（今月の目標出勤日数 ※年休Y・リフレR等の有休分は既に差し引き済み）
+           ・remainingWorkDaysRange（今回AIが追加で割り当てるべき出勤日数の目安）
+           ・blankOffDaysToKeepRange（週休として必ず空欄のまま残すべき日数）
+           ・weeksNeedingBlankOff（まだ週1日の公休が入っていないため、candidateBlankDays の中から最低1日は必ず空欄のまま残すべき週）
+           を厳守してください。
+      4. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）。これを超えないこと。
+      5. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
          - 坂田 (category: saka): 合計 30点 以上 (目安人数: 6名)
          - 君津 (category: kimi): 合計 30点 以上 (目安人数: 6名)
          - 木クリ (category: kikuri): 合計 40点 以上 (目安人数: 8名)
-         ※「じんクリ (jinkuri)」と「ME室 (me)」については、必要人数の充足のみ行い、パワーバランス(スコア計算)を考慮する必要はありません。
-      5. 負担の分散: 特定の人ばかりが出勤・連勤・休まないよう、1ヶ月を通した各個人の出勤日数（currentStats.workDays）を分散させてください。
-      6. 必要人数: 各曜日・各シフトごとの目標人数は、提供データ内の「targetCounts」および「dailySummary.shortages」を参照して満たすようにしてください。
+         ※「じんクリ (jinkuri)」については必要人数の充足のみ行い、パワーバランス(スコア計算)は不要です。「ME室 (me)」はOPE班管理のためAI配置対象外です。
+      6. 必要人数と負担の分散: 各曜日・各シフトごとの目標人数は「targetCounts」および「dailySummary.shortages」を参照して満たしつつ、出勤日数・3クール回数・残業時間が特定の人に偏らないよう分散させてください。
 
       【適用条件（★何よりも優先すべき絶対ルール★）】
       以下の条件は、上記の基本ルール（パワーバランスや必要人数の確保など）よりも優先して「絶対」に守ってください。ルールが競合した場合でも、必ずこちらの条件を優先します。
@@ -1788,17 +1976,17 @@ const prepareScheduleDataForAi = () => {
 
       【出力形式】
       必ず以下のJSONフォーマットのみを出力してください。Markdownタグを含めないでください。
-      エラーを防ぎつつ品質を上げるため、必ず「1日ずつ」データ内の「targetCounts」と「powerScore（既存シフト分も含む）」を参照しながらチェックを行い、その評価を "dailyCheck" に記載してから "shift" を出力してください。
+      エラーを防ぎつつ品質を上げるため、必ず「1日ずつ」データ内の「targetCounts」「powerScore（既存シフト分も含む）」「連勤上限（${maxStreak}連勤まで）・週休の空欄確保」をチェックし、その評価を "dailyCheck" に記載してから、出勤させるセルのみ "shift" に出力してください（休みの日は空欄のままにするため "shift" に含めないこと）。
       {
         "dailyCheck": {
-          "1": "1日のチェック: 既存シフトも含めて計算。坂田は必要人数達成(スコア32点)、君津は必要人数達成(スコア31点)、木クリはスコア42点。じんクリ・ME室は人数のみ確認し要件達成。",
+          "1": "1日のチェック: 既存シフトも含めて計算。坂田は必要人数達成(スコア32点)、君津は必要人数達成(スコア31点)、木クリはスコア42点。週休対象者は空欄を維持し連勤上限もクリア。",
           "2": "2日のチェック: ...",
           "3": "..."
         },
         "shift": {
-          "職員ID": { "日付(1-31の数値)": "シフトコード" }
+          "職員ID": { "日付(1-31の数値)": "出勤シフトコード" }
         },
-        "reason": "全体を通した申し送り事項や、targetCountsやパワーバランスを満たせなかった日があればその理由を記載"
+        "reason": "全体を通した申し送り事項や、targetCounts・パワーバランス・週休確保の兼ね合いで調整した点があれば記載"
       }
       
       【データ】
@@ -1902,6 +2090,11 @@ const prepareScheduleDataForAi = () => {
             ? getUserRequestedShift(staffId, dayNum)
             : getUserRequestedTask(staffId, dayNum);
 
+          const isMeTouch = kind === 'shift' && (
+            (currentCode && shiftDefs[currentCode]?.category === 'me') ||
+            (normalizedAfter && shiftDefs[normalizedAfter]?.category === 'me')
+          );
+
           items.push({
             staffId,
             staffName: staff.name,
@@ -1916,7 +2109,11 @@ const prepareScheduleDataForAi = () => {
             afterTextClass: normalizedAfter ? (shiftDefs[normalizedAfter]?.text || 'text-gray-800') : 'text-gray-400',
             hasStaffRequest: !!(reqCode && reqCode !== normalizedAfter),
             staffRequestLabel: reqCode ? (shiftDefs[reqCode]?.label || reqCode) : null,
-            isRestrictedShift: !!(kind === 'shift' && normalizedAfter && !isShiftAllowedForStaff(staff, normalizedAfter)),
+            isRestrictedShift: !!(
+              isMeTouch ||
+              (kind === 'shift' && normalizedAfter && !isShiftAllowedForStaff(staff, normalizedAfter))
+            ),
+            isMeTouch: !!isMeTouch,
           });
         });
       });
@@ -2049,6 +2246,7 @@ const prepareScheduleDataForAi = () => {
     try {
       const data = prepareScheduleDataForAi();
       const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
+      const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
 
       const activeConditions = autoFillConditions
         .filter(c => c.active)
@@ -2070,11 +2268,16 @@ const prepareScheduleDataForAi = () => {
 【現在の対象年月】${year}年${month}月
 
 【基本ルール】
-- 日曜日はシフト不可（空欄のまま）。
+- 日曜日は透析休診（空欄のまま）。祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜以外は通常通り透析を実施するため出勤日として扱います。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
+- ME室（category: me / コード: L, G）の扱い（重要）: ME室はOPE班のシフト管理者が別途組むシフトです。AIから L・G を自動配置しないでください。また、既に管理者から L・G（や他の既存シフト）が入力されているセルは、今回の会話で管理者が名指しで変更指示しない限り絶対に変更しないでください（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。ただし既に入力済みの L・G 等も、その職員の出勤日数・連勤数には含めて計算してください。
 - 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts" に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
+- 週休2日・最大連勤制限・休みの「空欄」表現（重要）:
+  ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+  ・AIが休ませる日（指定休・祝日の振替休枠）には、S や H 等のコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
+  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（年休Y・リフレR等の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週）を守ってください。
 - 3クール制限: 各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
-- 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)・ME室(me)は人数充足のみ。
+- 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)は人数充足のみ。
 - 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
 【現在有効な優先適用条件】
@@ -2263,12 +2466,6 @@ ${messageText}`;
         return (categoryDefs[a.id]?.order ?? 99) - (categoryDefs[b.id]?.order ?? 99);
       });
   }, [dynamicPaletteGroups, categoryDefs, shiftDefs]);
-
-  const getTargetCount = (shiftCode, day) => {
-    if (!targetCounts[shiftCode]) return 0;
-    const dow = getDayOfWeek(year, month, day);
-    return targetCounts[shiftCode][dow] || 0;
-  };
 
   const displayStaffList = useMemo(() => {
     if (!appUser) return [];
@@ -3277,6 +3474,58 @@ ${messageText}`;
                           ※設定した人数以上に達した日は、個人カレンダーの「休○」バッジが赤色で強調表示されます。
                         </p>
                       </div>
+
+                      <div className="border-t pt-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-1">AI作成時の最大連勤数・週休ペース設定</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          週休2日制（日曜休診＋月〜土のうち週1日休み）に基づき、AIが自動で確保する「空欄休み」と連続出勤の上限を設定します。
+                        </p>
+                        <div className="bg-gray-50 border rounded-lg p-4 space-y-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs font-bold text-gray-600 mb-1">最大連勤数（上限）</label>
+                              <select
+                                className="w-full border p-2 rounded bg-white text-sm font-medium"
+                                value={adminSettings.maxConsecutiveWorkDays || 5}
+                                onChange={(e) => {
+                                  const newSettings = { ...adminSettings, maxConsecutiveWorkDays: Number(e.target.value) };
+                                  setAdminSettings(newSettings);
+                                  saveMasterData({ adminSettings: newSettings });
+                                }}
+                              >
+                                <option value={3}>3連勤まで</option>
+                                <option value={4}>4連勤まで</option>
+                                <option value={5}>5連勤まで（週休2日 標準）</option>
+                                <option value={6}>6連勤まで</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs font-bold text-gray-600 mb-1">月間の公休数（日曜除く指定休・振休枠）</label>
+                              <select
+                                className="w-full border p-2 rounded bg-white text-sm font-medium"
+                                value={adminSettings.monthlyRegularOffDays || 'auto'}
+                                onChange={(e) => {
+                                  const newSettings = { ...adminSettings, monthlyRegularOffDays: e.target.value };
+                                  setAdminSettings(newSettings);
+                                  saveMasterData({ adminSettings: newSettings });
+                                }}
+                              >
+                                <option value="auto">自動計算（週1日休みペース: 月4〜5日）</option>
+                                <option value="3">月3日で固定</option>
+                                <option value="4">月4日で固定</option>
+                                <option value="5">月5日で固定</option>
+                                <option value="6">月6日で固定</option>
+                                <option value="7">月7日で固定</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-gray-600 bg-white border border-gray-200 rounded-md p-3 space-y-1 leading-relaxed">
+                            <div>・<strong>休みの表現：</strong>AIは公休（指定休・振替休枠）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
+                            <div>・<strong>有休の扱い：</strong>既に入力済みの「指定(S)・振休(H)・希望(HOPE)」は公休枠として数え、「年休(Y)・リフレ(R)」などの有休は公休とは別枠（目標出勤日数から差し引き）として計算します。</div>
+                            <div>・<strong>祝日・ME室の扱い：</strong>祝日・外来休診日も日曜以外は透析出勤日として組みます。ME室（L/G）はOPE班管理のためAIでの自動入力・既存変更は行いません（祝日のME室必要人数は G:1名 / L:0名 として集計）。</div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
                   {activeSettingsTab === 'category' && (
@@ -3347,7 +3596,7 @@ ${messageText}`;
                     <div className="h-full flex flex-col">
                       <div className="mb-4 flex justify-between items-center gap-2">
                         <p className="text-xs text-gray-500">
-                          スキル、3クール制限、AI配置可能施設、AI除外設定を一括管理します（施設バッジをクリックしてON/OFF切替できます）。
+                          スキル、3クール制限、AI配置可能施設、AI除外設定を一括管理します（施設バッジをクリックしてON/OFF切替できます ※ME室はOPE班管理のため常時AI対象外）。
                         </p>
                         <button onClick={handleAddStaff} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded flex items-center gap-1 hover:bg-blue-700 shrink-0"><Plus size={12}/> 職員追加</button>
                       </div>
@@ -3389,7 +3638,7 @@ ${messageText}`;
                                   <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
                                   <td className="p-2 border">
                                     <div className="flex flex-wrap items-center gap-1">
-                                      {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
                                         const isAllowed = !exCats.includes(group.id);
                                         return (
                                           <button
@@ -3492,7 +3741,11 @@ ${messageText}`;
                 </div>
               </div>
               <div className="p-4 flex-1 overflow-y-auto">
-                <p className="text-sm text-gray-600 mb-4 font-bold">以下の条件で、空いているシフトを全て自動で埋めます。</p>
+                <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
+                <div className="mb-4 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
+                  <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
+                  <div>・<strong>保護ルール：</strong>既存シフト・本人希望は変更せず、<strong>ME室(L/G)</strong>はAI配置対象外です</div>
+                </div>
                 <div className="space-y-2 mb-4">
                   {autoFillConditions.map((condition) => (
                     <div key={condition.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border hover:bg-gray-100">
@@ -3714,7 +3967,7 @@ ${messageText}`;
                                   <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-2.5 py-1.5">
                                     <AlertTriangle size={13} className="text-amber-600 shrink-0 mt-0.5" />
                                     <span>
-                                      職員の「配置可能施設・シフト制限」外のシフトが <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
+                                      職員の「配置制限」外または「ME室(L/G)」に関する変更が <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
                                     </span>
                                   </div>
                                 )}
@@ -3754,9 +4007,9 @@ ${messageText}`;
                                         {item.isRestrictedShift && (
                                           <span
                                             className="text-[9px] px-1 rounded bg-amber-100 text-amber-800 font-bold shrink-0"
-                                            title="この職員のAI配置制限外のシフトです"
+                                            title={item.isMeTouch ? 'ME室(L/G)は通常OPE班管理のためAI対象外です' : 'この職員のAI配置制限外のシフトです'}
                                           >
-                                            制限外
+                                            {item.isMeTouch ? 'ME室' : '制限外'}
                                           </span>
                                         )}
                                       </div>
@@ -3928,13 +4181,13 @@ ${messageText}`;
                     )}
                   </div>
                   <p className="text-[11px] text-gray-400 mb-2">
-                    ※AI作成・提案時のみ適用されます（管理者の手動入力時は全シフト選べます）。
+                    ※AI作成・提案時のみ適用されます（管理者の手動入力時は全シフト選べます。ME室は常時AI対象外）。
                   </p>
 
                   <div className="bg-gray-50 border rounded-lg p-3 space-y-2.5">
                     <div className="text-[11px] font-bold text-gray-600">配置可能な施設（チェックを外すとAI配置対象外）</div>
                     <div className="flex flex-wrap gap-2">
-                      {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
                         const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                         const isAllowed = !exCats.includes(group.id);
                         return (
@@ -3983,7 +4236,7 @@ ${messageText}`;
                           <p className="text-[10px] text-gray-400">
                             チェックを外したシフトにはAIが割り振りません（例：坂田は行けるが「坂2」「坂3」は外して「坂日」のみにする等）。
                           </p>
-                          {dynamicSummaryGroups.filter(g => g.items.length > 0).map(group => {
+                          {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
                             const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                             const exShifts = Array.isArray(targetStaff.excludedShifts) ? targetStaff.excludedShifts : [];
                             const isCatDisabled = exCats.includes(group.id);
@@ -4097,7 +4350,14 @@ ${messageText}`;
                  <div className="space-y-6">
                    {dynamicSummaryGroups.map(group => (
                      <div key={group.id} className="border rounded-lg overflow-hidden">
-                       <div className={`px-4 py-2 font-bold text-sm ${group.headerColor}`}>{group.name}</div>
+                       <div className={`px-4 py-2 font-bold text-sm flex flex-wrap items-center justify-between gap-2 ${group.headerColor}`}>
+                         <span>{group.name}</span>
+                         {group.id === 'me' && (
+                           <span className="text-[11px] font-normal opacity-90">
+                             ※祝日・外来休診日は自動的に G:1名 / L:0名 として判定（AI自動入力対象外）
+                           </span>
+                         )}
+                       </div>
                        <table className="w-full text-center text-xs border-collapse">
                          <thead><tr className="bg-gray-100 text-gray-600"><th className="p-2 border text-left w-32">シフト</th>{group.id === 'jinkuri' ? (<><th className="p-2 border w-24">月・水・金</th><th className="p-2 border w-24">火・木・土</th></>) : (<th className="p-2 border w-32">通常 (月～土)</th>)}</tr></thead>
                          <tbody>
