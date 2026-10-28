@@ -126,6 +126,7 @@ const DEFAULT_ADMIN_SETTINGS = {
   'deadlineDay': '', // ★追加: 毎月の締切日 (1-31の数値)
   'countedOffShifts': ['HOPE'], // 休み希望人数にカウントするシフトコード配列
   'offRequestAlertCount': '',   // 休み希望人数の強調表示（目安人数）
+  'clinicClosedDays': [],       // 外来診療休診日設定（祝日と同様に赤表示）
 };
 
 const TIME_OPTIONS = [];
@@ -193,21 +194,78 @@ const getHolidaysForYear = (year) => {
   return holidayMap;
 };
 
+const getMaxDaysForMonthRule = (m) => {
+  const monthNum = Number(m);
+  if (monthNum === 2) return 29;
+  if ([4, 6, 9, 11].includes(monthNum)) return 30;
+  return 31;
+};
+
+const getClinicClosedRuleMatch = (year, month, day, clinicClosedDays = []) => {
+  if (!Array.isArray(clinicClosedDays) || clinicClosedDays.length === 0) return null;
+  const md = month * 100 + day;
+  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  for (const rule of clinicClosedDays) {
+    if (!rule) continue;
+    if (rule.type === 'yearly') {
+      const sMD = Number(rule.startMonth) * 100 + Number(rule.startDay);
+      const eMD = Number(rule.endMonth) * 100 + Number(rule.endDay);
+      if (!sMD || !eMD) continue;
+      // 12/29〜1/3 のような年またぎ期間にも対応
+      const matched = sMD <= eMD ? (md >= sMD && md <= eMD) : (md >= sMD || md <= eMD);
+      if (matched) return rule;
+    } else if (rule.type === 'specific') {
+      if (!rule.startDate) continue;
+      const sDate = rule.startDate;
+      const eDate = rule.endDate || rule.startDate;
+      const [minD, maxD] = sDate <= eDate ? [sDate, eDate] : [eDate, sDate];
+      if (dateStr >= minD && dateStr <= maxD) return rule;
+    }
+  }
+  return null;
+};
+
+const isClinicClosedDay = (year, month, day, clinicClosedDays = []) => {
+  return !!getClinicClosedRuleMatch(year, month, day, clinicClosedDays);
+};
+
+const formatClinicClosedRule = (rule) => {
+  if (!rule) return '';
+  if (rule.type === 'yearly') {
+    if (Number(rule.startMonth) === Number(rule.endMonth) && Number(rule.startDay) === Number(rule.endDay)) {
+      return `${rule.startMonth}月${rule.startDay}日`;
+    }
+    return `${rule.startMonth}月${rule.startDay}日 〜 ${rule.endMonth}月${rule.endDay}日`;
+  }
+  const formatYMD = (str) => {
+    if (!str) return '';
+    const [y, m, d] = str.split('-').map(Number);
+    return `${y}年${m}月${d}日`;
+  };
+  const endStr = rule.endDate || rule.startDate;
+  if (rule.startDate === endStr) {
+    return formatYMD(rule.startDate);
+  }
+  return `${formatYMD(rule.startDate)} 〜 ${formatYMD(endStr)}`;
+};
+
 const HOLIDAY_CACHE = {};
-const isHoliday = (year, month, day) => {
+const isHoliday = (year, month, day, clinicClosedDays = []) => {
   if (!HOLIDAY_CACHE[year]) {
     HOLIDAY_CACHE[year] = getHolidaysForYear(year);
   }
   const date = new Date(year, month - 1, day);
-  return !!HOLIDAY_CACHE[year][date.getTime()];
+  if (HOLIDAY_CACHE[year][date.getTime()]) return true;
+  return isClinicClosedDay(year, month, day, clinicClosedDays);
 };
 
 const getDaysInMonth = (year, month) => new Date(year, month, 0).getDate();
 const getDayOfWeek = (year, month, day) => new Date(year, month - 1, day).getDay();
 const isSunday = (year, month, day) => getDayOfWeek(year, month, day) === 0;
-const getDayColor = (year, month, day) => {
+const getDayColor = (year, month, day, clinicClosedDays = []) => {
   const dow = getDayOfWeek(year, month, day);
-  if (isHoliday(year, month, day)) return 'text-red-500 bg-red-50';
+  if (isHoliday(year, month, day, clinicClosedDays)) return 'text-red-500 bg-red-50';
   if (dow === 0) return 'text-red-500 bg-red-50';
   if (dow === 6) return 'text-blue-500 bg-blue-50';
   return 'text-gray-700';
@@ -375,6 +433,22 @@ export default function WorkScheduleApp() {
   const [targetStaff, setTargetStaff] = useState(null);
   const [targetCategory, setTargetCategory] = useState(null); 
   const [newPassword, setNewPassword] = useState('');
+
+  // 基本設定：外来診療休診日追加フォーム用の状態
+  const [closedFormType, setClosedFormType] = useState('yearly'); // 'yearly' | 'specific'
+  const [closedStartMonth, setClosedStartMonth] = useState(12);
+  const [closedStartDay, setClosedStartDay] = useState(29);
+  const [closedEndMonth, setClosedEndMonth] = useState(12);
+  const [closedEndDay, setClosedEndDay] = useState(29);
+  const [closedStartDate, setClosedStartDate] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [closedEndDate, setClosedEndDate] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [closedLabelInput, setClosedLabelInput] = useState('');
   
   const [aiChatMode, setAiChatMode] = useState('create');
   const [aiInput, setAiInput] = useState('');
@@ -718,6 +792,91 @@ export default function WorkScheduleApp() {
       ? currentList.filter(c => c !== code)
       : [...currentList, code];
     const newSettings = { ...adminSettings, countedOffShifts: nextList };
+    setAdminSettings(newSettings);
+    saveMasterData({ adminSettings: newSettings });
+  };
+
+  // 基本設定で外来診療休診日を追加
+  const handleAddClinicClosedRule = (presetRule = null) => {
+    const currentList = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    let newRule = null;
+
+    if (presetRule) {
+      newRule = {
+        id: `closed_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        ...presetRule,
+      };
+    } else if (closedFormType === 'yearly') {
+      const sM = Number(closedStartMonth);
+      const sD = Math.min(Number(closedStartDay), getMaxDaysForMonthRule(sM));
+      const eM = Number(closedEndMonth);
+      const eD = Math.min(Number(closedEndDay), getMaxDaysForMonthRule(eM));
+      newRule = {
+        id: `closed_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: 'yearly',
+        startMonth: sM,
+        startDay: sD,
+        endMonth: eM,
+        endDay: eD,
+        label: closedLabelInput.trim(),
+      };
+    } else {
+      if (!closedStartDate) {
+        alert('開始日を選択してください。');
+        return;
+      }
+      const rawEnd = closedEndDate || closedStartDate;
+      const [sDate, eDate] = closedStartDate <= rawEnd
+        ? [closedStartDate, rawEnd]
+        : [rawEnd, closedStartDate];
+      newRule = {
+        id: `closed_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: 'specific',
+        startDate: sDate,
+        endDate: eDate,
+        label: closedLabelInput.trim(),
+      };
+    }
+
+    const isDuplicate = currentList.some(r => {
+      if (r.type !== newRule.type) return false;
+      if (r.type === 'yearly') {
+        return (
+          Number(r.startMonth) === newRule.startMonth &&
+          Number(r.startDay) === newRule.startDay &&
+          Number(r.endMonth) === newRule.endMonth &&
+          Number(r.endDay) === newRule.endDay
+        );
+      }
+      return r.startDate === newRule.startDate && (r.endDate || r.startDate) === newRule.endDate;
+    });
+
+    if (isDuplicate) {
+      alert('同じ日程の休診日が既に登録されています。');
+      return;
+    }
+
+    const nextList = [...currentList, newRule];
+    const newSettings = { ...adminSettings, clinicClosedDays: nextList };
+    setAdminSettings(newSettings);
+    saveMasterData({ adminSettings: newSettings });
+
+    if (!presetRule) {
+      setClosedLabelInput('');
+      if (closedFormType === 'yearly') {
+        setClosedEndMonth(closedStartMonth);
+        setClosedEndDay(closedStartDay);
+      } else {
+        setClosedEndDate(closedStartDate);
+      }
+    }
+  };
+
+  // 基本設定で外来診療休診日を削除
+  const handleRemoveClinicClosedRule = (ruleId) => {
+    const currentList = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    const nextList = currentList.filter(r => r.id !== ruleId);
+    const newSettings = { ...adminSettings, clinicClosedDays: nextList };
     setAdminSettings(newSettings);
     saveMasterData({ adminSettings: newSettings });
   };
@@ -1197,11 +1356,12 @@ const handleResetSchedule = () => {
 
 const prepareScheduleDataForAi = () => {
     const days = getDaysInMonth(year, month);
+    const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
     const calendarInfo = {};
     for (let d = 1; d <= days; d++) {
       const date = new Date(year, month - 1, d);
       const dayOfWeek = date.getDay(); 
-      const isHol = isHoliday(year, month, d);
+      const isHol = isHoliday(year, month, d, closedRules);
       calendarInfo[d] = {
         date: `${month}/${d}`,
         dayOfWeek: ['日','月','火','水','木','金','土'][dayOfWeek],
@@ -1604,6 +1764,10 @@ const prepareScheduleDataForAi = () => {
     return Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
   }, [adminSettings.countedOffShifts]);
 
+  const clinicClosedDays = useMemo(() => {
+    return Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+  }, [adminSettings.clinicClosedDays]);
+
   // 各日付の休み希望人数をカウント（パートは対象外、管理者が空欄や休みシフトへ変更しても元の希望履歴があれば維持）
   const dailyOffRequestCounts = useMemo(() => {
     const counts = {};
@@ -1818,9 +1982,13 @@ const prepareScheduleDataForAi = () => {
                     const reqShiftCode = day ? getUserRequestedShift(appUser.id, day) : null;
                     const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
                     const reqReason = day ? getUserRequestedReason(appUser.id, day) : '';
+                    const cellYear = cell.date.getFullYear();
+                    const cellMonth = cell.date.getMonth() + 1;
+                    const cellDay = cell.date.getDate();
                     const isSun = cell.date.getDay() === 0;
                     const isSat = cell.date.getDay() === 6;
-                    const isHol = day && isHoliday(year, month, day);
+                    const isHol = isHoliday(cellYear, cellMonth, cellDay, clinicClosedDays);
+                    const closedRule = getClinicClosedRuleMatch(cellYear, cellMonth, cellDay, clinicClosedDays);
                     const isEditable = cell.currentMonth && !isSun; 
                     const offCount = day && !isSun ? (dailyOffRequestCounts[day] || 0) : 0;
                     const alertThreshold = parseInt(adminSettings.offRequestAlertCount, 10);
@@ -1834,7 +2002,12 @@ const prepareScheduleDataForAi = () => {
                     return (
                       <div key={idx} className={`${bg} min-h-[5rem] p-1 flex flex-col relative`}>
                         <div className="flex items-center justify-between mb-1 gap-0.5 min-h-[14px]">
-                          <div className={`text-[10px] font-bold leading-none ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}>{cell.date.getDate()}</div>
+                          <div
+                            title={closedRule ? (closedRule.label || '外来休診日') : undefined}
+                            className={`text-[10px] font-bold leading-none ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}
+                          >
+                            {cellDay}
+                          </div>
                           {cell.currentMonth && !isSun && offCount > 0 && (
                             <span
                               className={`text-[9px] sm:text-[10px] leading-none px-1 py-0.5 rounded-full font-bold whitespace-nowrap border ${
@@ -1911,13 +2084,18 @@ const prepareScheduleDataForAi = () => {
                       </th>
                       {daysArray.map(day => {
                         const isSun = isSunday(year, month, day);
-                        const isHol = isHoliday(year, month, day);
-                        let bgClass = getDayColor(year, month, day); 
+                        const isHol = isHoliday(year, month, day, clinicClosedDays);
+                        const closedRule = getClinicClosedRuleMatch(year, month, day, clinicClosedDays);
+                        let bgClass = getDayColor(year, month, day, clinicClosedDays); 
                         let headerBg = 'bg-gray-50';
                         if(isSun || isHol) headerBg = 'bg-red-50'; 
 
                         return (
-                          <th key={day} className={`sticky top-0 z-20 border-b border-r min-w-[40px] p-1 text-center ${headerBg} ${bgClass}`}>
+                          <th
+                            key={day}
+                            title={closedRule ? (closedRule.label || '外来休診日') : undefined}
+                            className={`sticky top-0 z-20 border-b border-r min-w-[40px] p-1 text-center ${headerBg} ${bgClass}`}
+                          >
                             <div className="text-sm font-bold">{day}</div>
                             <div className="text-xs font-normal opacity-80">{['日','月','火','水','木','金','土'][getDayOfWeek(year, month, day)]}</div>
                           </th>
@@ -1977,7 +2155,7 @@ const prepareScheduleDataForAi = () => {
                             const reqTaskCode = getUserRequestedTask(staff.id, day);
                             const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
                             const isSun = isSunday(year, month, day);
-                            const isHol = isHoliday(year, month, day);
+                            const isHol = isHoliday(year, month, day, clinicClosedDays);
                             const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
                             
                             // 該当するログを探す
@@ -1985,7 +2163,8 @@ const prepareScheduleDataForAi = () => {
                             const hasLog = !!targetLog;
 
                             let cellBg = '';
-                            if (isSun || isHol) cellBg = 'bg-red-50'; 
+                            if (isSun) cellBg = 'bg-red-50';
+                            else if (isHol) cellBg = isEditable ? 'bg-red-50 cursor-pointer hover:bg-red-100/60' : 'bg-red-50 opacity-80';
                             else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
@@ -2328,6 +2507,252 @@ const prepareScheduleDataForAi = () => {
                           ※設定すると、対象月（シフトの月）の<strong>前月の設定日</strong>を締切日とみなします。<br/>
                           （例：毎月20日に設定 → 5月分のシフト希望は4月20日が締切）
                         </p>
+                      </div>
+
+                      <div className="border-t pt-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-1">外来診療休診日の設定（祝日扱い）</label>
+                        <p className="text-xs text-gray-500 mb-3">
+                          年末年始やお盆・臨時休診など、祝日と同様にカレンダーや勤務表を赤色で表示する日を設定します（シフト・希望の入力は可能です）。
+                        </p>
+
+                        <div className="bg-gray-50 p-4 rounded-lg border space-y-4">
+                          {/* かんたんプリセット追加 */}
+                          <div>
+                            <div className="text-[11px] font-bold text-gray-500 mb-1.5">かんたん追加（プリセット）</div>
+                            <div className="flex flex-wrap gap-2">
+                              {[
+                                { label: '年末年始 (毎年 12/29〜1/3)', sM: 12, sD: 29, eM: 1, eD: 3, name: '年末年始' },
+                                { label: '年末年始 (毎年 12/30〜1/3)', sM: 12, sD: 30, eM: 1, eD: 3, name: '年末年始' },
+                              ].map((preset, idx) => {
+                                const alreadyAdded = clinicClosedDays.some(
+                                  r =>
+                                    r.type === 'yearly' &&
+                                    Number(r.startMonth) === preset.sM &&
+                                    Number(r.startDay) === preset.sD &&
+                                    Number(r.endMonth) === preset.eM &&
+                                    Number(r.endDay) === preset.eD
+                                );
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    disabled={alreadyAdded}
+                                    onClick={() =>
+                                      handleAddClinicClosedRule({
+                                        type: 'yearly',
+                                        startMonth: preset.sM,
+                                        startDay: preset.sD,
+                                        endMonth: preset.eM,
+                                        endDay: preset.eD,
+                                        label: preset.name,
+                                      })
+                                    }
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1 transition ${
+                                      alreadyAdded
+                                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                                        : 'bg-white text-red-600 border-red-200 hover:bg-red-50 shadow-sm'
+                                    }`}
+                                  >
+                                    {alreadyAdded ? <Check size={12} /> : <Plus size={12} />}
+                                    <span>{preset.label}{alreadyAdded ? '（登録済）' : ''}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* カスタム追加フォーム */}
+                          <div className="bg-white p-3 rounded-lg border border-gray-200 space-y-3">
+                            <div className="flex gap-1 bg-gray-100 p-1 rounded-md text-xs font-bold">
+                              <button
+                                type="button"
+                                onClick={() => setClosedFormType('yearly')}
+                                className={`flex-1 py-1.5 rounded transition ${
+                                  closedFormType === 'yearly' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                              >
+                                毎年固定（月日で指定）
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setClosedFormType('specific')}
+                                className={`flex-1 py-1.5 rounded transition ${
+                                  closedFormType === 'specific' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                              >
+                                特定年のみ（年月日で指定）
+                              </button>
+                            </div>
+
+                            {closedFormType === 'yearly' ? (
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                                  <span className="font-bold text-gray-600 mr-1">期間:</span>
+                                  <select
+                                    className="border rounded px-2 py-1.5 bg-white font-medium"
+                                    value={closedStartMonth}
+                                    onChange={(e) => {
+                                      const nextM = Number(e.target.value);
+                                      const maxD = getMaxDaysForMonthRule(nextM);
+                                      const nextD = Math.min(closedStartDay, maxD);
+                                      const wasSame = closedStartMonth === closedEndMonth && closedStartDay === closedEndDay;
+                                      setClosedStartMonth(nextM);
+                                      setClosedStartDay(nextD);
+                                      if (wasSame) {
+                                        setClosedEndMonth(nextM);
+                                        setClosedEndDay(nextD);
+                                      }
+                                    }}
+                                  >
+                                    {[...Array(12)].map((_, i) => (
+                                      <option key={i + 1} value={i + 1}>{i + 1}月</option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    className="border rounded px-2 py-1.5 bg-white font-medium"
+                                    value={closedStartDay}
+                                    onChange={(e) => {
+                                      const nextD = Number(e.target.value);
+                                      const wasSame = closedStartMonth === closedEndMonth && closedStartDay === closedEndDay;
+                                      setClosedStartDay(nextD);
+                                      if (wasSame) {
+                                        setClosedEndDay(nextD);
+                                      }
+                                    }}
+                                  >
+                                    {[...Array(getMaxDaysForMonthRule(closedStartMonth))].map((_, i) => (
+                                      <option key={i + 1} value={i + 1}>{i + 1}日</option>
+                                    ))}
+                                  </select>
+                                  <span className="text-gray-400 font-bold px-1">〜</span>
+                                  <select
+                                    className="border rounded px-2 py-1.5 bg-white font-medium"
+                                    value={closedEndMonth}
+                                    onChange={(e) => {
+                                      const nextM = Number(e.target.value);
+                                      const maxD = getMaxDaysForMonthRule(nextM);
+                                      setClosedEndMonth(nextM);
+                                      if (closedEndDay > maxD) setClosedEndDay(maxD);
+                                    }}
+                                  >
+                                    {[...Array(12)].map((_, i) => (
+                                      <option key={i + 1} value={i + 1}>{i + 1}月</option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    className="border rounded px-2 py-1.5 bg-white font-medium"
+                                    value={closedEndDay}
+                                    onChange={(e) => setClosedEndDay(Number(e.target.value))}
+                                  >
+                                    {[...Array(getMaxDaysForMonthRule(closedEndMonth))].map((_, i) => (
+                                      <option key={i + 1} value={i + 1}>{i + 1}日</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <p className="text-[11px] text-gray-400">
+                                  ※1日のみの場合は開始と終了を同じ月日にします（12月〜1月のような年またぎ期間も指定可能です）。
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                                  <span className="font-bold text-gray-600 mr-1">期間:</span>
+                                  <input
+                                    type="date"
+                                    className="border rounded px-2 py-1.5 bg-white"
+                                    value={closedStartDate}
+                                    onChange={(e) => {
+                                      const nextStart = e.target.value;
+                                      const wasSameOrEmpty = !closedEndDate || closedEndDate === closedStartDate || closedEndDate < nextStart;
+                                      setClosedStartDate(nextStart);
+                                      if (wasSameOrEmpty) {
+                                        setClosedEndDate(nextStart);
+                                      }
+                                    }}
+                                  />
+                                  <span className="text-gray-400 font-bold px-1">〜</span>
+                                  <input
+                                    type="date"
+                                    className="border rounded px-2 py-1.5 bg-white"
+                                    value={closedEndDate}
+                                    min={closedStartDate || undefined}
+                                    onChange={(e) => setClosedEndDate(e.target.value)}
+                                  />
+                                </div>
+                                <p className="text-[11px] text-gray-400">
+                                  ※1日のみの場合は開始日と終了日を同じ日付にしてください。
+                                </p>
+                              </div>
+                            )}
+
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                maxLength={30}
+                                value={closedLabelInput}
+                                onChange={(e) => setClosedLabelInput(e.target.value)}
+                                placeholder="名称・メモ（任意 例: 年末年始、夏季休診、臨時休診）"
+                                className="flex-1 min-w-0 border rounded px-2.5 py-1.5 text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleAddClinicClosedRule()}
+                                className="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded font-bold text-xs flex items-center gap-1 shrink-0 transition"
+                              >
+                                <Plus size={14} /> 追加
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 登録済み休診日リスト */}
+                          <div>
+                            <div className="text-[11px] font-bold text-gray-500 mb-1.5">
+                              登録済みの休診日 ({clinicClosedDays.length}件)
+                            </div>
+                            {clinicClosedDays.length === 0 ? (
+                              <div className="text-xs text-gray-400 bg-white border border-dashed rounded p-3 text-center">
+                                現在、追加の休診日は設定されていません。
+                              </div>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {clinicClosedDays.map((rule) => (
+                                  <div
+                                    key={rule.id}
+                                    className="flex items-center justify-between gap-2 bg-white border border-red-100 rounded-lg px-3 py-2 text-xs"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 ${
+                                          rule.type === 'yearly'
+                                            ? 'bg-red-50 text-red-600 border-red-200'
+                                            : 'bg-orange-50 text-orange-700 border-orange-200'
+                                        }`}
+                                      >
+                                        {rule.type === 'yearly' ? '毎年' : '特定年'}
+                                      </span>
+                                      <span className="font-bold text-gray-800">
+                                        {formatClinicClosedRule(rule)}
+                                      </span>
+                                      {rule.label && (
+                                        <span className="text-gray-500 truncate">
+                                          （{rule.label}）
+                                        </span>
+                                      )}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveClinicClosedRule(rule.id)}
+                                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition shrink-0"
+                                      title="この休診日設定を削除"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       <div className="border-t pt-6">
