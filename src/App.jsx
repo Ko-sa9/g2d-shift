@@ -432,6 +432,7 @@ export default function WorkScheduleApp() {
   const [targetCounts, setTargetCounts] = useState({});
 
   const [shiftData, setShiftData] = useState({});
+  const [prevMonthShiftData, setPrevMonthShiftData] = useState({}); // Step 3: 前月シフトの引き継ぎ用データ
   const [taskData, setTaskData] = useState({});
   const [userInputs, setUserInputs] = useState({}); // ★追加：個人が入力した箇所を記憶するリスト
 
@@ -546,9 +547,34 @@ export default function WorkScheduleApp() {
           excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
         }));
 
+        const loadedCategoryDefs = { ...(data.categoryDefs || DEFAULT_CATEGORY_DEFS) };
+        if (!loadedCategoryDefs['me'] && !Object.values(loadedCategoryDefs).some(c => c?.label?.includes('ME'))) {
+          loadedCategoryDefs['me'] = { ...DEFAULT_CATEGORY_DEFS['me'] };
+        }
+
+        const rawShiftDefs = data.shiftDefs || DEFAULT_SHIFT_TYPES;
+        const loadedShiftDefs = {};
+        Object.keys(rawShiftDefs).forEach(k => {
+          if (rawShiftDefs[k]) {
+            loadedShiftDefs[k] = {
+              ...rawShiftDefs[k],
+              code: rawShiftDefs[k].code || k,
+              type: rawShiftDefs[k].type || (rawShiftDefs[k].category === 'role' || k.startsWith('task_') ? 'task' : 'shift'),
+            };
+          }
+        });
+        const hasShiftL = Object.values(loadedShiftDefs).some(
+          s => s && s.type === 'shift' && (s.code === 'L' || (s.label || '').trim() === 'L' || (s.label || '').trim() === 'Ｌ')
+        );
+        const hasShiftG = Object.values(loadedShiftDefs).some(
+          s => s && s.type === 'shift' && (s.code === 'G' || (s.label || '').trim() === 'G' || (s.label || '').trim() === 'Ｇ')
+        );
+        if (!hasShiftL) loadedShiftDefs['L'] = { ...DEFAULT_SHIFT_TYPES['L'] };
+        if (!hasShiftG) loadedShiftDefs['G'] = { ...DEFAULT_SHIFT_TYPES['G'] };
+
         setStaffList(loadedStaffList);
-        setShiftDefs(data.shiftDefs || DEFAULT_SHIFT_TYPES);
-        setCategoryDefs(data.categoryDefs || DEFAULT_CATEGORY_DEFS); 
+        setShiftDefs(loadedShiftDefs);
+        setCategoryDefs(loadedCategoryDefs); 
         setTargetCounts(data.targetCounts || {});
         
         let loadedAdminSettings = data.adminSettings || DEFAULT_ADMIN_SETTINGS;
@@ -561,6 +587,7 @@ export default function WorkScheduleApp() {
         // ★修正: 勝手にデータベースを初期化（上書き保存）する処理を削除
         // 通信エラー時などに本番データが破壊されるのを防ぎます
         setStaffList(INITIAL_STAFF);
+        setShiftDefs(DEFAULT_SHIFT_TYPES);
         setCategoryDefs(DEFAULT_CATEGORY_DEFS);
         setAdminSettings(DEFAULT_ADMIN_SETTINGS);
         setTargetCounts({});
@@ -581,9 +608,24 @@ export default function WorkScheduleApp() {
         setUserInputs({});
       }
     });
+    // Step 3: 月またぎの連勤・週休・3クール連続判定のため前月スケジュールもリアルタイム購読
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevScheduleId = `schedule_${prevYear}_${prevMonth}`;
+    const prevScheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', prevScheduleId);
+    const unsubPrevSchedule = onSnapshot(prevScheduleDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const pData = docSnap.data();
+        setPrevMonthShiftData(pData.shifts || {});
+      } else {
+        setPrevMonthShiftData({});
+      }
+    });
+
     return () => {
       unsubMaster();
       unsubSchedule();
+      unsubPrevSchedule();
     };
   }, [authUser, year, month]);
 
@@ -913,6 +955,18 @@ export default function WorkScheduleApp() {
     saveMasterData({ adminSettings: newSettings });
   };
 
+  // ME室（オペ班のL/G等）に該当するシフトコードかどうかを判定するヘルパー
+  const isMeRoomShiftCode = (code, defs = shiftDefs, cats = categoryDefs) => {
+    if (!code || !defs[code]) return false;
+    const def = defs[code];
+    if (def.type && def.type !== 'shift') return false;
+    if (def.category === 'me') return true;
+    const catLabel = cats[def.category]?.label || '';
+    if (catLabel.includes('ME')) return true;
+    const normLabel = (def.label || '').trim();
+    return code === 'L' || code === 'G' || normLabel === 'L' || normLabel === 'G' || normLabel === 'Ｌ' || normLabel === 'Ｇ';
+  };
+
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
@@ -920,7 +974,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       if (checkIsAfterDeadlineForStaff()) return;
       
       if (currentView === 'ope') {
-        if (toolCode && toolCode !== 'L' && toolCode !== 'G') {
+        if (toolCode && !isMeRoomShiftCode(toolCode)) {
            alert('オペ班ページではLとGのみ入力可能です。');
            return;
         }
@@ -1443,13 +1497,168 @@ const handleResetSchedule = () => {
     const def = shiftDefs[shiftCode];
     const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
     // 祝日・外来休診日のME室は「Gのみ1人（Lは0人）」として判定
-    if (def?.category === 'me' && isHoliday(year, month, day, closedRules)) {
-      return (shiftCode === 'G' || def.label === 'G') ? 1 : 0;
+    if (isMeRoomShiftCode(shiftCode) && isHoliday(year, month, day, closedRules)) {
+      const normLabel = (def?.label || '').trim();
+      return (shiftCode === 'G' || normLabel === 'G' || normLabel === 'Ｇ') ? 1 : 0;
     }
     if (!targetCounts[shiftCode]) return 0;
     const dow = getDayOfWeek(year, month, day);
     return targetCounts[shiftCode][dow] || 0;
   };
+
+  // Step 3: 前月末（最終週の月〜土）からの連勤数・公休消化・3クール連続判定をリアルタイム計算（AI＆管理表バッジ共通）
+  const prevMonthCarryOver = useMemo(() => {
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevDaysInMonth = getDaysInMonth(prevYear, prevMonth);
+    const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    const maxConsecutiveWorkDays = Number(adminSettings.maxConsecutiveWorkDays) || 5;
+    const currDaysInMonth = getDaysInMonth(year, month);
+
+    // 3クール該当シフトコード判定
+    const cool3ShiftCodes = Object.values(shiftDefs)
+      .filter(s => (s.type === 'shift' || !s.type) && (s.code === 'A' || s.code === 'F' || (s.label && s.label.includes('3')) || (s.endTime && s.endTime >= '21:00')))
+      .map(s => s.code);
+    const cool3Set = new Set(cool3ShiftCodes);
+
+    // 当月1日が火〜土(dow: 2〜6)のときのみ、前月の最終日曜以降の月〜土が「月またぎの同一週」になる（1日が日・月なら日曜休診を挟むため連勤リセット）
+    const dowDay1 = getDayOfWeek(year, month, 1);
+    const straddlingPrevDays = [];
+    if (dowDay1 >= 2) {
+      const startPrevDay = prevDaysInMonth - (dowDay1 - 2);
+      for (let pd = startPrevDay; pd <= prevDaysInMonth; pd++) {
+        if (pd >= 1) straddlingPrevDays.push(pd);
+      }
+    }
+
+    const byStaff = {};
+    staffList.forEach(s => {
+      // 前月の勤務表がこの職員について作成済みか（希望以外の出勤シフトが1日以上入っているか）を判定
+      const staffPrevMap = prevMonthShiftData[s.id] || {};
+      const staffHasPrevWorkShift = Object.keys(staffPrevMap).some(dKey => {
+        const c = staffPrevMap[dKey];
+        return c && shiftDefs[c] && shiftDefs[c].category !== 'off' && shiftDefs[c].category !== 'req';
+      });
+
+      let trailingWorkStreak = 0;
+      let prevWeekRegOffCount = 0;
+      let prevWeekPaidOffCount = 0;
+      let prevWeekWorkCount = 0;
+      const breakdownParts = [];
+
+      if (straddlingPrevDays.length > 0 && staffHasPrevWorkShift) {
+        straddlingPrevDays.forEach(pd => {
+          const c = staffPrevMap[pd];
+          const dowLbl = ['日', '月', '火', '水', '木', '金', '土'][getDayOfWeek(prevYear, prevMonth, pd)];
+          const holSuffix = isHoliday(prevYear, prevMonth, pd, closedRules) ? '・祝' : '';
+          if (c && shiftDefs[c]) {
+            const def = shiftDefs[c];
+            if (def.category === 'off' || def.category === 'req') {
+              trailingWorkStreak = 0;
+              if (def.category === 'off' && c !== 'S' && c !== 'H') {
+                prevWeekPaidOffCount++;
+              } else {
+                prevWeekRegOffCount++;
+              }
+              breakdownParts.push(`${prevMonth}/${pd}(${dowLbl}${holSuffix}):休[${def.label}]`);
+            } else {
+              trailingWorkStreak++;
+              prevWeekWorkCount++;
+              breakdownParts.push(`${prevMonth}/${pd}(${dowLbl}${holSuffix}):${def.label}`);
+            }
+          } else {
+            // 前月作成済みの場合、空欄（祝日休みや空欄公休）も休みとしてカウントし連勤リセット（パートは公休数カウントのみ除外）
+            trailingWorkStreak = 0;
+            if (s.jobTitle !== 'パート') {
+              prevWeekRegOffCount++;
+            }
+            breakdownParts.push(`${prevMonth}/${pd}(${dowLbl}${holSuffix}):休[空欄]`);
+          }
+        });
+      }
+
+      const lastPrevCode = straddlingPrevDays.length > 0 && staffHasPrevWorkShift
+        ? (staffPrevMap[prevDaysInMonth] || null)
+        : null;
+      const prevLastDayWasCool3 = !!(lastPrevCode && cool3Set.has(lastPrevCode));
+      const prevLastDayLabel = lastPrevCode && shiftDefs[lastPrevCode] ? shiftDefs[lastPrevCode].label : lastPrevCode;
+      const maxAllowedStreakFromDay1 = Math.max(0, maxConsecutiveWorkDays - trailingWorkStreak);
+
+      // 当月1日からの実入力連勤数と月またぎ違反チェック（案Bバッジのリアルタイム警告用）
+      let currentLeadingWorkStreak = 0;
+      if (straddlingPrevDays.length > 0) {
+        for (let d = 1; d <= currDaysInMonth; d++) {
+          if (isSunday(year, month, d)) break;
+          const currCode = shiftData[s.id]?.[d];
+          if (currCode && shiftDefs[currCode] && shiftDefs[currCode].category !== 'off' && shiftDefs[currCode].category !== 'req') {
+            currentLeadingWorkStreak++;
+          } else {
+            break;
+          }
+        }
+      }
+      const crossMonthTotalStreak = trailingWorkStreak > 0 ? trailingWorkStreak + currentLeadingWorkStreak : 0;
+      const isCrossMonthStreakViolated = trailingWorkStreak > 0 && currentLeadingWorkStreak > 0 && crossMonthTotalStreak > maxConsecutiveWorkDays;
+      const day1Code = shiftData[s.id]?.[1] || null;
+      const isCrossMonthCool3Violated = prevLastDayWasCool3 && !!(day1Code && cool3Set.has(day1Code));
+
+      const tooltipLines = [];
+      if (straddlingPrevDays.length > 0 && staffHasPrevWorkShift) {
+        const rangeLbl = `${prevMonth}/${straddlingPrevDays[0]}〜${prevMonth}/${straddlingPrevDays[straddlingPrevDays.length - 1]}`;
+        tooltipLines.push(`【前月末（${rangeLbl}）の引き継ぎ】`);
+        tooltipLines.push(breakdownParts.join(' / '));
+        if (trailingWorkStreak > 0) {
+          tooltipLines.push(
+            maxAllowedStreakFromDay1 === 0
+              ? `・前月末時点で${trailingWorkStreak}連勤到達のため、${month}/1は休み（空欄）が必要`
+              : `・前月末時点: ${trailingWorkStreak}連勤中（${month}/1からは最大あと${maxAllowedStreakFromDay1}連勤まで）`
+          );
+        }
+        if (prevWeekRegOffCount > 0) {
+          tooltipLines.push(`・月またぎ週の前月分で公休取得済み（${prevWeekRegOffCount}日）`);
+        } else if (s.jobTitle !== 'パート') {
+          tooltipLines.push(`・月またぎ週の前月分で公休未取得のため、月初土曜までに1日休み（空欄）が必要`);
+        }
+        if (prevLastDayWasCool3) {
+          tooltipLines.push(`・前月最終日(${prevMonth}/${prevDaysInMonth})が「${prevLastDayLabel}」のため、${month}/1の3クール連続配置は不可`);
+        }
+        if (isCrossMonthStreakViolated) {
+          tooltipLines.push(`⚠️現在、月またぎで通算${crossMonthTotalStreak}連勤になっています（上限${maxConsecutiveWorkDays}連勤）`);
+        }
+        if (isCrossMonthCool3Violated) {
+          tooltipLines.push(`⚠️現在、前月末と${month}/1で3クールが2日連続になっています`);
+        }
+      }
+
+      byStaff[s.id] = {
+        staffHasPrevWorkShift,
+        trailingWorkStreak,
+        prevWeekRegOffCount,
+        prevWeekPaidOffCount,
+        prevWeekWorkCount,
+        prevLastDayCode: lastPrevCode,
+        prevLastDayLabel,
+        prevLastDayWasCool3,
+        maxAllowedStreakFromDay1,
+        currentLeadingWorkStreak,
+        crossMonthTotalStreak,
+        isCrossMonthStreakViolated,
+        isCrossMonthCool3Violated,
+        dayBreakdownText: breakdownParts.join(', '),
+        tooltipText: tooltipLines.join('\n'),
+      };
+    });
+
+    return {
+      prevYear,
+      prevMonth,
+      prevDaysInMonth,
+      straddlingPrevDays,
+      hasStraddlingWeek: straddlingPrevDays.length > 0,
+      cool3ShiftCodes,
+      byStaff,
+    };
+  }, [year, month, prevMonthShiftData, staffList, shiftDefs, adminSettings.maxConsecutiveWorkDays, adminSettings.clinicClosedDays, shiftData]);
 
 const prepareScheduleDataForAi = () => {
     const days = getDaysInMonth(year, month);
@@ -1505,9 +1714,7 @@ const prepareScheduleDataForAi = () => {
     const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
 
     // 3クール該当シフトコードを動的抽出（A:坂3, F:君3 や21時以降終了・表示名に3を含むシフト）
-    const cool3ShiftCodes = Object.values(shiftDefs)
-      .filter(s => s.type === 'shift' && (s.code === 'A' || s.code === 'F' || (s.label && s.label.includes('3')) || (s.endTime && s.endTime >= '21:00')))
-      .map(s => s.code);
+    const cool3ShiftCodes = prevMonthCarryOver.cool3ShiftCodes;
     const cool3Set = new Set(cool3ShiftCodes);
 
     // 指定(S)・振休(H)・希望カテゴリ(HOPE等)は「週1日の通常公休枠」、年休(Y)・リフレ(R)等は「公休とは別枠の有休」として区別
@@ -1536,7 +1743,17 @@ const prepareScheduleDataForAi = () => {
       }
       staffPowerMap[s.id] = powerScore;
 
-      // AIが数え間違いを起こさないよう、現時点の個人別集計値・連勤数・残りの目標出勤/空欄休みを事前計算して渡す
+      const carry = prevMonthCarryOver.byStaff[s.id] || {
+        staffHasPrevWorkShift: false,
+        trailingWorkStreak: 0,
+        prevWeekRegOffCount: 0,
+        prevLastDayWasCool3: false,
+        prevLastDayLabel: null,
+        maxAllowedStreakFromDay1: maxConsecutiveWorkDays,
+        dayBreakdownText: '',
+      };
+
+      // AIが数え間違いを起こさないよう、現時点の個人別集計値・連勤数（前月末からの通算含む）・残りの目標出勤/空欄休みを事前計算して渡す
       let workDays = 0;
       let offDays = 0;
       let regularOffEnteredDays = 0;
@@ -1546,8 +1763,8 @@ const prepareScheduleDataForAi = () => {
       let lockedBlankOffDays = 0;
       let cool3Count = 0;
       let overtimeHours = 0;
-      let currentStreak = 0;
-      let currentMaxStreak = 0;
+      let currentStreak = carry.trailingWorkStreak || 0;
+      let currentMaxStreak = currentStreak;
 
       // 各日の状態マップ（週ごとの公休チェック用）
       const dayStateMap = {};
@@ -1602,26 +1819,36 @@ const prepareScheduleDataForAi = () => {
         }
       }
 
-      // 年休(Y)・リフレ(R)等の有休分は基本目標出勤日数から差し引く（週1日の公休とは別枠で休めるようにする）
-      const targetWorkDaysMin = Math.max(workDays, standardWorkDaysMin - paidLeaveDays);
-      const targetWorkDaysMax = Math.max(workDays, standardWorkDaysMax - paidLeaveDays);
-      const remainingWorkDaysMin = Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMin - workDays));
-      const remainingWorkDaysMax = Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMax - workDays));
-      const blankOffDaysToKeepMin = Math.max(0, assignableBlankDays - remainingWorkDaysMax);
-      const blankOffDaysToKeepMax = Math.max(0, assignableBlankDays - remainingWorkDaysMin);
-
-      // 週単位で「まだ週1日の通常公休(S/H/HOPE等)が入っておらず、AIが空欄を残すべき週」を特定
+      // 週単位で「まだ週1日の通常公休(S/H/HOPE等)が入っておらず、AIが空欄を残すべき週」を特定（第1週は前月末からの月またぎ週も考慮）
       const weeksNeedingBlankOff = [];
-      calendarWeeks.forEach(w => {
+      calendarWeeks.forEach((w, wIdx) => {
         const weekRegOff = w.days.filter(d => dayStateMap[d] === 'regular_off').length;
         const weekAnyOff = w.days.filter(d => dayStateMap[d] === 'regular_off' || dayStateMap[d] === 'paid_off').length;
         const weekAssignable = w.days.filter(d => dayStateMap[d] === 'assignable_blank');
+
         if (w.isFullWeek && weekRegOff === 0 && weekAssignable.length > 0) {
           weeksNeedingBlankOff.push({
             week: w.label,
             candidateBlankDays: weekAssignable,
             minBlankToKeep: 1,
           });
+        } else if (
+          wIdx === 0 &&
+          !w.isFullWeek &&
+          prevMonthCarryOver.hasStraddlingWeek &&
+          carry.staffHasPrevWorkShift &&
+          s.jobTitle !== 'パート'
+        ) {
+          // Step 3: 月またぎ第1週（前月末の月〜＋当月1日〜土の計6日）で前月側にも当月側にもまだ公休がない場合、または前月末連勤＋当月第1週で最大連勤を超える場合は必ず1日空欄を残す
+          const totalStraddlingRegOff = carry.prevWeekRegOffCount + weekRegOff;
+          const wouldExceedStreak = carry.trailingWorkStreak + w.days.length > maxConsecutiveWorkDays && weekAnyOff === 0;
+          if ((totalStraddlingRegOff === 0 || wouldExceedStreak) && weekAssignable.length > 0) {
+            weeksNeedingBlankOff.push({
+              week: `${w.label}（前月末からの月またぎ週・前月${carry.trailingWorkStreak}連勤引き継ぎ）`,
+              candidateBlankDays: weekAssignable,
+              minBlankToKeep: 1,
+            });
+          }
         } else if (!w.isFullWeek && w.days.length > maxConsecutiveWorkDays && weekAnyOff === 0 && weekAssignable.length > 0) {
           weeksNeedingBlankOff.push({
             week: w.label,
@@ -1631,11 +1858,26 @@ const prepareScheduleDataForAi = () => {
         }
       });
 
-      // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出（※ME室 category:'me' はOPE班管理のため常時除外）
+      // 年休(Y)・リフレ(R)等の有休分は基本目標出勤日数から差し引きつつ、週単位で必須となる空欄公休数と矛盾しないよう整合させる
+      const targetWorkDaysMin = Math.max(workDays, standardWorkDaysMin - paidLeaveDays);
+      const targetWorkDaysMax = Math.max(workDays, standardWorkDaysMax - paidLeaveDays);
+      const rawBlankKeepMin = Math.max(0, assignableBlankDays - Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMax - workDays)));
+      const rawBlankKeepMax = Math.max(0, assignableBlankDays - Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMin - workDays)));
+      const blankOffDaysToKeepMin = Math.min(assignableBlankDays, Math.max(rawBlankKeepMin, weeksNeedingBlankOff.length));
+      const blankOffDaysToKeepMax = Math.min(assignableBlankDays, Math.max(rawBlankKeepMax, blankOffDaysToKeepMin));
+      const remainingWorkDaysMin = Math.max(0, assignableBlankDays - blankOffDaysToKeepMax);
+      const remainingWorkDaysMax = Math.max(0, assignableBlankDays - blankOffDaysToKeepMin);
+
+      // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出（※ME室はOPE班管理のため常時除外）
       const allowedWorkShifts = Object.values(shiftDefs)
-        .filter(def => def.type === 'shift' && def.category !== 'off' && def.category !== 'req' && def.category !== 'me' && isShiftAllowedForStaff(s, def.code))
+        .filter(def => (def.type === 'shift' || !def.type) && def.category !== 'off' && def.category !== 'req' && !isMeRoomShiftCode(def.code) && isShiftAllowedForStaff(s, def.code))
         .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
         .map(def => def.code);
+
+      // 前月最終日に3クールに入っていた場合、当月1日に選べる出勤シフトからは3クールを除外
+      const day1AllowedWorkShifts = carry.prevLastDayWasCool3
+        ? allowedWorkShifts.filter(c => !cool3Set.has(c))
+        : allowedWorkShifts;
 
       const fmtRange = (minV, maxV) => (minV === maxV ? `${minV}日` : `${minV}〜${maxV}日`);
 
@@ -1649,8 +1891,18 @@ const prepareScheduleDataForAi = () => {
         maxCool3: s.maxCool3, 
         excludeFromAi: s.excludeFromAi,
         allowedWorkShifts,
+        day1AllowedWorkShifts,
         excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
         excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
+        prevMonthCarryOver: {
+          hasPrevSchedule: carry.staffHasPrevWorkShift,
+          trailingWorkStreak: carry.trailingWorkStreak,
+          maxAllowedConsecutiveWorkFromDay1: carry.maxAllowedStreakFromDay1,
+          alreadyTookWeeklyOffInPrevMonthPart: carry.prevWeekRegOffCount > 0,
+          prevLastDayWasCool3: carry.prevLastDayWasCool3,
+          forbidCool3OnDay1: carry.prevLastDayWasCool3,
+          prevStraddlingWeekSummary: carry.dayBreakdownText || '引き継ぎなし（日曜区切りまたは前月未作成）',
+        },
         currentStats: {
           workDays,
           offDays,
@@ -1707,7 +1959,7 @@ const prepareScheduleDataForAi = () => {
         codeCounts[code] = (codeCounts[code] || 0) + 1;
         if (def.category !== 'off' && def.category !== 'req') {
           workingCount++;
-          if (def.category === 'me') meWorkingCount++;
+          if (isMeRoomShiftCode(code)) meWorkingCount++;
           const pScore = staffPowerMap[s.id] || 0;
           if (def.category === 'saka') sakaScore += pScore;
           else if (def.category === 'kimi') kimiScore += pScore;
@@ -1718,7 +1970,7 @@ const prepareScheduleDataForAi = () => {
       const shortages = [];
       Object.keys(targetCounts || {}).forEach(code => {
         // ME室(L/G)はOPE班管理者が入力するため、AIが埋めるべき不足リスト(shortages)からは除外
-        if (shiftDefs[code]?.category === 'me') return;
+        if (isMeRoomShiftCode(code)) return;
         const target = getTargetCount(code, d);
         const actual = codeCounts[code] || 0;
         if (target > 0 && actual < target) {
@@ -1744,6 +1996,7 @@ const prepareScheduleDataForAi = () => {
       year, month,
       pacingRules: {
         maxConsecutiveWorkDays,
+        forbidConsecutiveCool3: true,
         operatingDaysCount,
         standardMonthlyWorkDays: standardWorkDaysMin === standardWorkDaysMax
           ? `${standardWorkDaysMin}日`
@@ -1823,6 +2076,8 @@ const prepareScheduleDataForAi = () => {
         });
       });
 
+      const cool3Set = new Set(prevMonthCarryOver.cool3ShiftCodes || []);
+
       if (changes.shift) {
         Object.keys(changes.shift).forEach(key => {
           let staffId = key;
@@ -1833,17 +2088,59 @@ const prepareScheduleDataForAi = () => {
           // AI除外スタッフは自動作成で書き換えない
           if (staffId && staffObj && !staffObj.excludeFromAi) { 
              ns[staffId] = { ...(ns[staffId] || {}) };
-             Object.keys(changes.shift[key]).forEach(day => {
-                const dayNum = parseInt(day, 10);
-                if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
+             const staffCarry = prevMonthCarryOver.byStaff[staffId];
+             const sortedDays = Object.keys(changes.shift[key])
+               .map(d => parseInt(d, 10))
+               .filter(d => !isNaN(d) && d >= 1 && d <= maxDay)
+               .sort((a, b) => a - b);
+
+             sortedDays.forEach(dayNum => {
+                if (isSunday(year, month, dayNum)) return;
                 // 既に管理者・本人が入力済みのセル（ME室のL/G、年休Y、指定S、希望HOPEなど）や希望履歴があるセルは絶対に変更しない
                 if (shiftData[staffId]?.[dayNum] || getUserRequestedShift(staffId, dayNum)) return;
 
-                const code = changes.shift[key][day];
+                let code = changes.shift[key][dayNum] ?? changes.shift[key][String(dayNum)];
                 if (!code || !shiftDefs[code]) return;
                 const def = shiftDefs[code];
-                // Step 2: AI自動作成ではME室(me)の自動入力を禁止し、休みは空欄のまま残すため休みコード(off/req)も書き込まない
-                if (def.category === 'me' || def.category === 'off' || def.category === 'req') return;
+                // Step 2: AI自動作成ではME室(L/G)の自動入力を禁止し、休みは空欄のまま残すため休みコード(off/req)も書き込まない
+                if (isMeRoomShiftCode(code) || def.category === 'off' || def.category === 'req') return;
+
+                // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
+                if (cool3Set.has(code)) {
+                  const prevDayIsCool3 =
+                    (dayNum === 1 && staffCarry?.prevLastDayWasCool3) ||
+                    (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(ns[staffId][dayNum - 1]));
+                  const nextDayIsCool3 =
+                    dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(ns[staffId][dayNum + 1]);
+
+                  if (prevDayIsCool3 || nextDayIsCool3) {
+                    // 同一施設内で許可されている非3クール出勤シフト（例: 坂3→坂2、君3→君2）へ安全にフォールバック
+                    const sameFacilityAlt = Object.values(shiftDefs)
+                      .filter(
+                        alt =>
+                          alt.type === 'shift' &&
+                          alt.category === def.category &&
+                          !cool3Set.has(alt.code) &&
+                          !isMeRoomShiftCode(alt.code) &&
+                          isShiftAllowedForStaff(staffObj, alt.code)
+                      )
+                      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
+                    const anyAllowedAlt = Object.values(shiftDefs)
+                      .filter(
+                        alt =>
+                          alt.type === 'shift' &&
+                          alt.category !== 'off' &&
+                          alt.category !== 'req' &&
+                          !cool3Set.has(alt.code) &&
+                          !isMeRoomShiftCode(alt.code) &&
+                          isShiftAllowedForStaff(staffObj, alt.code)
+                      )
+                      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
+                    const fallbackDef = sameFacilityAlt || anyAllowedAlt;
+                    if (!fallbackDef) return;
+                    code = fallbackDef.code;
+                  }
+                }
 
                 if (isShiftAllowedForStaff(staffObj, code)) {
                    ns[staffId][dayNum] = code;
@@ -1939,10 +2236,10 @@ const prepareScheduleDataForAi = () => {
         .map((c, index) => `${index + 1}. ${c.text}`)
         .join("\n");
 
-      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・最大連勤・週休2日（空欄残し）・ME室除外を行わせるプロンプト
+      // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・最大連勤・前月末引き継ぎ・週休2日（空欄残し）・3クール連続禁止・ME室除外を行わせるプロンプト
       const prompt = `
       【タスク】
-      現在の勤務表データを分析し、各職員の週休2日（日曜＋週1日休み＝空欄）と最大連勤制限を守りながら、必要な出勤シフトのみを割り当ててください。
+      現在の勤務表データを分析し、各職員の前月末からの引き継ぎ・週休2日（日曜＋週1日休み＝空欄）・最大連勤制限・3クール連続禁止を守りながら、必要な出勤シフトのみを割り当ててください。
 
       【基本ルール】
       1. 既存データ・個人希望の維持と活用（★絶対厳守★）:
@@ -1952,17 +2249,24 @@ const prepareScheduleDataForAi = () => {
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のためシフトを入れない。
          - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
          - 「ME室 (category: me / コード: L, G)」はOPE班のシフト管理者が別途組むシフトです。AIから L や G を自動入力することは絶対禁止とし、既に L や G が入っているセルも絶対に変更しないでください。
-         - 各職員に出勤シフトを割り当てる際は、必ずその職員データの "allowedWorkShifts" 配列に含まれているシフトコードのみから選んでください。
-      3. 週休2日・最大連勤制限・休みの「空欄」表現（★最重要★）:
-         - 週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までとします。${maxStreak + 1}連勤以上は絶対に作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+         - 各職員に出勤シフトを割り当てる際は、必ずその職員データの "allowedWorkShifts" 配列（1日については "day1AllowedWorkShifts" 配列）に含まれているシフトコードのみから選んでください。
+      3. 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（★最重要★）:
+         - 週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までとします。月またぎ（前月末＋当月初）の通算でも${maxStreak + 1}連勤以上は絶対に作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+         - 各職員の "prevMonthCarryOver" には前月末最終週からの引き継ぎ情報が入っています:
+           ・trailingWorkStreak: 前月末時点での連続出勤日数
+           ・maxAllowedConsecutiveWorkFromDay1: 当月1日から連続で出勤できる上限日数（0日の場合は必ず1日を空欄休みにすること）
+           ・alreadyTookWeeklyOffInPrevMonthPart: 月またぎ第1週の前月側で既に公休を取得済みかどうか
          - AIが休ませる日（指定休・祝日の振替休にあたる日）には、S や H などの休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
          - 全ての空欄を出勤シフトで埋めてはいけません！各職員の currentStats にある:
            ・targetWorkDaysRange（今月の目標出勤日数 ※年休Y・リフレR等の有休分は既に差し引き済み）
            ・remainingWorkDaysRange（今回AIが追加で割り当てるべき出勤日数の目安）
            ・blankOffDaysToKeepRange（週休として必ず空欄のまま残すべき日数）
-           ・weeksNeedingBlankOff（まだ週1日の公休が入っていないため、candidateBlankDays の中から最低1日は必ず空欄のまま残すべき週）
+           ・weeksNeedingBlankOff（まだ週1日の公休が入っていないため、candidateBlankDays の中から最低1日は必ず空欄のまま残すべき週 ※月またぎ第1週も含む）
            を厳守してください。
-      4. 3クール制限: 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）。これを超えないこと。
+      4. 3クール制限・連続3クール禁止（月またぎ含む・★絶対厳守★）:
+         - 職員の「maxCool3」は、3クールシフト（コード: ${cool3LabelStr}）の月間上限回数（currentStats.remainingCool3 が残り可能回数）です。これを超えないこと。
+         - 同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てることは絶対禁止です（日曜休診を挟む場合を除く）。
+         - 特に月またぎの条件として、"prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを絶対に入れないでください（1日に出勤させる場合は必ず "day1AllowedWorkShifts" から選ぶこと）。
       5. パワーバランスの確保: 各施設の1日あたりの合計powerScoreが、以下の基準を下回らないよう可能な限り調整してください。
          - 坂田 (category: saka): 合計 30点 以上 (目安人数: 6名)
          - 君津 (category: kimi): 合計 30点 以上 (目安人数: 6名)
@@ -2091,8 +2395,26 @@ const prepareScheduleDataForAi = () => {
             : getUserRequestedTask(staffId, dayNum);
 
           const isMeTouch = kind === 'shift' && (
-            (currentCode && shiftDefs[currentCode]?.category === 'me') ||
-            (normalizedAfter && shiftDefs[normalizedAfter]?.category === 'me')
+            (currentCode && isMeRoomShiftCode(currentCode)) ||
+            (normalizedAfter && isMeRoomShiftCode(normalizedAfter))
+          );
+
+          const cool3Set = new Set(prevMonthCarryOver.cool3ShiftCodes || []);
+          const getProjectedShiftAt = (d) => {
+            if (Object.prototype.hasOwnProperty.call(dayMap, d) || Object.prototype.hasOwnProperty.call(dayMap, String(d))) {
+              const rawAdj = dayMap[d] ?? dayMap[String(d)];
+              return rawAdj === null || rawAdj === '' || rawAdj === 'CLEAR' || rawAdj === 'NONE' ? null : String(rawAdj);
+            }
+            return shiftData[staffId]?.[d] || null;
+          };
+          const isConsecutiveCool3 = kind === 'shift' && !!(
+            normalizedAfter &&
+            cool3Set.has(normalizedAfter) &&
+            (
+              (dayNum === 1 && prevMonthCarryOver.byStaff[staffId]?.prevLastDayWasCool3) ||
+              (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(getProjectedShiftAt(dayNum - 1))) ||
+              (dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(getProjectedShiftAt(dayNum + 1)))
+            )
           );
 
           items.push({
@@ -2111,9 +2433,11 @@ const prepareScheduleDataForAi = () => {
             staffRequestLabel: reqCode ? (shiftDefs[reqCode]?.label || reqCode) : null,
             isRestrictedShift: !!(
               isMeTouch ||
+              isConsecutiveCool3 ||
               (kind === 'shift' && normalizedAfter && !isShiftAllowedForStaff(staff, normalizedAfter))
             ),
             isMeTouch: !!isMeTouch,
+            isConsecutiveCool3,
           });
         });
       });
@@ -2271,12 +2595,15 @@ const prepareScheduleDataForAi = () => {
 - 日曜日は透析休診（空欄のまま）。祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜以外は通常通り透析を実施するため出勤日として扱います。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
 - ME室（category: me / コード: L, G）の扱い（重要）: ME室はOPE班のシフト管理者が別途組むシフトです。AIから L・G を自動配置しないでください。また、既に管理者から L・G（や他の既存シフト）が入力されているセルは、今回の会話で管理者が名指しで変更指示しない限り絶対に変更しないでください（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。ただし既に入力済みの L・G 等も、その職員の出勤日数・連勤数には含めて計算してください。
-- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts" に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
-- 週休2日・最大連勤制限・休みの「空欄」表現（重要）:
-  ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
+- 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
+  ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+  ・各職員の "prevMonthCarryOver" に前月末最終週からの連勤数（trailingWorkStreak）、1日からの最大許容連勤数（maxAllowedConsecutiveWorkFromDay1）、前月側での公休取得有無（alreadyTookWeeklyOffInPrevMonthPart）が入っていますので必ず考慮してください。
   ・AIが休ませる日（指定休・祝日の振替休枠）には、S や H 等のコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
-  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（年休Y・リフレR等の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週）を守ってください。
-- 3クール制限: 各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
+  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（年休Y・リフレR等の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週 ※月またぎ第1週も含む）を守ってください。
+- 3クール制限・連続3クール禁止（月またぎ含む・重要）:
+  ・各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
+  ・同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てないでください（日曜休診を挟む場合を除く）。特に "prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを入れず "day1AllowedWorkShifts" から選んでください。
 - 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)は人数充足のみ。
 - 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
@@ -2498,9 +2825,25 @@ ${messageText}`;
   );
   
   const getPopupOptions = (type) => {
-    if (currentView === 'ope' && type === 'shift') {
-      const l = shiftDefs['L']; const g = shiftDefs['G'];
-      const opts = []; if (l) opts.push(l); if (g) opts.push(g); return opts;
+    if ((currentView === 'ope' || appUser.initialView === 'ope') && type === 'shift') {
+      const meShifts = Object.values(shiftDefs)
+        .filter(s => s && (s.type === 'shift' || !s.type) && isMeRoomShiftCode(s.code, shiftDefs, categoryDefs))
+        .sort((a, b) => {
+          const getRank = (item) => {
+            const lbl = (item.label || '').trim();
+            if (item.code === 'L' || lbl === 'L' || lbl === 'Ｌ') return 0;
+            if (item.code === 'G' || lbl === 'G' || lbl === 'Ｇ') return 1;
+            return 2;
+          };
+          const rankDiff = getRank(a) - getRank(b);
+          return rankDiff !== 0 ? rankDiff : (a.order ?? 9999) - (b.order ?? 9999);
+        });
+      const hasL = meShifts.some(s => s.code === 'L' || (s.label || '').trim() === 'L' || (s.label || '').trim() === 'Ｌ');
+      const hasG = meShifts.some(s => s.code === 'G' || (s.label || '').trim() === 'G' || (s.label || '').trim() === 'Ｇ');
+      const opts = [...meShifts];
+      if (!hasL) opts.unshift(shiftDefs['L'] || DEFAULT_SHIFT_TYPES['L']);
+      if (!hasG) opts.push(shiftDefs['G'] || DEFAULT_SHIFT_TYPES['G']);
+      return opts;
     }
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
     let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && s.type === type);
@@ -2753,6 +3096,14 @@ ${messageText}`;
                   <tbody className="bg-white">
                     {displayStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
+                      const carry = appUser.role === 'admin' ? prevMonthCarryOver.byStaff[staff.id] : null;
+                      const maxStreakLimit = Number(adminSettings.maxConsecutiveWorkDays) || 5;
+                      const showCarryBadges = !!(
+                        carry &&
+                        prevMonthCarryOver.hasStraddlingWeek &&
+                        carry.staffHasPrevWorkShift &&
+                        (carry.trailingWorkStreak > 0 || carry.prevLastDayWasCool3)
+                      );
                       return (
                         <tr 
                           key={staff.id} 
@@ -2785,6 +3136,42 @@ ${messageText}`;
                                   )}
                                   {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
                                 </div>
+                                {showCarryBadges && (
+                                  <div className="mt-0.5 flex flex-wrap items-center gap-1" title={carry.tooltipText}>
+                                    {carry.trailingWorkStreak > 0 && (
+                                      <span
+                                        className={`px-1 py-[1px] rounded border text-[9px] font-bold leading-tight ${
+                                          carry.isCrossMonthStreakViolated
+                                            ? 'bg-red-100 text-red-700 border-red-300'
+                                            : carry.trailingWorkStreak >= maxStreakLimit
+                                              ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                              : carry.trailingWorkStreak >= maxStreakLimit - 1
+                                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                                : 'bg-slate-100 text-slate-600 border-slate-200'
+                                        }`}
+                                      >
+                                        {carry.isCrossMonthStreakViolated
+                                          ? `⚠️月またぎ${carry.crossMonthTotalStreak}連勤`
+                                          : carry.trailingWorkStreak >= maxStreakLimit
+                                            ? `前月${carry.trailingWorkStreak}連勤(1日休要)`
+                                            : `前月${carry.trailingWorkStreak}連勤`}
+                                      </span>
+                                    )}
+                                    {carry.prevLastDayWasCool3 && (
+                                      <span
+                                        className={`px-1 py-[1px] rounded border text-[9px] font-bold leading-tight ${
+                                          carry.isCrossMonthCool3Violated
+                                            ? 'bg-red-100 text-red-700 border-red-300'
+                                            : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                        }`}
+                                      >
+                                        {carry.isCrossMonthCool3Violated
+                                          ? '⚠️1日3ｸｰﾙ連続'
+                                          : `前末:${carry.prevLastDayLabel}`}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               {appUser.role === 'admin' && (
                                 <div className="flex items-center">
@@ -3744,6 +4131,7 @@ ${messageText}`;
                 <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
                 <div className="mb-4 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
                   <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
+                  <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
                   <div>・<strong>保護ルール：</strong>既存シフト・本人希望は変更せず、<strong>ME室(L/G)</strong>はAI配置対象外です</div>
                 </div>
                 <div className="space-y-2 mb-4">
@@ -3967,7 +4355,7 @@ ${messageText}`;
                                   <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-2.5 py-1.5">
                                     <AlertTriangle size={13} className="text-amber-600 shrink-0 mt-0.5" />
                                     <span>
-                                      職員の「配置制限」外または「ME室(L/G)」に関する変更が <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
+                                      職員の「配置制限」外・「ME室(L/G)」・または「3クール連続」に関する変更が <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
                                     </span>
                                   </div>
                                 )}
@@ -4007,9 +4395,15 @@ ${messageText}`;
                                         {item.isRestrictedShift && (
                                           <span
                                             className="text-[9px] px-1 rounded bg-amber-100 text-amber-800 font-bold shrink-0"
-                                            title={item.isMeTouch ? 'ME室(L/G)は通常OPE班管理のためAI対象外です' : 'この職員のAI配置制限外のシフトです'}
+                                            title={
+                                              item.isMeTouch
+                                                ? 'ME室(L/G)は通常OPE班管理のためAI対象外です'
+                                                : item.isConsecutiveCool3
+                                                  ? '前日または翌日（前月最終日含む）と3クールが連続しています'
+                                                  : 'この職員のAI配置制限外のシフトです'
+                                            }
                                           >
-                                            {item.isMeTouch ? 'ME室' : '制限外'}
+                                            {item.isMeTouch ? 'ME室' : item.isConsecutiveCool3 ? '3ｸｰﾙ連続' : '制限外'}
                                           </span>
                                         )}
                                       </div>
