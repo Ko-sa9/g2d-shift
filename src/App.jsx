@@ -306,6 +306,540 @@ const getDayColor = (year, month, day, clinicClosedDays = []) => {
   return 'text-gray-700';
 };
 
+// Step 6: 勤務表全体のルール違反・人数不足・必須スキル不足・スコア未達を一括検算する純粋関数
+const evaluateScheduleValidation = ({
+  year,
+  month,
+  staffList = [],
+  shiftDefs = {},
+  categoryDefs = {},
+  targetCounts = {},
+  adminSettings = {},
+  userInputs = {},
+  prevMonthCarryOver = { hasStraddlingWeek: false, cool3ShiftCodes: [], byStaff: {} },
+  shiftsMap = {},
+  lockedBaselineShifts = null,
+  includeEmptyDays = false,
+}) => {
+  const daysInMonth = getDaysInMonth(year, month);
+  const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+  const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
+  const monthlyOffSetting = adminSettings?.monthlyRegularOffDays || 'auto';
+  const cool3Set = new Set(prevMonthCarryOver?.cool3ShiftCodes || []);
+  const baselineMap = lockedBaselineShifts || shiftsMap;
+
+  const isMeCode = (code) => {
+    const def = shiftDefs[code];
+    if (!def) return false;
+    if (def.category === 'me') return true;
+    const nl = (def.label || '').trim();
+    return code === 'L' || code === 'G' || nl === 'L' || nl === 'G' || nl === 'Ｌ' || nl === 'Ｇ';
+  };
+
+  const isPaidLeaveCode = (code) => {
+    if (!code || !shiftDefs[code]) return false;
+    const def = shiftDefs[code];
+    return def.category === 'off' && code !== 'S' && code !== 'H';
+  };
+
+  const isShiftAllowed = (staff, code) => {
+    const def = shiftDefs[code];
+    if (!def) return false;
+    if (Array.isArray(staff?.excludedCategories) && staff.excludedCategories.includes(def.category)) return false;
+    if (Array.isArray(staff?.excludedShifts) && staff.excludedShifts.includes(code)) return false;
+    return true;
+  };
+
+  const getReqShift = (sId, d) => {
+    const raw = userInputs?.[sId]?.[d];
+    if (!raw) return null;
+    if (raw === true) return baselineMap?.[sId]?.[d] || shiftsMap?.[sId]?.[d] || null;
+    if (typeof raw === 'string') return raw;
+    if (typeof raw === 'object') return raw.shift || null;
+    return null;
+  };
+
+  const getTeamShiftLock = (sId, d, mapRef = baselineMap) => {
+    const cur = mapRef?.[sId]?.[d];
+    if (!cur) return null;
+    const raw = userInputs?.[sId]?.[d];
+    if (raw && typeof raw === 'object' && raw.teamShiftBy && TEAM_ADMIN_LABELS[raw.teamShiftBy]) {
+      return raw.teamShiftBy;
+    }
+    if (isMeCode(cur)) return 'ope';
+    return null;
+  };
+
+  const isCellAiEditable = (staff, d) => {
+    if (!staff || staff.excludeFromAi || isSunday(year, month, d)) return false;
+    if (baselineMap?.[staff.id]?.[d]) return false;
+    if (getReqShift(staff.id, d)) return false;
+    if (getTeamShiftLock(staff.id, d, baselineMap)) return false;
+    return true;
+  };
+
+  const readSkillMin = (catId, skillKey) => {
+    if (!catId || ['me', 'off', 'req', 'role', 'basic'].includes(catId)) return 0;
+    const cm = adminSettings?.facilitySkillTargets;
+    if (cm && cm[catId] && cm[catId][skillKey] !== undefined) {
+      return Math.max(0, parseInt(cm[catId][skillKey], 10) || 0);
+    }
+    return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+  };
+
+  const readTargetCount = (code, d) => {
+    if (isSunday(year, month, d)) return 0;
+    const def = shiftDefs[code];
+    if (isMeCode(code) && isHoliday(year, month, d, closedRules)) {
+      const nl = (def?.label || '').trim();
+      return (code === 'G' || nl === 'G' || nl === 'Ｇ') ? 1 : 0;
+    }
+    return targetCounts?.[code]?.[getDayOfWeek(year, month, d)] || 0;
+  };
+
+  // 営業日と週情報の集計
+  const operatingDays = [];
+  let filledOperatingDaysCount = 0;
+  for (let d = 1; d <= daysInMonth; d++) {
+    if (isSunday(year, month, d)) continue;
+    operatingDays.push(d);
+    const hasWork = staffList.some(s => {
+      const c = shiftsMap?.[s.id]?.[d];
+      const def = c ? shiftDefs[c] : null;
+      return !!(def && def.category !== 'off' && def.category !== 'req');
+    });
+    if (hasWork) filledOperatingDaysCount++;
+  }
+
+  const operatingDaysCount = operatingDays.length;
+  const emptyOperatingDaysCount = operatingDaysCount - filledOperatingDaysCount;
+  const isFullMonthCreated = filledOperatingDaysCount >= Math.max(1, operatingDaysCount - 1);
+
+  const parsedFixedOff = monthlyOffSetting !== 'auto' ? parseInt(monthlyOffSetting, 10) : NaN;
+  const baseRegularOffMin = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.floor(operatingDaysCount / 6);
+  const baseRegularOffMax = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.ceil(operatingDaysCount / 6);
+  const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
+  const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
+
+  const staffViolations = [];
+  const aiRepairableItems = [];
+
+  // 1. 職員ごとの勤務ルール検算（連勤超過・3クール連続・3クール上限・配置制限・出勤日数不足）
+  staffList.forEach(s => {
+    const carry = prevMonthCarryOver?.byStaff?.[s.id] || {
+      staffHasPrevWorkShift: false,
+      trailingWorkStreak: 0,
+      prevWeekRegOffCount: 0,
+      prevLastDayWasCool3: false,
+      prevLastDayLabel: null,
+    };
+
+    let streakLen = carry.trailingWorkStreak || 0;
+    let runStartDay = streakLen > 0 ? 0 : null; // 0 = 前月末から継続
+    let currentRunDays = [];
+    const cool3Days = [];
+    let workDays = 0;
+    let paidLeaveDays = 0;
+    const editableBlankDays = [];
+
+    const flushStreakRun = (endDay) => {
+      if (streakLen > maxStreak && currentRunDays.length > 0) {
+        const editableDays = currentRunDays.filter(dayNum => isCellAiEditable(s, dayNum));
+        const isAiFixable = !s.excludeFromAi && editableDays.length > 0;
+        const rangeText = runStartDay === 0
+          ? `前月末(${carry.trailingWorkStreak}連勤)〜${month}/${endDay}`
+          : `${month}/${runStartDay}〜${month}/${endDay}`;
+        staffViolations.push({
+          type: 'streak_exceeded',
+          severity: 'error',
+          staffId: s.id,
+          staffName: s.name,
+          isAiFixable,
+          label: `最大連勤超過（${streakLen}連勤 / 上限${maxStreak}日）`,
+          detail: `${rangeText} が連続出勤になっています`,
+        });
+        if (isAiFixable) {
+          aiRepairableItems.push(
+            `[連勤超過] ${s.name}(ID:${s.id}): ${rangeText} で${streakLen}連勤（上限${maxStreak}連勤）になっています。編集可能な日 [${editableDays.join(', ')}] のうち最低1日を null（空欄の公休）に戻し、減ったシフトを他の余力ある職員へ振り替えてください。`
+          );
+        }
+      }
+      streakLen = 0;
+      runStartDay = null;
+      currentRunDays = [];
+    };
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      if (isSunday(year, month, d)) {
+        flushStreakRun(d - 1);
+        continue;
+      }
+      const code = shiftsMap?.[s.id]?.[d];
+      const def = code ? shiftDefs[code] : null;
+      const reqShift = getReqShift(s.id, d);
+
+      if (!code || !def) {
+        flushStreakRun(d - 1);
+        if (reqShift && isPaidLeaveCode(reqShift)) {
+          paidLeaveDays++;
+        } else if (!reqShift && isCellAiEditable(s, d)) {
+          editableBlankDays.push(d);
+        }
+        continue;
+      }
+
+      if (def.category === 'off' || def.category === 'req') {
+        flushStreakRun(d - 1);
+        if (isPaidLeaveCode(code)) paidLeaveDays++;
+        continue;
+      }
+
+      // 出勤シフト
+      workDays++;
+      if (streakLen === 0) runStartDay = d;
+      streakLen++;
+      currentRunDays.push(d);
+
+      if (cool3Set.has(code)) {
+        cool3Days.push(d);
+        // 月またぎ1日の3クール連続チェック
+        if (d === 1 && carry.prevLastDayWasCool3) {
+          const isAiFixable = isCellAiEditable(s, 1);
+          staffViolations.push({
+            type: 'consecutive_cool3',
+            severity: 'error',
+            staffId: s.id,
+            staffName: s.name,
+            isAiFixable,
+            label: '月またぎ3クール連続',
+            detail: `前月最終日(${carry.prevLastDayLabel || '3クール'}) → ${month}/1(${def.label}) が連続しています`,
+          });
+          if (isAiFixable) {
+            aiRepairableItems.push(
+              `[3クール連続] ${s.name}(ID:${s.id}): 前月最終日が3クールのため ${month}/1 に「${def.label}」は入れられません。1日は3クール以外のシフトへ変更してください。`
+            );
+          }
+        }
+        // 月内の連続営業日3クール連続チェック
+        if (d > 1 && !isSunday(year, month, d - 1)) {
+          const prevCode = shiftsMap?.[s.id]?.[d - 1];
+          if (prevCode && cool3Set.has(prevCode)) {
+            const prevLabel = shiftDefs[prevCode]?.label || prevCode;
+            const editablePair = [d - 1, d].filter(dayNum => isCellAiEditable(s, dayNum));
+            const isAiFixable = !s.excludeFromAi && editablePair.length > 0;
+            staffViolations.push({
+              type: 'consecutive_cool3',
+              severity: 'error',
+              staffId: s.id,
+              staffName: s.name,
+              isAiFixable,
+              label: '3クール連続配置',
+              detail: `${month}/${d - 1}(${prevLabel}) → ${month}/${d}(${def.label}) が連続しています`,
+            });
+            if (isAiFixable) {
+              aiRepairableItems.push(
+                `[3クール連続] ${s.name}(ID:${s.id}): ${month}/${d - 1}(${prevLabel}) と ${month}/${d}(${def.label}) が連続しています。編集可能な日 [${editablePair.join(', ')}] の3クールを通常シフトに入れ替えてください。`
+              );
+            }
+          }
+        }
+      }
+
+      // 配置制限外シフトのチェック（ME室・個人希望・班管理ロックは除外）
+      const isPersonalSame = reqShift === code;
+      const isTeamLocked = !!getTeamShiftLock(s.id, d, shiftsMap);
+      if (!isMeCode(code) && !isPersonalSame && !isTeamLocked && !isShiftAllowed(s, code)) {
+        const isAiFixable = isCellAiEditable(s, d);
+        staffViolations.push({
+          type: 'restricted_shift',
+          severity: 'error',
+          staffId: s.id,
+          staffName: s.name,
+          isAiFixable,
+          label: '配置制限外のシフト割当',
+          detail: `${month}/${d} に配置制限外の「${def.label}」が割り当てられています`,
+        });
+        if (isAiFixable) {
+          aiRepairableItems.push(
+            `[配置制限違反] ${s.name}(ID:${s.id}): ${month}/${d} の「${def.label}」は配置不可です。許可された allowedWorkShifts 内のシフトに変更してください。`
+          );
+        }
+      }
+    }
+    flushStreakRun(daysInMonth);
+
+    // 3クール月間上限超過チェック
+    if (s.maxCool3 !== undefined && s.maxCool3 !== null && cool3Days.length > s.maxCool3) {
+      const editableCool3 = cool3Days.filter(dayNum => isCellAiEditable(s, dayNum));
+      const isAiFixable = !s.excludeFromAi && editableCool3.length > 0;
+      const overBy = cool3Days.length - s.maxCool3;
+      staffViolations.push({
+        type: 'cool3_over_limit',
+        severity: 'error',
+        staffId: s.id,
+        staffName: s.name,
+        isAiFixable,
+        label: `3クール月間上限超過（${cool3Days.length}回 / 上限${s.maxCool3}回）`,
+        detail: `該当: ${cool3Days.map(d => `${month}/${d}`).join('・')}`,
+      });
+      if (isAiFixable) {
+        aiRepairableItems.push(
+          `[3クール上限超過] ${s.name}(ID:${s.id}): 3クールが計${cool3Days.length}回（上限${s.maxCool3}回）で ${overBy}回 超過しています。編集可能な3クール日 [${editableCool3.join(', ')}] のうち${overBy}日分を他の上限に余裕がある職員と入れ替えてください。`
+        );
+      }
+    }
+
+    // 1ヶ月分が作成済みの場合のみ、常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック
+    if ((isFullMonthCreated || includeEmptyDays) && filledOperatingDaysCount > 0 && !s.excludeFromAi && s.jobTitle !== 'パート') {
+      const targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays);
+      const targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays);
+      if (workDays < targetMin && editableBlankDays.length > 0) {
+        staffViolations.push({
+          type: 'underwork_excess_blank',
+          severity: 'warn',
+          staffId: s.id,
+          staffName: s.name,
+          isAiFixable: true,
+          label: `出勤日数不足・空欄過多（${workDays}日 / 目安${targetMin}〜${targetMax}日）`,
+          detail: `未ロックの空欄日: ${editableBlankDays.map(d => `${month}/${d}`).join('・')}`,
+        });
+        aiRepairableItems.push(
+          `[出勤日数不足] ${s.name}(ID:${s.id}): 出勤が${workDays}日（目安${targetMin}〜${targetMax}日）で空欄が多すぎます。未ロック空欄日 [${editableBlankDays.join(', ')}] のうち最大連勤を超えない日に出勤シフトを割り当ててください。`
+        );
+      }
+    }
+  });
+
+  // 2. 日別の必要人数不足・必須スキル不足・目標パワースコア未達の検算
+  const facilityCats = Object.values(categoryDefs)
+    .filter(cat => !['me', 'off', 'req', 'role', 'basic'].includes(cat.id))
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+
+  const skillPoints = { isLeader: 5, isVeteran: 3, canEcho: 2, canMachine: 2, canFollow: 1 };
+  const staffPowerMap = {};
+  staffList.forEach(s => {
+    let pt = 0;
+    if (s.skills) {
+      Object.keys(skillPoints).forEach(k => {
+        if (s.skills[k]) pt += skillPoints[k];
+      });
+    }
+    staffPowerMap[s.id] = pt;
+  });
+
+  const dailyHeadcountShortages = [];
+  const dailySkillShortages = [];
+  const dailyPowerShortages = [];
+  let omittedEmptyDaysCount = 0;
+
+  operatingDays.forEach(d => {
+    const dow = getDayOfWeek(year, month, d);
+    const dowLabel = ['日', '月', '火', '水', '木', '金', '土'][dow];
+
+    const codeCounts = {};
+    const actualHeadcountByCat = {};
+    const skillCountsByCat = {};
+    facilityCats.forEach(cat => {
+      actualHeadcountByCat[cat.id] = 0;
+      skillCountsByCat[cat.id] = {};
+      STAFF_SKILLS.forEach(sk => {
+        skillCountsByCat[cat.id][sk.key] = 0;
+      });
+    });
+
+    let workingOnDay = 0;
+    let sakaScore = 0;
+    let kimiScore = 0;
+    let kikuriScore = 0;
+
+    staffList.forEach(s => {
+      const code = shiftsMap?.[s.id]?.[d];
+      if (!code || !shiftDefs[code]) return;
+      const def = shiftDefs[code];
+      codeCounts[code] = (codeCounts[code] || 0) + 1;
+      if (def.category !== 'off' && def.category !== 'req') {
+        workingOnDay++;
+        const pScore = staffPowerMap[s.id] || 0;
+        if (def.category === 'saka') sakaScore += pScore;
+        else if (def.category === 'kimi') kimiScore += pScore;
+        else if (def.category === 'kikuri') kikuriScore += pScore;
+
+        if (skillCountsByCat[def.category] !== undefined) {
+          actualHeadcountByCat[def.category] = (actualHeadcountByCat[def.category] || 0) + 1;
+          STAFF_SKILLS.forEach(sk => {
+            if (s.skills?.[sk.key]) {
+              skillCountsByCat[def.category][sk.key] = (skillCountsByCat[def.category][sk.key] || 0) + 1;
+            }
+          });
+        }
+      }
+    });
+
+    if (workingOnDay === 0 && !includeEmptyDays) {
+      omittedEmptyDaysCount++;
+      return;
+    }
+
+    // (a) シフト必要人数チェック
+    const hcItems = [];
+    Object.values(shiftDefs)
+      .filter(sd => sd && sd.type === 'shift' && sd.category !== 'off' && sd.category !== 'req')
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+      .forEach(sd => {
+        const target = readTargetCount(sd.code, d);
+        const actual = codeCounts[sd.code] || 0;
+        if (target > 0 && actual < target) {
+          hcItems.push({
+            code: sd.code,
+            label: sd.label,
+            actual,
+            target,
+            isMeRoom: isMeCode(sd.code),
+          });
+        }
+      });
+
+    if (hcItems.length > 0) {
+      const nonMeItems = hcItems.filter(it => !it.isMeRoom);
+      dailyHeadcountShortages.push({
+        day: d,
+        dowLabel,
+        items: hcItems,
+        nonMeItems,
+      });
+      if (nonMeItems.length > 0) {
+        const blankCandidates = staffList
+          .filter(s => !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d))
+          .map(s => `${s.name}(ID:${s.id})`)
+          .slice(0, 6);
+        aiRepairableItems.push(
+          `[必要人数不足] ${month}/${d}(${dowLabel}): ${nonMeItems.map(it => `${it.label}(${it.code}) ${it.actual}/${it.target}名`).join('・')}${
+            blankCandidates.length > 0 ? `（当日の空欄候補: ${blankCandidates.join(', ')} ほか）` : ''
+          }`
+        );
+      }
+    }
+
+    // (b) 施設別必須スキルチェック（リーダー等）
+    const skItems = [];
+    facilityCats.forEach(cat => {
+      const catShiftCodes = Object.values(shiftDefs)
+        .filter(sd => sd && sd.type === 'shift' && sd.category === cat.id)
+        .map(sd => sd.code);
+      if (catShiftCodes.length === 0) return;
+
+      const catTargetHc = catShiftCodes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
+      const catActualHc = actualHeadcountByCat[cat.id] || 0;
+      if (catTargetHc === 0 && catActualHc === 0) return;
+
+      STAFF_SKILLS.forEach(sk => {
+        const reqMin = readSkillMin(cat.id, sk.key);
+        if (reqMin <= 0) return;
+        const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
+        if (actual < reqMin) {
+          // 同日の他施設に余剰保持者がいるか、または当日の未ロック空欄に保持者がいるか判定
+          const surplusCats = facilityCats
+            .filter(other => {
+              if (other.id === cat.id) return false;
+              const otherMin = readSkillMin(other.id, sk.key);
+              const otherActual = skillCountsByCat[other.id]?.[sk.key] || 0;
+              return otherActual > otherMin;
+            })
+            .map(other => `${other.label}(${skillCountsByCat[other.id]?.[sk.key]}名)`);
+
+          const blankSkillHolders = staffList.filter(
+            s => s.skills?.[sk.key] && !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d)
+          );
+
+          const isAiFixable = surplusCats.length > 0 || blankSkillHolders.length > 0;
+          const hint = surplusCats.length > 0
+            ? `同日の${surplusCats.join('・')}に余剰あり`
+            : blankSkillHolders.length > 0
+              ? `未割当の${sk.label}保持者あり`
+              : '';
+
+          skItems.push({
+            catId: cat.id,
+            catLabel: cat.label,
+            skillKey: sk.key,
+            skillLabel: sk.label,
+            actual,
+            target: reqMin,
+            isAiFixable,
+            hint,
+          });
+
+          if (isAiFixable) {
+            aiRepairableItems.push(
+              `[必須スキル不足] ${month}/${d}(${dowLabel}): ${cat.label} の ${sk.label} が ${actual}/${reqMin}名 です（${hint}）。ロック外のメンバーと配置を入れ替える等で確保してください。`
+            );
+          }
+        }
+      });
+    });
+
+    if (skItems.length > 0) {
+      dailySkillShortages.push({
+        day: d,
+        dowLabel,
+        items: skItems,
+      });
+    }
+
+    // (c) 目標パワースコア参考チェック
+    const pItems = [];
+    const hasCatActive = (catId) => {
+      const codes = Object.values(shiftDefs).filter(sd => sd && sd.type === 'shift' && sd.category === catId).map(sd => sd.code);
+      const tSum = codes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
+      return tSum > 0 || (actualHeadcountByCat[catId] || 0) > 0;
+    };
+    if (hasCatActive('saka') && sakaScore < 30) pItems.push(`坂田 ${sakaScore}/30点`);
+    if (hasCatActive('kimi') && kimiScore < 30) pItems.push(`君津 ${kimiScore}/30点`);
+    if (hasCatActive('kikuri') && kikuriScore < 40) pItems.push(`木クリ ${kikuriScore}/40点`);
+    if (pItems.length > 0) {
+      dailyPowerShortages.push({
+        day: d,
+        dowLabel,
+        items: pItems,
+      });
+    }
+  });
+
+  const hardStaffViolationCount = staffViolations.filter(v => v.type !== 'underwork_excess_blank').length;
+  const underworkCount = staffViolations.filter(v => v.type === 'underwork_excess_blank').length;
+  const nonMeHeadcountShortageCount = dailyHeadcountShortages.reduce((s, d) => s + d.nonMeItems.length, 0);
+  const allHeadcountShortageCount = dailyHeadcountShortages.reduce((s, d) => s + d.items.length, 0);
+  const skillShortageTotalCount = dailySkillShortages.reduce((s, d) => s + d.items.length, 0);
+
+  // 重大度スコア（Pass 1 と Pass 2 の改善度比較用：低いほど優良）
+  const criticalScore =
+    hardStaffViolationCount * 100 +
+    nonMeHeadcountShortageCount * 25 +
+    skillShortageTotalCount * 20 +
+    underworkCount * 10 +
+    dailyPowerShortages.length;
+
+  return {
+    operatingDaysCount,
+    filledOperatingDaysCount,
+    emptyOperatingDaysCount,
+    omittedEmptyDaysCount,
+    isFullMonthCreated,
+    staffViolations,
+    dailyHeadcountShortages,
+    dailySkillShortages,
+    dailyPowerShortages,
+    aiRepairableItems,
+    hardStaffViolationCount,
+    underworkCount,
+    nonMeHeadcountShortageCount,
+    allHeadcountShortageCount,
+    skillShortageTotalCount,
+    totalActionableCount: staffViolations.length + dailyHeadcountShortages.length + dailySkillShortages.length,
+    criticalScore,
+  };
+};
+
 const generateCalendarDays = (year, month) => {
   const firstDay = new Date(year, month - 1, 1);
   const lastDay = new Date(year, month, 0);
@@ -500,11 +1034,15 @@ export default function WorkScheduleApp() {
   const [expandedProposalIds, setExpandedProposalIds] = useState({});
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiProgress, setAiProgress] = useState(0); // 【追加】進行状況(%)を管理する状態変数
+  const [aiLoadingMessage, setAiLoadingMessage] = useState(''); // Step 6: 自動作成・自動手直し中のステータス表示
 
   const [aiModel, setAiModel] = useState('gemini-3.8-flash'); 
   const chatEndRef = useRef(null);
 
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
+  const [showValidationModal, setShowValidationModal] = useState(false); // Step 6: 検算チェック結果モーダル
+  const [showUncreatedDaysInValidation, setShowUncreatedDaysInValidation] = useState(false);
+  const [autoFillValidationSummary, setAutoFillValidationSummary] = useState(null);
   
   const [autoFillConditions, setAutoFillConditions] = useState(() => {
     const saved = localStorage.getItem('savedAutoFillConditions');
@@ -1832,7 +2370,7 @@ const handleResetSchedule = () => {
     };
   }, [year, month, prevMonthShiftData, staffList, shiftDefs, adminSettings.maxConsecutiveWorkDays, adminSettings.clinicClosedDays, shiftData]);
 
-const prepareScheduleDataForAi = () => {
+const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskData) => {
     const days = getDaysInMonth(year, month);
     const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
     const maxConsecutiveWorkDays = Number(adminSettings.maxConsecutiveWorkDays) || 5;
@@ -1946,7 +2484,7 @@ const prepareScheduleDataForAi = () => {
           currentStreak = 0;
           continue;
         }
-        const code = shiftData[s.id]?.[d];
+        const code = customShifts[s.id]?.[d];
         const reqShift = getUserRequestedShift(s.id, d);
 
         if (!code || !shiftDefs[code]) {
@@ -2111,16 +2649,16 @@ const prepareScheduleDataForAi = () => {
           if (reqTask) staffReq[d].task = reqTask;
         }
 
-        const teamShiftSrc = getTeamLockedShiftSource(s.id, d);
-        const teamTaskSrc = getTeamLockedTaskSource(s.id, d);
+        const teamShiftSrc = getTeamLockedShiftSource(s.id, d, customShifts);
+        const teamTaskSrc = getTeamLockedTaskSource(s.id, d, customTasks);
         if (teamShiftSrc || teamTaskSrc) {
           staffTeamLock[d] = {};
           if (teamShiftSrc) {
-            staffTeamLock[d].shift = shiftData[s.id]?.[d];
+            staffTeamLock[d].shift = customShifts[s.id]?.[d];
             staffTeamLock[d].shiftLockedBy = TEAM_ADMIN_LABELS[teamShiftSrc] || teamShiftSrc;
           }
           if (teamTaskSrc) {
-            staffTeamLock[d].task = taskData[s.id]?.[d];
+            staffTeamLock[d].task = customTasks[s.id]?.[d];
             staffTeamLock[d].taskLockedBy = TEAM_ADMIN_LABELS[teamTaskSrc] || teamTaskSrc;
           }
         }
@@ -2166,7 +2704,7 @@ const prepareScheduleDataForAi = () => {
       const codeCounts = {};
 
       staffList.forEach(s => {
-        const code = shiftData[s.id]?.[d];
+        const code = customShifts[s.id]?.[d];
         if (!code || !shiftDefs[code]) return;
         const def = shiftDefs[code];
         codeCounts[code] = (codeCounts[code] || 0) + 1;
@@ -2180,7 +2718,7 @@ const prepareScheduleDataForAi = () => {
         }
       });
 
-      const skillEval = evaluateFacilitySkillShortagesForDay(d, shiftData);
+      const skillEval = evaluateFacilitySkillShortagesForDay(d, customShifts);
 
       const shortages = [];
       Object.keys(targetCounts || {}).forEach(code => {
@@ -2245,8 +2783,8 @@ const prepareScheduleDataForAi = () => {
       staffRequests,
       teamAdminLocks,
       dailySummary,
-      shifts: shiftData, 
-      tasks: taskData,
+      shifts: customShifts, 
+      tasks: customTasks,
       targetCounts,
       definitions: Object.keys(shiftDefs).reduce((acc, key) => {
         acc[key] = {
@@ -2260,29 +2798,32 @@ const prepareScheduleDataForAi = () => {
     };
   };
 
-// 共通のAI結果反映ロジック（ワンタップAI自動作成用）
-  const applyAiResult = async (jsonString) => {
-    // 【追加】デバッグ用にコンソールに生の応答を出す
+// Step 6対応: AIのJSON出力を安全ガード付きでマージ計算する共通関数（保存前の検算・自動手直しにも対応）
+  const computeAiAppliedSchedule = (
+    jsonString,
+    baseShifts = shiftData,
+    baseTasks = taskData,
+    lockedBaselineShifts = shiftData,
+    lockedBaselineTasks = taskData,
+    allowClearAiCells = false
+  ) => {
     console.log("AI Raw Response:", jsonString);
 
-    // 【追加】callGeminiからのエラーメッセージ（⚠️で始まるもの）をそのまま返す
     if (typeof jsonString === 'string' && jsonString.startsWith("⚠️")) {
       return { success: false, message: jsonString };
     }
 
-    let cleanJson = jsonString;
-    // Markdown除去
-    cleanJson = cleanJson.replace(/```json/g, '').replace(/```/g, '');
+    let cleanJson = typeof jsonString === 'string' ? jsonString : '';
+    cleanJson = cleanJson.replace(/```json/gi, '').replace(/```/g, '');
     
     const firstBrace = cleanJson.indexOf('{');
     const lastBrace = cleanJson.lastIndexOf('}');
     
-    // JSONの開始・終了カッコが見つからない場合
     if (firstBrace === -1 || lastBrace === -1) {
-        return { 
-            success: false, 
-            message: "有効なJSON（データ形式）が見つかりませんでした。\nAIがデータ以外の返答をした可能性があります。\nF12キーでコンソールを確認してください。" 
-        };
+      return {
+        success: false,
+        message: "有効なJSON（データ形式）が見つかりませんでした。\nAIがデータ以外の返答をした可能性があります。\nF12キーでコンソールを確認してください。"
+      };
     }
     
     cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
@@ -2290,12 +2831,14 @@ const prepareScheduleDataForAi = () => {
     try {
       const changes = JSON.parse(cleanJson);
       const nameToIdMap = {};
-      staffList.forEach(s => nameToIdMap[s.name] = s.id);
+      staffList.forEach(s => {
+        nameToIdMap[s.name] = s.id;
+      });
       const maxDay = getDaysInMonth(year, month);
       
       let updatedCount = 0;
-      const ns = { ...shiftData };
-      const nt = { ...taskData };
+      const ns = { ...baseShifts };
+      const nt = { ...baseTasks };
       const nextUserInputs = { ...userInputs };
 
       // AIによる上書き前に旧形式(boolean)の希望履歴があればコード形式へ保全する
@@ -2303,119 +2846,159 @@ const prepareScheduleDataForAi = () => {
         Object.keys(userInputs[sId] || {}).forEach(d => {
           if (userInputs[sId][d] === true) {
             nextUserInputs[sId] = { ...(nextUserInputs[sId] || {}) };
-            nextUserInputs[sId][d] = normalizeUserInputEntry(true, shiftData[sId]?.[d], taskData[sId]?.[d]);
+            nextUserInputs[sId][d] = normalizeUserInputEntry(true, lockedBaselineShifts[sId]?.[d], lockedBaselineTasks[sId]?.[d]);
           }
         });
       });
 
       const cool3Set = new Set(prevMonthCarryOver.cool3ShiftCodes || []);
 
-      if (changes.shift) {
+      if (changes.shift && typeof changes.shift === 'object') {
         Object.keys(changes.shift).forEach(key => {
           let staffId = key;
-          // IDが見つからない場合、名前として検索
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
           const staffObj = staffList.find(s => s.id === staffId);
 
           // AI除外スタッフは自動作成で書き換えない
-          if (staffId && staffObj && !staffObj.excludeFromAi) { 
-             ns[staffId] = { ...(ns[staffId] || {}) };
-             const staffCarry = prevMonthCarryOver.byStaff[staffId];
-             const sortedDays = Object.keys(changes.shift[key])
-               .map(d => parseInt(d, 10))
-               .filter(d => !isNaN(d) && d >= 1 && d <= maxDay)
-               .sort((a, b) => a - b);
+          if (staffId && staffObj && !staffObj.excludeFromAi && changes.shift[key] && typeof changes.shift[key] === 'object') {
+            ns[staffId] = { ...(ns[staffId] || {}) };
+            const staffCarry = prevMonthCarryOver.byStaff[staffId];
+            const sortedDays = Object.keys(changes.shift[key])
+              .map(d => parseInt(d, 10))
+              .filter(d => !isNaN(d) && d >= 1 && d <= maxDay)
+              .sort((a, b) => a - b);
 
-             sortedDays.forEach(dayNum => {
-                if (isSunday(year, month, dayNum)) return;
-                // 既に管理者・本人が入力済みのセル（ME室のL/G、年休Y、指定S、希望HOPEなど）や希望履歴があるセルは絶対に変更しない
-                if (shiftData[staffId]?.[dayNum] || getUserRequestedShift(staffId, dayNum)) return;
+            sortedDays.forEach(dayNum => {
+              if (isSunday(year, month, dayNum)) return;
+              // 実行開始前から管理者・班管理者・本人が入力済みのセルや希望履歴があるセルは絶対に変更しない
+              if (
+                lockedBaselineShifts[staffId]?.[dayNum] ||
+                getUserRequestedShift(staffId, dayNum) ||
+                getTeamLockedShiftSource(staffId, dayNum, lockedBaselineShifts)
+              ) {
+                return;
+              }
 
-                let code = changes.shift[key][dayNum] ?? changes.shift[key][String(dayNum)];
-                if (!code || !shiftDefs[code]) return;
-                const def = shiftDefs[code];
-                // Step 2: AI自動作成ではME室(L/G)の自動入力を禁止し、休みは空欄のまま残すため休みコード(off/req)も書き込まない
-                if (isMeRoomShiftCode(code) || def.category === 'off' || def.category === 'req') return;
+              const rawVal = Object.prototype.hasOwnProperty.call(changes.shift[key], dayNum)
+                ? changes.shift[key][dayNum]
+                : changes.shift[key][String(dayNum)];
 
-                // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
-                if (cool3Set.has(code)) {
-                  const prevDayIsCool3 =
-                    (dayNum === 1 && staffCarry?.prevLastDayWasCool3) ||
-                    (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(ns[staffId][dayNum - 1]));
-                  const nextDayIsCool3 =
-                    dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(ns[staffId][dayNum + 1]);
+              // Step 6 自動手直し時（allowClearAiCells = true）は、AIが割当済みのセルを空欄公休（null等、または誤って休みコードを出力した場合）に戻す操作を許可
+              const isClearOp =
+                rawVal === null ||
+                rawVal === '' ||
+                rawVal === 'CLEAR' ||
+                rawVal === 'NONE' ||
+                (typeof rawVal === 'string' && shiftDefs[rawVal] && (shiftDefs[rawVal].category === 'off' || shiftDefs[rawVal].category === 'req'));
 
-                  if (prevDayIsCool3 || nextDayIsCool3) {
-                    // 同一施設内で許可されている非3クール出勤シフト（例: 坂3→坂2、君3→君2）へ安全にフォールバック
-                    const sameFacilityAlt = Object.values(shiftDefs)
-                      .filter(
-                        alt =>
-                          alt.type === 'shift' &&
-                          alt.category === def.category &&
-                          !cool3Set.has(alt.code) &&
-                          !isMeRoomShiftCode(alt.code) &&
-                          isShiftAllowedForStaff(staffObj, alt.code)
-                      )
-                      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
-                    const anyAllowedAlt = Object.values(shiftDefs)
-                      .filter(
-                        alt =>
-                          alt.type === 'shift' &&
-                          alt.category !== 'off' &&
-                          alt.category !== 'req' &&
-                          !cool3Set.has(alt.code) &&
-                          !isMeRoomShiftCode(alt.code) &&
-                          isShiftAllowedForStaff(staffObj, alt.code)
-                      )
-                      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
-                    const fallbackDef = sameFacilityAlt || anyAllowedAlt;
-                    if (!fallbackDef) return;
-                    code = fallbackDef.code;
-                  }
+              if (isClearOp) {
+                if (allowClearAiCells && ns[staffId]?.[dayNum]) {
+                  delete ns[staffId][dayNum];
+                  updatedCount++;
                 }
+                return;
+              }
 
-                if (isShiftAllowedForStaff(staffObj, code)) {
-                   ns[staffId][dayNum] = code;
-                   updatedCount++;
+              let code = String(rawVal);
+              if (!code || !shiftDefs[code]) return;
+              const def = shiftDefs[code];
+              // ME室(L/G)および休みコード(off/req)の書き込みは禁止
+              if (isMeRoomShiftCode(code) || def.category === 'off' || def.category === 'req') return;
+
+              // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
+              if (cool3Set.has(code)) {
+                const prevDayIsCool3 =
+                  (dayNum === 1 && staffCarry?.prevLastDayWasCool3) ||
+                  (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(ns[staffId][dayNum - 1]));
+                const nextDayIsCool3 =
+                  dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(ns[staffId][dayNum + 1]);
+
+                if (prevDayIsCool3 || nextDayIsCool3) {
+                  const sameFacilityAlt = Object.values(shiftDefs)
+                    .filter(
+                      alt =>
+                        alt.type === 'shift' &&
+                        alt.category === def.category &&
+                        !cool3Set.has(alt.code) &&
+                        !isMeRoomShiftCode(alt.code) &&
+                        isShiftAllowedForStaff(staffObj, alt.code)
+                    )
+                    .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
+                  const anyAllowedAlt = Object.values(shiftDefs)
+                    .filter(
+                      alt =>
+                        alt.type === 'shift' &&
+                        alt.category !== 'off' &&
+                        alt.category !== 'req' &&
+                        !cool3Set.has(alt.code) &&
+                        !isMeRoomShiftCode(alt.code) &&
+                        isShiftAllowedForStaff(staffObj, alt.code)
+                    )
+                    .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))[0];
+                  const fallbackDef = sameFacilityAlt || anyAllowedAlt;
+                  if (!fallbackDef) return;
+                  code = fallbackDef.code;
                 }
-             });
+              }
+
+              if (isShiftAllowedForStaff(staffObj, code)) {
+                if (ns[staffId][dayNum] !== code) {
+                  ns[staffId][dayNum] = code;
+                  updatedCount++;
+                }
+              }
+            });
           }
         });
       }
       
-      if (changes.task) {
+      if (changes.task && typeof changes.task === 'object') {
         Object.keys(changes.task).forEach(key => {
           let staffId = key;
           if (!staffList.find(s => s.id === staffId)) staffId = nameToIdMap[key];
           const staffObj = staffList.find(s => s.id === staffId);
 
-          if (staffId && staffObj && !staffObj.excludeFromAi) {
-             nt[staffId] = { ...(nt[staffId] || {}) };
-             Object.keys(changes.task[key]).forEach(day => {
-                const dayNum = parseInt(day, 10);
-                if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
-                if (taskData[staffId]?.[dayNum] || getUserRequestedTask(staffId, dayNum) || getTeamLockedTaskSource(staffId, dayNum)) return;
+          if (staffId && staffObj && !staffObj.excludeFromAi && changes.task[key] && typeof changes.task[key] === 'object') {
+            nt[staffId] = { ...(nt[staffId] || {}) };
+            Object.keys(changes.task[key]).forEach(day => {
+              const dayNum = parseInt(day, 10);
+              if (isNaN(dayNum) || dayNum < 1 || dayNum > maxDay || isSunday(year, month, dayNum)) return;
+              if (
+                lockedBaselineTasks[staffId]?.[dayNum] ||
+                getUserRequestedTask(staffId, dayNum) ||
+                getTeamLockedTaskSource(staffId, dayNum, lockedBaselineTasks)
+              ) {
+                return;
+              }
 
-                const code = changes.task[key][day];
-                if (shiftDefs[code]) {
-                   nt[staffId][dayNum] = code;
-                   updatedCount++;
+              const rawTaskVal = changes.task[key][day];
+              if (allowClearAiCells && (rawTaskVal === null || rawTaskVal === '' || rawTaskVal === 'CLEAR' || rawTaskVal === 'NONE')) {
+                if (nt[staffId]?.[dayNum]) {
+                  delete nt[staffId][dayNum];
+                  updatedCount++;
                 }
-             });
+                return;
+              }
+
+              const code = String(rawTaskVal || '');
+              if (code && shiftDefs[code] && nt[staffId][dayNum] !== code) {
+                nt[staffId][dayNum] = code;
+                updatedCount++;
+              }
+            });
           }
         });
       }
 
-      if (updatedCount > 0) {
-        setShiftData(ns);
-        setTaskData(nt);
-        setUserInputs(nextUserInputs);
-        saveSchedule(ns, nt, nextUserInputs);
-        return { success: true, count: updatedCount, nextShifts: ns };
-      } else {
-        return { success: false, message: "変更が必要な箇所が見つかりませんでした。" };
-      }
-
+      return {
+        success: updatedCount > 0,
+        count: updatedCount,
+        nextShifts: ns,
+        nextTasks: nt,
+        nextUserInputs,
+        reason: typeof changes.reason === 'string' ? changes.reason : '',
+        message: updatedCount > 0 ? '' : '変更が必要な箇所が見つかりませんでした。',
+      };
     } catch (e) {
       return { success: false, message: `JSONの解析に失敗しました: ${e.message}` };
     }
@@ -2477,14 +3060,19 @@ const prepareScheduleDataForAi = () => {
   const executeAutoFill = async () => {
     setShowAutoFillModal(false);
     setIsAiLoading(true);
-    setAiProgress(0); 
+    setAiProgress(0);
+    setAiLoadingMessage('AIがシフトを作成中...');
+    setAutoFillValidationSummary(null);
+
+    const originalShifts = shiftData;
+    const originalTasks = taskData;
 
     const progressInterval = setInterval(() => {
-      setAiProgress(prev => (prev >= 95 ? 95 : prev + Math.floor(Math.random() * 8) + 1));
+      setAiProgress(prev => (prev >= 90 ? 90 : prev + Math.floor(Math.random() * 7) + 1));
     }, 800);
 
     try {
-      const data = prepareScheduleDataForAi();
+      const data = prepareScheduleDataForAi(originalShifts, originalTasks);
       const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
       const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
       const skillReqLines = Object.values(data.facilitySkillRequirements || {}).map(fReq => {
@@ -2575,46 +3163,165 @@ const prepareScheduleDataForAi = () => {
       ${JSON.stringify(data)}
       `;
 
-      const result = await callGemini(prompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
-      
-      clearInterval(progressInterval);
-      setAiProgress(100); 
+      const result1 = await callGemini(prompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+      const pass1 = computeAiAppliedSchedule(result1, originalShifts, originalTasks, originalShifts, originalTasks, false);
 
-      const res = await applyAiResult(result);
-      if (res.success) {
-        const appliedShifts = res.nextShifts || shiftData;
-        const totalDays = getDaysInMonth(year, month);
-        const unresolvedSkillLines = [];
-        for (let d = 1; d <= totalDays; d++) {
-          if (isSunday(year, month, d)) continue;
-          const evalDay = evaluateFacilitySkillShortagesForDay(d, appliedShifts);
-          if (evalDay.allShortages.length > 0) {
-            const dowLbl = ['日', '月', '火', '水', '木', '金', '土'][getDayOfWeek(year, month, d)];
-            const detail = evalDay.allShortages
-              .map(sh => `${sh.catLabel}(${sh.skillLabel} ${sh.actual}/${sh.target}名)`)
-              .join('・');
-            unresolvedSkillLines.push(`・${month}/${d}(${dowLbl}): ${detail}`);
-          }
-        }
-        setTimeout(() => {
-          setIsAiLoading(false);
-          if (unresolvedSkillLines.length > 0) {
-            const previewList = unresolvedSkillLines.slice(0, 8).join('\n');
-            const moreLine = unresolvedSkillLines.length > 8 ? `\n…ほか ${unresolvedSkillLines.length - 8} 日` : '';
-            alert(
-              `シフトの自動作成が完了しました（${res.count}箇所を入力）。\n\n` +
-              `※希望休・既存シフト・連勤制限を優先したため、以下の日程・施設で必須スキル（リーダー等）が不足しています。勤務表下部の集計欄（オレンジ色表示）をご確認ください：\n\n` +
-              `${previewList}${moreLine}`
-            );
-          }
-        }, 500);
-      } else {
+      if (!pass1.success) {
+        clearInterval(progressInterval);
         setIsAiLoading(false);
-        alert(`AI結果の適用に失敗しました。\n理由: ${res.message || res.error || '不明なエラー'}`);
+        setAiLoadingMessage('');
+        alert(`AI結果の適用に失敗しました。\n理由: ${pass1.message || pass1.error || '不明なエラー'}`);
+        return;
       }
+
+      // Step 6: プログラムによる厳密な自動検算を実行
+      const pass1Report = evaluateScheduleValidation({
+        year,
+        month,
+        staffList,
+        shiftDefs,
+        categoryDefs,
+        targetCounts,
+        adminSettings,
+        userInputs,
+        prevMonthCarryOver,
+        shiftsMap: pass1.nextShifts,
+        lockedBaselineShifts: originalShifts,
+        includeEmptyDays: true,
+      });
+
+      let finalShifts = pass1.nextShifts;
+      let finalTasks = pass1.nextTasks;
+      let finalUserInputs = pass1.nextUserInputs;
+      let finalReport = pass1Report;
+      let didAutoRepair = false;
+      let repairedIssueCount = 0;
+
+      // Step 6 案A: AI側で修正可能な違反・不足が検出された場合のみ、最大1回のピンポイント自動手直しを実行（0件なら待ち時間ゼロで即完了）
+      if (pass1Report.aiRepairableItems.length > 0) {
+        didAutoRepair = true;
+        setAiProgress(prev => Math.max(prev, 78));
+        setAiLoadingMessage(`検算で ${pass1Report.aiRepairableItems.length}件 の要調整箇所を検出。AIが自動手直し中... (1/1回)`);
+
+        try {
+          const pass1AiData = prepareScheduleDataForAi(pass1.nextShifts, pass1.nextTasks);
+          const totalDays = getDaysInMonth(year, month);
+          const aiEditableDaysByStaff = {};
+          staffList.forEach(s => {
+            if (s.excludeFromAi) return;
+            const editable = [];
+            for (let d = 1; d <= totalDays; d++) {
+              if (isSunday(year, month, d)) continue;
+              if (originalShifts[s.id]?.[d]) continue;
+              if (getUserRequestedShift(s.id, d)) continue;
+              if (getTeamLockedShiftSource(s.id, d, originalShifts)) continue;
+              editable.push(d);
+            }
+            aiEditableDaysByStaff[s.id] = editable;
+          });
+
+          const repairListText = pass1Report.aiRepairableItems
+            .slice(0, 25)
+            .map((item, idx) => `${idx + 1}. ${item}`)
+            .join('\n');
+
+          const repairPrompt = `
+          【タスク：自動検算で見つかったルール違反・不足箇所のピンポイント手直し（セルフリペア）】
+          先ほど作成した仮シフトをプログラムで検算したところ、以下の違反・不足箇所が見つかりました。
+          問題のない他の日程・職員のバランスは崩さず、以下の指摘事項を解消するための「修正差分のみ」をJSONで出力してください。
+
+          【検算で検出された要修正リスト】
+          ${repairListText}
+
+          【手直し時の厳守ルール】
+          1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室(L/G)・日曜日は絶対に変更しないでください。
+          2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、減ったシフトをその日に出勤可能（最大${maxStreak}連勤や3クール連続に違反しない）な他スタッフへ割り当ててください。
+          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、出勤日数に余力のある未ロック空欄スタッフへ出勤シフト（allowedWorkShifts内）を割り当ててください。
+          4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、3クール連続（${cool3LabelStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
+          ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件】\n${strictConditions}\n` : ''}
+          【各職員のAI編集可能日リスト（aiEditableDaysByStaff）】
+          ${JSON.stringify(aiEditableDaysByStaff)}
+
+          【現在の仮シフト全体データ】
+          ${JSON.stringify(pass1AiData)}
+
+          【出力JSONフォーマット（修正する差分セルのみ出力。休みの空欄に戻すセルは null を指定）】
+          {
+            "shift": {
+              "職員ID": { "日付(1-31の数値)": "新しいシフトコード または 空欄公休に戻す場合は null" }
+            },
+            "reason": "手直しした内容の要約"
+          }
+          `;
+
+          const result2 = await callGemini(repairPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          const pass2 = computeAiAppliedSchedule(
+            result2,
+            pass1.nextShifts,
+            pass1.nextTasks,
+            originalShifts,
+            originalTasks,
+            true
+          );
+
+          if (pass2.success) {
+            const pass2Report = evaluateScheduleValidation({
+              year,
+              month,
+              staffList,
+              shiftDefs,
+              categoryDefs,
+              targetCounts,
+              adminSettings,
+              userInputs,
+              prevMonthCarryOver,
+              shiftsMap: pass2.nextShifts,
+              lockedBaselineShifts: originalShifts,
+              includeEmptyDays: true,
+            });
+
+            // 重大度スコアが改善（または同等で件数減）した場合のみ手直し版を採用し、万が一の改悪を防止
+            if (pass2Report.criticalScore <= pass1Report.criticalScore) {
+              repairedIssueCount = Math.max(0, pass1Report.totalActionableCount - pass2Report.totalActionableCount);
+              finalShifts = pass2.nextShifts;
+              finalTasks = pass2.nextTasks;
+              finalUserInputs = pass2.nextUserInputs;
+              finalReport = pass2Report;
+            }
+          }
+        } catch (repairErr) {
+          console.warn('Step 6 自動手直しパスでエラーが発生したため初回生成結果を採用します:', repairErr);
+        }
+      }
+
+      // 最終確定したシフトを保存
+      setShiftData(finalShifts);
+      setTaskData(finalTasks);
+      setUserInputs(finalUserInputs);
+      await saveSchedule(finalShifts, finalTasks, finalUserInputs);
+
+      clearInterval(progressInterval);
+      setAiProgress(100);
+
+      setTimeout(() => {
+        setIsAiLoading(false);
+        setAiLoadingMessage('');
+
+        // 手直し後も解消しきれなかった違反・人数不足・必須スキル不足が残っている場合は検算レポートモーダルを開いて案内
+        if (finalReport.totalActionableCount > 0) {
+          setShowUncreatedDaysInValidation(true);
+          setAutoFillValidationSummary({
+            didAutoRepair,
+            repairedIssueCount,
+            remainingCount: finalReport.totalActionableCount,
+          });
+          setShowValidationModal(true);
+        }
+      }, 400);
     } catch (error) {
       clearInterval(progressInterval);
       setIsAiLoading(false);
+      setAiLoadingMessage('');
       console.error("AI自動入力エラー:", error);
       alert("通信エラーまたはタイムアウトが発生しました。");
     }
@@ -3024,6 +3731,70 @@ ${messageText}`;
     setIsAiLoading(false);
   };
 
+  // Step 6: 現在の勤務表に対するリアルタイム検算レポート（ヘッダーバッジ＆検算モーダル用）
+  const liveValidationReport = useMemo(() => {
+    return evaluateScheduleValidation({
+      year,
+      month,
+      staffList,
+      shiftDefs,
+      categoryDefs,
+      targetCounts,
+      adminSettings,
+      userInputs,
+      prevMonthCarryOver,
+      shiftsMap: shiftData,
+      lockedBaselineShifts: shiftData,
+      includeEmptyDays: showUncreatedDaysInValidation,
+    });
+  }, [
+    year,
+    month,
+    staffList,
+    shiftDefs,
+    categoryDefs,
+    targetCounts,
+    adminSettings,
+    userInputs,
+    prevMonthCarryOver,
+    shiftData,
+    showUncreatedDaysInValidation,
+  ]);
+
+  const handleOpenValidationModal = () => {
+    setAutoFillValidationSummary(null);
+    setShowValidationModal(true);
+  };
+
+  // 検算モーダルからワンタップでAIチャットへ違反・不足箇所を引き継いで調整案を相談
+  const handleConsultValidationWithAi = () => {
+    const lines = [];
+    liveValidationReport.staffViolations.slice(0, 10).forEach(v => {
+      lines.push(`・[個人ルール] ${v.staffName}: ${v.label}（${v.detail}）`);
+    });
+    liveValidationReport.dailyHeadcountShortages.slice(0, 10).forEach(dItem => {
+      const nonMe = dItem.nonMeItems;
+      if (nonMe.length > 0) {
+        lines.push(`・[人数不足] ${month}/${dItem.day}(${dItem.dowLabel}): ${nonMe.map(it => `${it.label} ${it.actual}/${it.target}名`).join('、')}`);
+      }
+    });
+    liveValidationReport.dailySkillShortages.slice(0, 10).forEach(dItem => {
+      lines.push(
+        `・[必須スキル不足] ${month}/${dItem.day}(${dItem.dowLabel}): ` +
+        dItem.items.map(it => `${it.catLabel}(${it.skillLabel} ${it.actual}/${it.target}名)`).join('、')
+      );
+    });
+
+    const summaryPrompt = lines.length > 0
+      ? `検算チェックで以下の課題が見つかりました。個人入力分や各班管理者の固定シフトは変更せず、解消できる箇所について具体的なシフト変更案を作成してください（どうしても解消できない箇所があれば次善策を教えてください）：\n${lines.join('\n')}`
+      : `${year}年${month}月のシフト全体を確認し、パワーバランスや負担の偏りをさらに良くできる箇所があれば提案してください。`;
+
+    setShowValidationModal(false);
+    setAutoFillValidationSummary(null);
+    setShowAiModal(true);
+    handleAiSend(summaryPrompt);
+  };
+
   // --- Memoized Values ---
   const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month]);
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
@@ -3316,6 +4087,31 @@ ${messageText}`;
                </button>
                <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0" title="AIチャット">
                  <Bot size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">AIチャット</span>
+               </button>
+               <button
+                 onClick={handleOpenValidationModal}
+                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
+                   liveValidationReport.hardStaffViolationCount > 0
+                     ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
+                     : liveValidationReport.filledOperatingDaysCount > 0 && liveValidationReport.totalActionableCount === 0
+                       ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+                       : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200'
+                 }`}
+                 title="シフト検算チェック（連勤・3クール・必要人数・必須スキルを一括確認）"
+               >
+                 <ShieldCheck size={16} className="sm:w-4 sm:h-4" />
+                 <span className="hidden md:inline text-sm">検算チェック</span>
+                 {liveValidationReport.hardStaffViolationCount > 0 ? (
+                   <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] leading-tight">
+                     {liveValidationReport.hardStaffViolationCount}
+                   </span>
+                 ) : liveValidationReport.filledOperatingDaysCount > 0 && liveValidationReport.totalActionableCount > 0 ? (
+                   <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                     {liveValidationReport.totalActionableCount}
+                   </span>
+                 ) : liveValidationReport.isFullMonthCreated && liveValidationReport.totalActionableCount === 0 ? (
+                   <Check size={13} className="text-emerald-600" />
+                 ) : null}
                </button>
                <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
                  <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
@@ -5394,12 +6190,282 @@ ${messageText}`;
           </div>
         )}
 
+        {/* Step 6: 検算チェック結果モーダル */}
+        {showValidationModal && (
+          <div
+            className="absolute inset-0 bg-black/50 z-[115] flex items-center justify-center p-4"
+            onClick={() => {
+              setShowValidationModal(false);
+              setAutoFillValidationSummary(null);
+            }}
+          >
+            <div
+              className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-teal-50 to-emerald-50">
+                <div>
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2 text-teal-900">
+                    <ShieldCheck size={18} className="text-teal-600" />
+                    シフト検算チェック（{year}年{month}月）
+                  </h3>
+                  <p className="text-[11px] text-teal-700/80 mt-0.5">
+                    連勤上限・月またぎ引き継ぎ・3クール制限・必要人数・必須スキルを一括チェックします
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowValidationModal(false);
+                    setAutoFillValidationSummary(null);
+                  }}
+                >
+                  <X size={20} className="text-gray-400 hover:text-gray-600" />
+                </button>
+              </div>
+
+              <div className="p-4 flex-1 overflow-y-auto space-y-4">
+                {autoFillValidationSummary && (
+                  <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-xs text-amber-900 space-y-1 leading-relaxed">
+                    <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                      <Sparkles size={14} className="text-amber-600 shrink-0" />
+                      <span>
+                        AI自動作成{autoFillValidationSummary.didAutoRepair ? '（＋自動手直し1回）' : ''}が完了しました
+                        {autoFillValidationSummary.repairedIssueCount > 0
+                          ? `（自動手直しで ${autoFillValidationSummary.repairedIssueCount}件 解消済み）`
+                          : ''}
+                      </span>
+                    </div>
+                    <p>
+                      個人希望・各班管理者ロック・連勤上限を優先したため、以下の <strong>{liveValidationReport.totalActionableCount}件</strong> が未解消で残っています。手動で微調整するか、下のボタンからAIチャットで調整案を作成できます。
+                    </p>
+                  </div>
+                )}
+
+                {liveValidationReport.filledOperatingDaysCount === 0 && !showUncreatedDaysInValidation ? (
+                  <div className="p-6 text-center bg-gray-50 border border-dashed rounded-xl space-y-2">
+                    <p className="text-sm font-bold text-gray-700">まだ出勤シフトが入力されていません</p>
+                    <p className="text-xs text-gray-500">
+                      手動でシフトを入力するか「AI作成」を実行すると、連勤・3クール・必要人数・必須スキルを一括検算できます。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowUncreatedDaysInValidation(true)}
+                      className="mt-2 px-3 py-1.5 text-xs font-bold text-teal-700 bg-white border border-teal-300 rounded hover:bg-teal-50 transition"
+                    >
+                      未入力の日程も含めて必要人数を確認する
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* サマリーカード群 */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.staffViolations.length > 0 ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                        <div className="text-[10px] font-bold opacity-80">個人ルール違反</div>
+                        <div className="text-lg font-extrabold">{liveValidationReport.staffViolations.length}<span className="text-xs font-normal ml-0.5">件</span></div>
+                      </div>
+                      <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.dailyHeadcountShortages.length > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                        <div className="text-[10px] font-bold opacity-80">必要人数不足日</div>
+                        <div className="text-lg font-extrabold">{liveValidationReport.dailyHeadcountShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
+                      </div>
+                      <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.dailySkillShortages.length > 0 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                        <div className="text-[10px] font-bold opacity-80">必須スキル不足日</div>
+                        <div className="text-lg font-extrabold">{liveValidationReport.dailySkillShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
+                      </div>
+                      <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.dailyPowerShortages.length > 0 ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                        <div className="text-[10px] font-bold opacity-80">目標スコア未満日</div>
+                        <div className="text-lg font-extrabold">{liveValidationReport.dailyPowerShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
+                      </div>
+                    </div>
+
+                    {/* 作成途中の月の場合の未入力日フィルタ切替 */}
+                    {liveValidationReport.emptyOperatingDaysCount > 0 && (
+                      <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border rounded-lg text-xs text-gray-600">
+                        <span>
+                          シフト入力済み営業日: <strong>{liveValidationReport.filledOperatingDaysCount} / {liveValidationReport.operatingDaysCount}日</strong>
+                          {!showUncreatedDaysInValidation && liveValidationReport.omittedEmptyDaysCount > 0 && (
+                            <span className="text-gray-400 ml-1">（※未入力の{liveValidationReport.omittedEmptyDaysCount}日は省略中）</span>
+                          )}
+                        </span>
+                        <label className="flex items-center gap-1.5 cursor-pointer font-bold text-teal-700">
+                          <input
+                            type="checkbox"
+                            checked={showUncreatedDaysInValidation}
+                            onChange={e => setShowUncreatedDaysInValidation(e.target.checked)}
+                            className="rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                          />
+                          <span>未入力の日も表示</span>
+                        </label>
+                      </div>
+                    )}
+
+                    {/* 全クリア時メッセージ */}
+                    {liveValidationReport.totalActionableCount === 0 && (
+                      <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+                          <Check size={18} />
+                        </div>
+                        <div className="text-xs leading-relaxed">
+                          <div className="font-bold text-sm text-emerald-800">ルール違反・人数不足・必須スキル不足はありません！</div>
+                          <div>
+                            {liveValidationReport.isFullMonthCreated
+                              ? '月間すべての営業日で勤務ルール・必要人数・必須スキルを満たしています。'
+                              : '現在入力されている日程において、ルール違反や不足は見つかりませんでした。'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 1. 個人の勤務ルール違反 */}
+                    {liveValidationReport.staffViolations.length > 0 && (
+                      <div className="border border-rose-200 rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-rose-50 border-b border-rose-200 text-xs font-bold text-rose-800 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <AlertTriangle size={14} className="text-rose-600" />
+                            個人の勤務ルール確認（{liveValidationReport.staffViolations.length}件）
+                          </span>
+                          <span className="text-[10px] font-normal text-rose-600">連勤・3クール連続・上限・出勤日数</span>
+                        </div>
+                        <div className="divide-y divide-rose-100 bg-white">
+                          {liveValidationReport.staffViolations.map((v, idx) => (
+                            <div key={`${v.staffId}_${v.type}_${idx}`} className="px-3 py-2 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-gray-800 shrink-0">{v.staffName}</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${v.severity === 'warn' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-700'}`}>
+                                  {v.label}
+                                </span>
+                              </div>
+                              <span className="text-gray-600 text-[11px]">{v.detail}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2. 日別の必要人数不足 */}
+                    {liveValidationReport.dailyHeadcountShortages.length > 0 && (
+                      <div className="border border-red-200 rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-red-50 border-b border-red-200 text-xs font-bold text-red-800 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Users size={14} className="text-red-600" />
+                            シフト必要人数の不足（{liveValidationReport.dailyHeadcountShortages.length}日）
+                          </span>
+                          <span className="text-[10px] font-normal text-red-600">※ME室(L/G)はOPE班管轄</span>
+                        </div>
+                        <div className="divide-y divide-red-100 bg-white max-h-48 overflow-y-auto">
+                          {liveValidationReport.dailyHeadcountShortages.map(dItem => (
+                            <div key={dItem.day} className="px-3 py-2 text-xs flex flex-wrap items-center gap-1.5">
+                              <span className="font-bold text-gray-800 w-16 shrink-0">
+                                {month}/{dItem.day}({dItem.dowLabel})
+                              </span>
+                              <div className="flex flex-wrap gap-1 flex-1">
+                                {dItem.items.map(it => (
+                                  <span
+                                    key={it.code}
+                                    className={`px-1.5 py-0.5 rounded border text-[11px] font-bold ${
+                                      it.isMeRoom
+                                        ? 'bg-gray-100 text-gray-600 border-gray-300'
+                                        : 'bg-red-50 text-red-700 border-red-200'
+                                    }`}
+                                  >
+                                    {it.label}: {it.actual}/{it.target}名{it.isMeRoom ? ' (OPE班)' : ''}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3. 施設別の必須スキル不足 */}
+                    {liveValidationReport.dailySkillShortages.length > 0 && (
+                      <div className="border border-amber-300 rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-xs font-bold text-amber-900 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <ShieldCheck size={14} className="text-amber-600" />
+                            施設別の必須スキル不足（{liveValidationReport.dailySkillShortages.length}日）
+                          </span>
+                          <span className="text-[10px] font-normal text-amber-700">集計欄オレンジ⚠表示と連動</span>
+                        </div>
+                        <div className="divide-y divide-amber-100 bg-white max-h-48 overflow-y-auto">
+                          {liveValidationReport.dailySkillShortages.map(dItem => (
+                            <div key={dItem.day} className="px-3 py-2 text-xs flex flex-wrap items-center gap-1.5">
+                              <span className="font-bold text-gray-800 w-16 shrink-0">
+                                {month}/{dItem.day}({dItem.dowLabel})
+                              </span>
+                              <div className="flex flex-wrap gap-1.5 flex-1">
+                                {dItem.items.map((it, iIdx) => (
+                                  <span
+                                    key={`${it.catId}_${it.skillKey}_${iIdx}`}
+                                    className="px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-300 text-[11px] font-bold inline-flex items-center gap-1"
+                                  >
+                                    <span>{it.catLabel}（{it.skillLabel} {it.actual}/{it.target}名）</span>
+                                    {it.hint && (
+                                      <span className="text-[10px] font-normal text-teal-700 bg-teal-50 px-1 rounded border border-teal-200">
+                                        💡{it.hint}
+                                      </span>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. 参考：目標パワースコア未達日（折りたたみ） */}
+                    {liveValidationReport.dailyPowerShortages.length > 0 && (
+                      <details className="border border-gray-200 rounded-lg bg-gray-50/60 overflow-hidden text-xs">
+                        <summary className="px-3 py-2 cursor-pointer font-bold text-gray-600 hover:bg-gray-100 select-none">
+                          参考：目標パワースコア目安を下回る日（{liveValidationReport.dailyPowerShortages.length}日・クリックで展開）
+                        </summary>
+                        <div className="divide-y divide-gray-100 bg-white max-h-40 overflow-y-auto border-t">
+                          {liveValidationReport.dailyPowerShortages.map(pItem => (
+                            <div key={pItem.day} className="px-3 py-1.5 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
+                              <span className="font-bold text-gray-700 w-16 shrink-0">{month}/{pItem.day}({pItem.dowLabel})</span>
+                              <span>{pItem.items.join(' ／ ')}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="p-3.5 border-t bg-gray-50 flex flex-wrap items-center justify-end gap-2">
+                {liveValidationReport.filledOperatingDaysCount > 0 && liveValidationReport.totalActionableCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleConsultValidationWithAi}
+                    className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-lg text-xs font-bold shadow-sm flex items-center gap-1.5 transition"
+                  >
+                    <Bot size={15} />
+                    AIチャットで調整案を作成する
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowValidationModal(false);
+                    setAutoFillValidationSummary(null);
+                  }}
+                  className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-xs font-bold transition"
+                >
+                  閉じて手動で調整する
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isAiLoading && !showAiModal && (
           <div className="fixed inset-0 bg-black/60 z-[150] flex flex-col items-center justify-center text-white p-4">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mb-4"></div>
-            <p className="text-lg font-bold">AIがシフトを作成中...</p>
+            <p className="text-lg font-bold text-center">{aiLoadingMessage || 'AIがシフトを作成中...'}</p>
             <p className="text-sm mt-2 text-gray-200 text-center">
-              複雑な条件を計算しています。<br/>最大1分ほどかかります。
+              複雑な条件を計算・検算しています。<br/>最大1分ほどかかります。
             </p>
             
             {/* プログレスバーのUI */}
