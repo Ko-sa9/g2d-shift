@@ -511,9 +511,15 @@ export default function WorkScheduleApp() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        // 【追加】過去のデータが単なる文字列だった場合、チェックボックス用のオブジェクト形式に変換します
+        // 【追加】過去のデータが単なる文字列や優先度未設定だった場合、チェックボックス＋優先度（初期値: strict=絶対）付きの形式に変換します
         return parsed.map((item, index) => 
-          typeof item === 'string' ? { id: Date.now() + index, text: item, active: true } : item
+          typeof item === 'string'
+            ? { id: Date.now() + index, text: item, active: true, priority: 'strict' }
+            : {
+                ...item,
+                active: item.active !== undefined ? !!item.active : true,
+                priority: item.priority === 'soft' ? 'soft' : 'strict',
+              }
         );
       } catch (e) {        console.error("ローカルストレージの条件データの解析に失敗しました", e);
         return [];
@@ -523,6 +529,7 @@ export default function WorkScheduleApp() {
   });
   
   const [newConditionText, setNewConditionText] = useState(''); // 新しく入力中の条件テキストを管理します
+  const [newConditionPriority, setNewConditionPriority] = useState('strict'); // Step 5: 新規条件の優先度（初期値: 'strict' = 絶対）
 
   // 条件リスト（autoFillConditions）に追加や削除などの変更が加わるたびに、
   // 最新の配列データを文字列に変換（stringify）してローカルストレージへ自動保存します。
@@ -597,6 +604,20 @@ export default function WorkScheduleApp() {
            loadedAdminSettings = { ...rest, 'ope': opera };
         }
         setAdminSettings(loadedAdminSettings);
+
+        if (Array.isArray(data.autoFillConditions)) {
+          setAutoFillConditions(
+            data.autoFillConditions.map((item, index) =>
+              typeof item === 'string'
+                ? { id: Date.now() + index, text: item, active: true, priority: 'strict' }
+                : {
+                    ...item,
+                    active: item.active !== undefined ? !!item.active : true,
+                    priority: item.priority === 'soft' ? 'soft' : 'strict',
+                  }
+            )
+          );
+        }
       } else {
         // ★修正: 勝手にデータベースを初期化（上書き保存）する処理を削除
         // 通信エラー時などに本番データが破壊されるのを防ぎます
@@ -2190,6 +2211,13 @@ const prepareScheduleDataForAi = () => {
       };
     }
 
+    const strictConditionsList = autoFillConditions
+      .filter(c => c.active && c.priority !== 'soft')
+      .map(c => c.text);
+    const softConditionsList = autoFillConditions
+      .filter(c => c.active && c.priority === 'soft')
+      .map(c => c.text);
+
     return {
       year, month,
       pacingRules: {
@@ -2203,7 +2231,11 @@ const prepareScheduleDataForAi = () => {
           ? `${baseRegularOffMin}日`
           : `${baseRegularOffMin}〜${baseRegularOffMax}日`,
         offDayRepresentation: '空欄（SやH等のコードは入れず未入力のまま残す）',
-        meRoomRule: 'ME室(L, G)およびHHD班・エコー班・オペ班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止（条件・スコア・スキル・連勤計算には必ず含める）'
+        meRoomRule: 'ME室(L, G)、個人(スタッフ本人)が入力したシフト・希望（管理者が対応済みの空欄休みや変更後シフトも含む）、およびHHD班・エコー班・オペ班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止（条件・スコア・スキル・連勤計算には必ず含める）'
+      },
+      customConditions: {
+        strict: strictConditionsList,
+        soft: softConditionsList,
       },
       facilitySkillRequirements,
       calendar: calendarInfo,
@@ -2389,26 +2421,52 @@ const prepareScheduleDataForAi = () => {
     }
   };
 
-// 条件操作ハンドラ
+// 条件操作ハンドラ（Step 5: [絶対] strict / [なるべく] soft の2段階優先度対応）
+  const persistAutoFillConditions = (nextList) => {
+    setAutoFillConditions(nextList);
+    saveMasterData({ autoFillConditions: nextList });
+  };
+
   const addAutoFillCondition = () => {
     if (!newConditionText.trim()) return;
     const newId = Date.now();
-    setAutoFillConditions([...autoFillConditions, { id: newId, text: newConditionText, active: true }]);
+    const nextList = [
+      ...autoFillConditions,
+      {
+        id: newId,
+        text: newConditionText.trim(),
+        active: true,
+        priority: newConditionPriority === 'soft' ? 'soft' : 'strict',
+      },
+    ];
+    persistAutoFillConditions(nextList);
     setNewConditionText('');
+    setNewConditionPriority('strict'); // 新規追加時の初期値である「絶対」へ戻す
   };
 
   const deleteAutoFillCondition = (id) => {
-    setAutoFillConditions(autoFillConditions.filter(c => c.id !== id));
+    const nextList = autoFillConditions.filter(c => c.id !== id);
+    persistAutoFillConditions(nextList);
   };
 
   const toggleAutoFillCondition = (id) => {
-    setAutoFillConditions(autoFillConditions.map(c => c.id === id ? { ...c, active: !c.active } : c));
+    const nextList = autoFillConditions.map(c => (c.id === id ? { ...c, active: !c.active } : c));
+    persistAutoFillConditions(nextList);
   };
 
-  // ★追加：条件を再編集する機能
-  const editAutoFillCondition = (id, text) => {
+  const toggleAutoFillConditionPriority = (id) => {
+    const nextList = autoFillConditions.map(c =>
+      c.id === id ? { ...c, priority: c.priority === 'soft' ? 'strict' : 'soft' } : c
+    );
+    persistAutoFillConditions(nextList);
+  };
+
+  // ★追加：条件を再編集する機能（優先度も入力欄に復元）
+  const editAutoFillCondition = (id, text, priority = 'strict') => {
     setNewConditionText(text); // 入力欄に文字を戻す
-    setAutoFillConditions(autoFillConditions.filter(c => c.id !== id)); // リストからは一旦消す
+    setNewConditionPriority(priority === 'soft' ? 'soft' : 'strict');
+    const nextList = autoFillConditions.filter(c => c.id !== id); // リストからは一旦消す
+    persistAutoFillConditions(nextList);
   };
 
   // ワンタップ自動作成
@@ -2436,9 +2494,13 @@ const prepareScheduleDataForAi = () => {
       const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
       const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
       
-      const activeConditions = autoFillConditions
-        .filter(c => c.active)
-        .map((c, index) => `${index + 1}. ${c.text}`)
+      const strictConditions = autoFillConditions
+        .filter(c => c.active && c.priority !== 'soft')
+        .map((c, index) => `${index + 1}. [絶対] ${c.text}`)
+        .join("\n");
+      const softConditions = autoFillConditions
+        .filter(c => c.active && c.priority === 'soft')
+        .map((c, index) => `${index + 1}. [なるべく] ${c.text}`)
         .join("\n");
 
       // AIに1日ずつ考えさせ、具体的なパワーバランス（目標スコア）・施設別必須スキル・最大連勤・前月末引き継ぎ・週休2日（空欄残し）・3クール連続禁止・班管理ロックを行わせるプロンプト
@@ -2486,9 +2548,13 @@ const prepareScheduleDataForAi = () => {
          ※「じんクリ (jinkuri)」については必要人数の充足（および必須スキル設定がある場合のみその充足）を行い、パワーバランス(スコア計算)は不要です。「ME室 (me)」はOPE班管理のためAI配置対象外です。
       7. 必要人数と負担の分散: 各曜日・各シフトごとの目標人数は「targetCounts」および「dailySummary.shortages」を参照して満たしつつ、出勤日数・3クール回数・残業時間が特定の人に偏らないよう分散させてください。
 
-      【適用条件（★何よりも優先すべき絶対ルール★）】
-      以下の条件は、上記の基本ルール（パワーバランスや必要人数の確保など）よりも優先して「絶対」に守ってください。ルールが競合した場合でも、必ずこちらの条件を優先します。
-      ${activeConditions ? activeConditions : '特になし'}
+      【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★）】
+      以下の [絶対] 条件は、パワーバランス（目標スコア）やシフト配分よりも優先して「絶対」に守ってください（ただし、既存シフト・個人入力・各班管理者ロックの変更禁止だけは破らないこと）。
+      ${strictConditions ? strictConditions : '特になし'}
+
+      【カスタム条件②：[なるべく] ルール（努力目標・ソフト条件）】
+      以下の [なるべく] 条件は、上記の「[絶対] ルール」「必要人数（targetCounts）」「施設別必須スキル（リーダー等）」「最大${maxStreak}連勤上限・週休ペース」「3クール連続禁止」をすべて満たした上で、可能な範囲で配慮してください。もし競合して守れない日がある場合は基本ルールを優先して崩さず、"reason" に見送った旨を一言記載してください。
+      ${softConditions ? softConditions : '特になし'}
 
       【出力形式】
       必ず以下のJSONフォーマットのみを出力してください。Markdownタグを含めないでください。
@@ -2627,11 +2693,14 @@ const prepareScheduleDataForAi = () => {
           const currentCode = (kind === 'shift' ? shiftData[staffId]?.[dayNum] : taskData[staffId]?.[dayNum]) || null;
           if (currentCode === normalizedAfter) return;
 
-          // HHD班・エコー班・オペ班管理者が入力したシフト・タスク、およびME室(L/G)の新規自動配置はAIチャットからも変更不可とする
+          // 個人(スタッフ本人)が入力したシフト・希望（管理者が空欄公休や別シフトに対応済みのものも含む）、
+          // HHD班・エコー班・オペ班管理者が入力したシフト・タスク、およびME室(L/G)の新規自動配置はAIからも一切変更不可とする
           if (kind === 'shift') {
+            if (getUserRequestedShift(staffId, dayNum)) return;
             if (getTeamLockedShiftSource(staffId, dayNum)) return;
             if (normalizedAfter && isMeRoomShiftCode(normalizedAfter)) return;
           } else {
+            if (getUserRequestedTask(staffId, dayNum)) return;
             if (getTeamLockedTaskSource(staffId, dayNum)) return;
           }
 
@@ -2724,6 +2793,7 @@ const prepareScheduleDataForAi = () => {
 
     targetMsg.proposedChanges.forEach(item => {
       if (item.kind === 'shift') {
+        if (getUserRequestedShift(item.staffId, item.day)) return;
         if (getTeamLockedShiftSource(item.staffId, item.day)) return;
         ns[item.staffId] = { ...(ns[item.staffId] || {}) };
         if (item.afterCode) {
@@ -2732,6 +2802,7 @@ const prepareScheduleDataForAi = () => {
           delete ns[item.staffId][item.day];
         }
       } else {
+        if (getUserRequestedTask(item.staffId, item.day)) return;
         if (getTeamLockedTaskSource(item.staffId, item.day)) return;
         nt[item.staffId] = { ...(nt[item.staffId] || {}) };
         if (item.afterCode) {
@@ -2787,13 +2858,17 @@ const prepareScheduleDataForAi = () => {
     );
   };
 
-  // チャットでの指示を自動作成の条件リストにもワンクリック保存
+  // チャットでの指示を自動作成の条件リストにもワンクリック保存（初期値: 絶対 = strict）
   const handleSaveMessageAsRule = (msgId, text) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     const alreadyExists = autoFillConditions.some(c => c.text === trimmed);
     if (!alreadyExists) {
-      setAutoFillConditions(prev => [...prev, { id: Date.now(), text: trimmed, active: true }]);
+      const nextList = [
+        ...autoFillConditions,
+        { id: Date.now(), text: trimmed, active: true, priority: 'strict' },
+      ];
+      persistAutoFillConditions(nextList);
     }
     setAiMessages(prev =>
       prev.map(m => (m.id === msgId ? { ...m, savedAsRule: true } : m))
@@ -2824,9 +2899,13 @@ const prepareScheduleDataForAi = () => {
       });
       const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
 
-      const activeConditions = autoFillConditions
-        .filter(c => c.active)
-        .map((c, index) => `${index + 1}. ${c.text}`)
+      const strictConditions = autoFillConditions
+        .filter(c => c.active && c.priority !== 'soft')
+        .map((c, index) => `${index + 1}. [絶対] ${c.text}`)
+        .join("\n");
+      const softConditions = autoFillConditions
+        .filter(c => c.active && c.priority === 'soft')
+        .map((c, index) => `${index + 1}. [なるべく] ${c.text}`)
         .join("\n");
 
       const systemInstruction = `あなたは透析クリニック・臨床工学技士部門の経験豊富で頼れる副技士長（シフト作成アシスタント）です。
@@ -2837,7 +2916,7 @@ const prepareScheduleDataForAi = () => {
 2. "reply" には管理者に語りかける自然な日本語メッセージを書いてください。内部のシフトコード（A, P, HOPEなど）や職員IDは使わず、必ず表示名（坂3、坂2、希望 など）と職員名（職員Aさん など）で分かりやすく伝えてください。
 3. 質問への回答、現状の診断、または複数候補の比較相談の段階では、"shift" と "task" は空オブジェクト {} のままにし、まず会話で相談に乗ってください。
 4. 管理者が「変更案を作って」「仮組みして」「その案で進めて」「〇〇さんを△△に変えて」などシフト変更を求めた場合や、具体的な変更プレビューを提示した方が話が早い場合は、"reply" で理由や配慮点を説明した上で、"shift"（および必要なら "task"）に変更する箇所の差分だけを入れてください（管理者が画面上の「勤務表に反映する」ボタンを押すまで実際の表は書き換わらない安心設計になっています）。
-5. "staffRequests" にある箇所はスタッフ本人の希望ですので、管理者から明示的な変更指示がない限り動かさず尊重してください。また、"teamAdminLocks" にある箇所（HHD班・エコー班・オペ班管理者が入力したシフト・タスク）はAIからは絶対に変更できませんのでそのまま維持してください。
+5. "staffRequests" にある箇所（個人＝スタッフ本人が入力したシフト・希望、およびそれに対して管理者が空欄休みや別シフトに対応済みの箇所）と、"teamAdminLocks" にある箇所（HHD班・エコー班・オペ班管理者が入力したシフト・タスク）は管理者が直接対応する確定領域のため、AIからは絶対に変更・上書きできません。そのまま維持し、条件計算（人数・スコア・必須スキル・連勤・公休数）にのみ反映してください。
 6. 無理な条件やトレードオフがある場合は黙って無視せず、「〇〇日にリーダーやスコアが少し足りませんが、希望休と連勤上限を優先してベテランの〜さんを配置する案はいかがでしょうか？」と現場目線で代替案を添えてください。`;
 
       const currentContextPrompt = `
@@ -2846,9 +2925,9 @@ const prepareScheduleDataForAi = () => {
 【基本ルール】
 - 日曜日は透析休診（空欄のまま）。祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜以外は通常通り透析を実施するため出勤日として扱います。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
-- 各班管理者（HHD班・エコー班・オペ班管理者）が入力したシフト・タスクおよびME室（L, G）の扱い（★絶対厳守★）:
-  ・"teamAdminLocks" に記載されているセルおよびME室（category: me / コード: L, G）は、各班の管理者が確定入力した枠です。AIから新規に L・G を入れたり、"teamAdminLocks" のシフト・タスクを変更・移動・削除することは絶対禁止です（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。
-  ・ただし、それら各班管理者が入力したシフトも、該当施設の人数・powerScore・必須スキル（リーダー等）・その職員の出勤日数・連勤数・3クール回数には必ず含めて考慮してください。
+- 個人（スタッフ本人）入力箇所・各班管理者（HHD班・エコー班・オペ班管理者）入力箇所・ME室（L, G）の扱い（★絶対厳守★）:
+  ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、およびME室（category: me / コード: L, G）は、AIから新規に L・G を入れたり、変更・移動・削除することは絶対禁止です（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。
+  ・ただし、それらのセルに入っているシフトや確定公休も、該当施設の人数・powerScore・必須スキル（リーダー等）・その職員の出勤日数・週休消化・連勤数・3クール回数には必ず含めて考慮してください。
 - 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
   ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
@@ -2864,8 +2943,11 @@ const prepareScheduleDataForAi = () => {
 - 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)は人数充足のみ。
 - 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
-【現在有効な優先適用条件】
-${activeConditions ? activeConditions : '特になし'}
+【有効なカスタム条件①：[絶対]（★最優先で必ず守る条件★）】
+${strictConditions ? strictConditions : '特になし'}
+
+【有効なカスタム条件②：[なるべく]（基本ルール・必要人数・必須スキルを崩さない範囲で配慮する努力目標）】
+${softConditions ? softConditions : '特になし'}
 
 【出力JSONスキーマ】
 {
@@ -4499,7 +4581,7 @@ ${messageText}`;
 {/* AI自動作成確認モーダル */}
         {showAutoFillModal && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAutoFillModal(false)}>
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-yellow-50 to-orange-50">
                 <h3 className="font-bold text-gray-800 flex items-center gap-2 text-orange-700"><Sparkles size={18}/> AI自動作成 (条件設定)</h3>
                 
@@ -4522,41 +4604,92 @@ ${messageText}`;
               </div>
               <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
-                <div className="mb-4 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
+                <div className="mb-3 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
                   <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
                   <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
                   <div>・<strong>必須スキル配置：</strong>各施設の必須スキル（<strong>リーダー等</strong>）を確保し、不足日は分散配置＋ベテラン補完します</div>
-                  <div>・<strong>保護ルール：</strong>本人希望・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは条件に反映しつつ変更不可（ME室はAI対象外）</div>
+                  <div>・<strong>保護ルール：</strong><strong>個人入力分</strong>・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは条件に反映しつつ変更不可（ME室はAI対象外）</div>
                 </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-1 mb-2 text-[11px] text-gray-500">
+                  <span className="font-bold text-gray-700">カスタム条件リスト（AIチャットと共通）</span>
+                  <span>
+                    バッジタップで切替：
+                    <span className="inline-block px-1.5 py-0.5 mx-0.5 rounded bg-red-100 text-red-700 border border-red-300 font-bold text-[10px]">絶対</span>
+                    ＝最優先厳守 ／
+                    <span className="inline-block px-1.5 py-0.5 mx-0.5 rounded bg-sky-100 text-sky-700 border border-sky-300 font-bold text-[10px]">なるべく</span>
+                    ＝努力目標
+                  </span>
+                </div>
+
                 <div className="space-y-2 mb-4">
-                  {autoFillConditions.map((condition) => (
-                    <div key={condition.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border hover:bg-gray-100">
-                      <label className="flex items-center gap-2 cursor-pointer flex-1 mr-2">
-                        <input 
-                          type="checkbox" 
-                          checked={condition.active} 
-                          onChange={() => toggleAutoFillCondition(condition.id)} 
-                          className="w-4 h-4 text-orange-500 rounded border-gray-300 focus:ring-orange-500"
-                        />
-                        <span className={`text-xs ${condition.active ? 'text-gray-800 font-bold' : 'text-gray-400'}`}>{condition.text}</span>
-                      </label>
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => editAutoFillCondition(condition.id, condition.text)} className="text-gray-400 hover:text-blue-500 p-1" title="再編集する">
-                          <Edit2 size={14}/>
-                        </button>
-                        <button onClick={() => deleteAutoFillCondition(condition.id)} className="text-gray-400 hover:text-red-500 p-1" title="削除する">
-                          <Trash2 size={14}/>
-                        </button>
-                      </div>
+                  {autoFillConditions.length === 0 && (
+                    <div className="text-xs text-gray-400 text-center py-3 border border-dashed rounded-lg bg-gray-50/50">
+                      カスタム条件はまだ登録されていません
                     </div>
-                  ))}
+                  )}
+                  {autoFillConditions.map((condition) => {
+                    const isSoft = condition.priority === 'soft';
+                    return (
+                      <div key={condition.id} className="flex items-center justify-between p-2 bg-gray-50 rounded border hover:bg-gray-100 gap-1.5">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <input 
+                            type="checkbox" 
+                            checked={condition.active} 
+                            onChange={() => toggleAutoFillCondition(condition.id)} 
+                            className="w-4 h-4 text-orange-500 rounded border-gray-300 focus:ring-orange-500 cursor-pointer shrink-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleAutoFillConditionPriority(condition.id)}
+                            title="クリックで「絶対」と「なるべく」を切り替え"
+                            className={`px-1.5 py-0.5 rounded border text-[10px] font-bold shrink-0 transition cursor-pointer ${
+                              !condition.active ? 'opacity-45 ' : ''
+                            }${
+                              isSoft
+                                ? 'bg-sky-100 text-sky-700 border-sky-300 hover:bg-sky-200'
+                                : 'bg-red-100 text-red-700 border-red-300 hover:bg-red-200'
+                            }`}
+                          >
+                            {isSoft ? 'なるべく' : '絶対'}
+                          </button>
+                          <span
+                            onClick={() => toggleAutoFillCondition(condition.id)}
+                            className={`text-xs cursor-pointer break-words ${condition.active ? 'text-gray-800 font-bold' : 'text-gray-400 line-through'}`}
+                          >
+                            {condition.text}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          <button onClick={() => editAutoFillCondition(condition.id, condition.text, condition.priority)} className="text-gray-400 hover:text-blue-500 p-1" title="再編集する">
+                            <Edit2 size={14}/>
+                          </button>
+                          <button onClick={() => deleteAutoFillCondition(condition.id)} className="text-gray-400 hover:text-red-500 p-1" title="削除する">
+                            <Trash2 size={14}/>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 
-                <div className="flex gap-2 mb-6">
+                <div className="flex gap-1.5 mb-6 items-center">
+                  <button
+                    type="button"
+                    onClick={() => setNewConditionPriority(prev => (prev === 'soft' ? 'strict' : 'soft'))}
+                    title="追加する条件の優先度（クリックで切替・初期値は「絶対」）"
+                    className={`px-2 py-1.5 rounded border text-xs font-bold shrink-0 transition ${
+                      newConditionPriority === 'soft'
+                        ? 'bg-sky-100 text-sky-700 border-sky-300 hover:bg-sky-200'
+                        : 'bg-red-100 text-red-700 border-red-300 hover:bg-red-200'
+                    }`}
+                  >
+                    {newConditionPriority === 'soft' ? 'なるべく' : '絶対'}
+                  </button>
                   <input 
                     type="text" 
-                    className="flex-1 border rounded px-2 py-1 text-xs" 
-                    placeholder="新しい条件を追加 (例: 水曜日はAさん休み)" 
+                    className="flex-1 border rounded px-2 py-1.5 text-xs min-w-0" 
+                    placeholder="新しい条件を追加 (例: 水曜日はAさん坂田固定)" 
                     value={newConditionText} 
                     onChange={(e) => setNewConditionText(e.target.value)}
                     onKeyDown={(e) => {
@@ -4571,7 +4704,7 @@ ${messageText}`;
                       }
                     }}
                   />
-                  <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100">追加</button>
+                  <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100 shrink-0">追加</button>
                 </div>
 
                 <button onClick={executeAutoFill} className="w-full py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold rounded-lg shadow hover:shadow-lg transition flex items-center justify-center gap-2">
