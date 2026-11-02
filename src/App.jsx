@@ -1034,7 +1034,27 @@ export default function WorkScheduleApp() {
   const [expandedProposalIds, setExpandedProposalIds] = useState({});
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiProgress, setAiProgress] = useState(0); // 【追加】進行状況(%)を管理する状態変数
-  const [aiLoadingMessage, setAiLoadingMessage] = useState(''); // Step 6: 自動作成・自動手直し中のステータス表示
+  const [aiLoadingMessage, setAiLoadingMessage] = useState(''); // Step 6 & 7: 自動作成・自動手直し中のメインステータス表示
+  const [aiLoadingSubDetail, setAiLoadingSubDetail] = useState(''); // 進捗モニター: 現在の具体的な処理内容
+  const [autoFillSteps, setAutoFillSteps] = useState([]); // 進捗モニター: 工程チェックリスト
+  const [aiElapsedSec, setAiElapsedSec] = useState(0); // 進捗モニター: 経過秒数
+  const [aiRemainingText, setAiRemainingText] = useState(''); // 進捗モニター: 残り目安時間テキスト
+  const [isMonitorMinimized, setIsMonitorMinimized] = useState(false); // 進捗モニター: 上部タスクバー最小化フラグ
+  const [confirmingCancelAutoFill, setConfirmingCancelAutoFill] = useState(false); // 進捗モニター: 中断確認状態
+  const [lastLiveFilledWeekLabel, setLastLiveFilledWeekLabel] = useState(''); // 進捗モニター: 背景の勤務表に仮反映済みの週ラベル
+  const isAutoFillRunningRef = useRef(false);
+  const autoFillCancelRef = useRef(false);
+  const autoFillRunIdRef = useRef(0);
+  const autoFillBackupRef = useRef(null);
+  const autoFillTimingRef = useRef({
+    startTimeMs: 0,
+    phase: 'init',
+    totalBuildWeeks: 0,
+    completedBuildWeeks: 0,
+    completedBuildMs: 0,
+    currentStepStartMs: 0,
+    baseSecPerWeek: 11,
+  });
 
   const [aiModel, setAiModel] = useState('gemini-3.8-flash'); 
   const chatEndRef = useRef(null);
@@ -1170,6 +1190,8 @@ export default function WorkScheduleApp() {
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     const unsubSchedule = onSnapshot(scheduleDocRef, (docSnap) => {
+      // AI自動作成の週ごとライブ仮反映中は、保存完了または中断までスナップショットによる上書きを保留
+      if (isAutoFillRunningRef.current) return;
       if (docSnap.exists()) {
         const data = docSnap.data();
         setShiftData(data.shifts || {});
@@ -1690,6 +1712,8 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleCellClick = (e, staffId, day, type) => {
+    // AI自動作成のライブ仮反映中は誤編集防止のためセル操作をロック（スクロール閲覧のみ可能）
+    if (isAutoFillRunningRef.current) return;
     if (isSunday(year, month, day)) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (type === 'shift') {
@@ -3068,20 +3092,152 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     setShowAutoFillModal(true);
   };
 
+  // 進捗モニター用の時間フォーマッタ＆実測ハイブリッド残り時間予測
+  const formatElapsedMmSs = (sec) => {
+    const safeSec = Math.max(0, Math.floor(sec || 0));
+    const m = Math.floor(safeSec / 60);
+    const s = safeSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+
+  const computeRemainingStatusText = (timing) => {
+    if (!timing || !timing.startTimeMs) return '計算中...';
+    const now = Date.now();
+    const stepElapsedSec = Math.max(0, (now - (timing.currentStepStartMs || now)) / 1000);
+    const avgWeekSec =
+      timing.completedBuildWeeks > 0
+        ? timing.completedBuildMs / 1000 / timing.completedBuildWeeks
+        : timing.baseSecPerWeek;
+
+    let estRemSec = 0;
+    if (timing.phase === 'init') {
+      estRemSec = Math.max(1, timing.totalBuildWeeks) * avgWeekSec + 8;
+    } else if (timing.phase === 'building') {
+      const currentWeekRem = Math.max(4, avgWeekSec - stepElapsedSec);
+      const futureWeeksCount = Math.max(0, timing.totalBuildWeeks - timing.completedBuildWeeks - 1);
+      const postCheckBuffer = Math.max(5, Math.round(avgWeekSec * 0.5));
+      estRemSec = currentWeekRem + futureWeeksCount * avgWeekSec + postCheckBuffer;
+    } else if (timing.phase === 'validating') {
+      estRemSec = 4;
+    } else if (timing.phase === 'repairing') {
+      const estRepairTotal = Math.max(12, Math.round(avgWeekSec * 1.35));
+      estRemSec = Math.max(4, estRepairTotal - stepElapsedSec);
+    } else if (timing.phase === 'saving' || timing.phase === 'done') {
+      return 'まもなく完了...';
+    }
+
+    if (estRemSec <= 5) return 'まもなく完了...';
+    if (estRemSec <= 12) return 'あと約10秒';
+    const rounded5 = Math.ceil(estRemSec / 5) * 5;
+    if (rounded5 < 60) {
+      return `あと約${rounded5}秒`;
+    }
+    const mins = Math.floor(rounded5 / 60);
+    const secs = rounded5 % 60;
+    return secs === 0 ? `あと約${mins}分` : `あと約${mins}分${secs}秒`;
+  };
+
+  // 進捗モニターからの安全な途中中断（作成開始前の状態へ即時ロールバック）
+  const handleCancelAutoFill = () => {
+    autoFillCancelRef.current = true;
+    autoFillRunIdRef.current += 1;
+    isAutoFillRunningRef.current = false;
+
+    if (autoFillBackupRef.current) {
+      setShiftData(autoFillBackupRef.current.shifts);
+      setTaskData(autoFillBackupRef.current.tasks);
+      setUserInputs(autoFillBackupRef.current.userInputs);
+    }
+
+    setConfirmingCancelAutoFill(false);
+    setIsMonitorMinimized(false);
+    setIsAiLoading(false);
+    setAiLoadingMessage('');
+    setAiLoadingSubDetail('');
+    setLastLiveFilledWeekLabel('');
+  };
+
   const executeAutoFill = async () => {
-    setShowAutoFillModal(false);
-    setIsAiLoading(true);
-    setAiProgress(0);
-    setAiLoadingMessage('勤務表データを分析中...');
-    setAutoFillValidationSummary(null);
+    const currentRunId = ++autoFillRunIdRef.current;
+    autoFillCancelRef.current = false;
+    isAutoFillRunningRef.current = true;
 
     const originalShifts = shiftData;
     const originalTasks = taskData;
+    const originalUserInputs = userInputs;
+    autoFillBackupRef.current = {
+      shifts: originalShifts,
+      tasks: originalTasks,
+      userInputs: originalUserInputs,
+    };
+
+    const isProModel = String(aiModel || '').toLowerCase().includes('pro');
+    const baseSecPerWeek = isProModel ? 26 : 11;
+    const startedAtMs = Date.now();
+    autoFillTimingRef.current = {
+      startTimeMs: startedAtMs,
+      phase: 'init',
+      totalBuildWeeks: 4,
+      completedBuildWeeks: 0,
+      completedBuildMs: 0,
+      currentStepStartMs: startedAtMs,
+      baseSecPerWeek,
+    };
+
+    setShowAutoFillModal(false);
+    setConfirmingCancelAutoFill(false);
+    setIsMonitorMinimized(false);
+    setLastLiveFilledWeekLabel('');
+    setIsAiLoading(true);
+    setAiProgress(2);
+    setAiElapsedSec(0);
+    setAiRemainingText(isProModel ? 'あと約2分' : 'あと約1分');
+    setAiLoadingMessage('勤務表データを事前分析中...');
+    setAiLoadingSubDetail('前月末からの連勤引き継ぎ・希望休・各班固定枠・目標人数を集計しています');
+    setAutoFillValidationSummary(null);
+    setAutoFillSteps([
+      {
+        id: 'prep',
+        label: '事前分析（前月末引き継ぎ・希望休・各班固定の集計）',
+        status: 'active',
+        detail: '集計中...',
+      },
+    ]);
+
+    const isRunActive = () => !autoFillCancelRef.current && autoFillRunIdRef.current === currentRunId;
+
+    const updateStepItem = (stepId, patch) => {
+      setAutoFillSteps(prev => prev.map(st => (st.id === stepId ? { ...st, ...patch } : st)));
+    };
+
     let progressCeiling = 12;
 
     const progressInterval = setInterval(() => {
+      if (!isRunActive()) return;
       setAiProgress(prev => (prev >= progressCeiling ? prev : prev + 1));
     }, 700);
+
+    const timerInterval = setInterval(() => {
+      if (!isRunActive()) return;
+      const now = Date.now();
+      setAiElapsedSec(Math.floor((now - startedAtMs) / 1000));
+      setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+    }, 1000);
+
+    const stopAllIntervalsAndRollback = () => {
+      clearInterval(progressInterval);
+      clearInterval(timerInterval);
+      if (autoFillRunIdRef.current === currentRunId) {
+        isAutoFillRunningRef.current = false;
+        setShiftData(originalShifts);
+        setTaskData(originalTasks);
+        setUserInputs(originalUserInputs);
+        setIsAiLoading(false);
+        setAiLoadingMessage('');
+        setAiLoadingSubDetail('');
+        setConfirmingCancelAutoFill(false);
+      }
+    };
 
     try {
       const initialData = prepareScheduleDataForAi(originalShifts, originalTasks);
@@ -3150,18 +3306,77 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         });
       });
 
+      const buildWeekIdxSet = new Set(weeksToBuild.map(w => w.weekIndex));
+      autoFillTimingRef.current = {
+        ...autoFillTimingRef.current,
+        phase: weeksToBuild.length > 0 ? 'building' : 'validating',
+        totalBuildWeeks: weeksToBuild.length,
+        completedBuildWeeks: 0,
+        completedBuildMs: 0,
+        currentStepStartMs: Date.now(),
+      };
+      setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+
+      setAutoFillSteps([
+        {
+          id: 'prep',
+          label: '事前分析（前月末引き継ぎ・希望休・各班固定の集計）',
+          status: 'done',
+          detail: '完了',
+        },
+        ...calendarWeeks.map(w => ({
+          id: `week_${w.weekIndex}`,
+          label: `第${w.weekIndex}週（${w.label}）のシフト作成`,
+          status: buildWeekIdxSet.has(w.weekIndex) ? 'pending' : 'skipped',
+          detail: buildWeekIdxSet.has(w.weekIndex) ? '待機中' : '入力済み（スキップ）',
+        })),
+        {
+          id: 'validate',
+          label: '1ヶ月通し検算（連勤・週休・リーダー・人数チェック）',
+          status: 'pending',
+          detail: '待機中',
+        },
+        {
+          id: 'finish',
+          label: '最終調整（必要時のみ自動手直し）＆ 保存',
+          status: 'pending',
+          detail: '待機中',
+        },
+      ]);
+
       const totalDaysInMonth = getDaysInMonth(year, month);
       let totalUpdatedCells = 0;
       const weekErrors = [];
 
       for (let wIdx = 0; wIdx < weeksToBuild.length; wIdx++) {
+        if (!isRunActive()) {
+          clearInterval(progressInterval);
+          clearInterval(timerInterval);
+          return;
+        }
+
         const targetWeek = weeksToBuild[wIdx];
-        const weekStartPct = Math.round((wIdx / weeksToBuild.length) * 80);
+        const weekStepId = `week_${targetWeek.weekIndex}`;
+        const weekStartedMs = Date.now();
+        autoFillTimingRef.current = {
+          ...autoFillTimingRef.current,
+          phase: 'building',
+          currentStepStartMs: weekStartedMs,
+        };
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+
+        const weekStartPct = Math.max(5, Math.round((wIdx / weeksToBuild.length) * 80));
         progressCeiling = Math.max(weekStartPct + 3, Math.round(((wIdx + 1) / weeksToBuild.length) * 80) - 2);
         setAiProgress(prev => Math.max(prev, weekStartPct));
         setAiLoadingMessage(
-          `AIが第${targetWeek.weekIndex}週（${targetWeek.label}）を作成中... (${wIdx + 1}/${weeksToBuild.length}週)`
+          `第${targetWeek.weekIndex}週（${targetWeek.label}）のシフトを作成中... (${wIdx + 1}/${weeksToBuild.length}週)`
         );
+        setAiLoadingSubDetail(
+          targetWeek.weekIndex === 1
+            ? `前月末の連勤・公休引き継ぎを反映し、${skillReqSummaryText}・週休空欄・目標スコアを計算中`
+            : `第${targetWeek.weekIndex - 1}週までの出勤・3クール実績を引き継ぎ、施設リーダー配置・最大${maxStreak}連勤・週休空欄を計算中`
+        );
+        updateStepItem(weekStepId, { status: 'active', detail: 'AI計算中...' });
 
         // 直前の週までに配置された出勤・空欄公休・3クール回数をリアルタイム反映した状態で当週データを生成
         const weekAiData = prepareScheduleDataForAi(workingShifts, workingTasks);
@@ -3438,6 +3653,12 @@ ${dailyCheckExampleLines}
       `;
 
         let weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+        if (!isRunActive()) {
+          clearInterval(progressInterval);
+          clearInterval(timerInterval);
+          return;
+        }
+
         let weekPass = computeAiAppliedSchedule(
           weekRaw,
           workingShifts,
@@ -3450,9 +3671,7 @@ ${dailyCheckExampleLines}
 
         // APIキー未設定等の即時エラーでまだ1件も作成していない場合はその場で中断して案内
         if (!weekPass.parsedOk && typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') && totalUpdatedCells === 0) {
-          clearInterval(progressInterval);
-          setIsAiLoading(false);
-          setAiLoadingMessage('');
+          stopAllIntervalsAndRollback();
           alert(`AI結果の適用に失敗しました。\n理由: ${weekPass.message || weekRaw}`);
           return;
         }
@@ -3460,7 +3679,14 @@ ${dailyCheckExampleLines}
         // 一時的なJSON崩れやタイムアウト時は該当週のみ1回リトライ
         if (!weekPass.parsedOk && !(typeof weekRaw === 'string' && weekRaw.startsWith('⚠️ APIキー'))) {
           console.warn(`第${targetWeek.weekIndex}週の初回応答解析に失敗したため1回リトライします:`, weekPass.message);
+          updateStepItem(weekStepId, { status: 'active', detail: '応答を再取得中 (1/1)...' });
+          setAiLoadingSubDetail(`第${targetWeek.weekIndex}週のデータを再調整しています（1/1回）`);
           weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) {
+            clearInterval(progressInterval);
+            clearInterval(timerInterval);
+            return;
+          }
           weekPass = computeAiAppliedSchedule(
             weekRaw,
             workingShifts,
@@ -3472,28 +3698,64 @@ ${dailyCheckExampleLines}
           );
         }
 
+        const weekDurationMs = Math.max(500, Date.now() - weekStartedMs);
+        const weekDurationSec = Math.max(1, Math.round(weekDurationMs / 1000));
+        autoFillTimingRef.current = {
+          ...autoFillTimingRef.current,
+          completedBuildWeeks: wIdx + 1,
+          completedBuildMs: autoFillTimingRef.current.completedBuildMs + weekDurationMs,
+          currentStepStartMs: Date.now(),
+        };
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+
         if (weekPass.parsedOk) {
           workingShifts = weekPass.nextShifts;
           workingTasks = weekPass.nextTasks;
           workingUserInputs = weekPass.nextUserInputs;
           totalUpdatedCells += weekPass.count;
+
+          // 案Cハイブリッド: 完了した週から背景の勤務表へリアルタイム仮反映（※保存は全工程完了時のみ）
+          setShiftData(workingShifts);
+          setTaskData(workingTasks);
+          setLastLiveFilledWeekLabel(`第${targetWeek.weekIndex}週（${targetWeek.label}）まで背景の勤務表に仮反映済み`);
+
+          updateStepItem(weekStepId, {
+            status: 'done',
+            detail: weekPass.count > 0 ? `+${weekPass.count}枠配置（${weekDurationSec}秒）` : `変更なし（${weekDurationSec}秒）`,
+          });
         } else {
           weekErrors.push(`第${targetWeek.weekIndex}週(${targetWeek.label}): ${weekPass.message || '応答エラー'}`);
+          updateStepItem(weekStepId, {
+            status: 'done',
+            detail: '後の全体検算で補完',
+          });
         }
       }
 
-      if (totalUpdatedCells === 0 && weekErrors.length > 0) {
+      if (!isRunActive()) {
         clearInterval(progressInterval);
-        setIsAiLoading(false);
-        setAiLoadingMessage('');
+        clearInterval(timerInterval);
+        return;
+      }
+
+      if (totalUpdatedCells === 0 && weekErrors.length > 0) {
+        stopAllIntervalsAndRollback();
         alert(`AI結果の適用に失敗しました。\n理由: ${weekErrors[0]}`);
         return;
       }
 
       // Step 6: 全週ビルド完了後に、1ヶ月通しのプログラム厳密検算を実行
-      progressCeiling = 85;
+      autoFillTimingRef.current = {
+        ...autoFillTimingRef.current,
+        phase: 'validating',
+        currentStepStartMs: Date.now(),
+      };
+      setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+      progressCeiling = 86;
       setAiProgress(prev => Math.max(prev, 82));
       setAiLoadingMessage('1ヶ月分の通し検算を実施中...');
+      setAiLoadingSubDetail('全スタッフの最大連勤・週休ペース・3クール連続禁止・各施設リーダー配置・必要人数を検証しています');
+      updateStepItem('validate', { status: 'active', detail: '検算中...' });
 
       const pass1Report = evaluateScheduleValidation({
         year,
@@ -3511,12 +3773,18 @@ ${dailyCheckExampleLines}
       });
 
       if (totalUpdatedCells === 0 && pass1Report.aiRepairableItems.length === 0) {
-        clearInterval(progressInterval);
-        setIsAiLoading(false);
-        setAiLoadingMessage('');
+        stopAllIntervalsAndRollback();
         alert('変更が必要な箇所が見つかりませんでした。');
         return;
       }
+
+      updateStepItem('validate', {
+        status: 'done',
+        detail:
+          pass1Report.aiRepairableItems.length === 0
+            ? 'クリア（手直し不要）'
+            : `要調整 ${pass1Report.aiRepairableItems.length}件を検出`,
+      });
 
       let finalShifts = workingShifts;
       let finalTasks = workingTasks;
@@ -3528,9 +3796,22 @@ ${dailyCheckExampleLines}
       // Step 6 案A: AI側で修正可能な違反・不足が検出された場合のみ、最大1回の1ヶ月横断ピンポイント自動手直しを実行（0件なら待ち時間ゼロで即完了）
       if (pass1Report.aiRepairableItems.length > 0) {
         didAutoRepair = true;
+        const repairStartedMs = Date.now();
+        autoFillTimingRef.current = {
+          ...autoFillTimingRef.current,
+          phase: 'repairing',
+          currentStepStartMs: repairStartedMs,
+        };
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
         progressCeiling = 96;
         setAiProgress(prev => Math.max(prev, 86));
-        setAiLoadingMessage(`検算で ${pass1Report.aiRepairableItems.length}件 の要調整箇所を検出。AIが自動手直し中... (1/1回)`);
+        setAiLoadingMessage(`要調整箇所（${pass1Report.aiRepairableItems.length}件）をAIが自動手直し中... (1/1回)`);
+        setAiLoadingSubDetail('他の週のバランスやロック済みセルを崩さず、連勤・リーダー偏り・人数不足をピンポイント修正しています');
+        updateStepItem('finish', {
+          status: 'active',
+          label: `AIピンポイント自動手直し（${pass1Report.aiRepairableItems.length}件）＆ 保存`,
+          detail: '手直し計算中...',
+        });
 
         try {
           const pass1AiData = prepareScheduleDataForAi(workingShifts, workingTasks);
@@ -3583,6 +3864,12 @@ ${dailyCheckExampleLines}
           `;
 
           const result2 = await callGemini(repairPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) {
+            clearInterval(progressInterval);
+            clearInterval(timerInterval);
+            return;
+          }
+
           const pass2 = computeAiAppliedSchedule(
             result2,
             workingShifts,
@@ -3624,26 +3911,54 @@ ${dailyCheckExampleLines}
         }
       }
 
-      if (totalUpdatedCells === 0) {
+      if (!isRunActive()) {
         clearInterval(progressInterval);
-        setIsAiLoading(false);
-        setAiLoadingMessage('');
+        clearInterval(timerInterval);
+        return;
+      }
+
+      if (totalUpdatedCells === 0) {
+        stopAllIntervalsAndRollback();
         alert('変更が必要な箇所が見つかりませんでした。');
         return;
       }
 
       // 最終確定したシフトを保存
+      autoFillTimingRef.current = {
+        ...autoFillTimingRef.current,
+        phase: 'saving',
+        currentStepStartMs: Date.now(),
+      };
+      setAiRemainingText('まもなく完了...');
+      setAiProgress(98);
+      setAiLoadingMessage('作成した勤務表を保存しています...');
+      setAiLoadingSubDetail('クラウドデータベースへ確定シフトを書き込んでいます');
+      updateStepItem('finish', { status: 'active', detail: '保存中...' });
+
+      isAutoFillRunningRef.current = false;
       setShiftData(finalShifts);
       setTaskData(finalTasks);
       setUserInputs(finalUserInputs);
       await saveSchedule(finalShifts, finalTasks, finalUserInputs);
 
       clearInterval(progressInterval);
+      clearInterval(timerInterval);
       setAiProgress(100);
+      setAiRemainingText('完了！');
+      setAiLoadingMessage('AIシフト自動作成が完了しました！');
+      setAiLoadingSubDetail('');
+      updateStepItem('finish', {
+        status: 'done',
+        detail: didAutoRepair ? `手直し＆保存完了` : '保存完了',
+      });
 
       setTimeout(() => {
+        if (autoFillRunIdRef.current !== currentRunId) return;
         setIsAiLoading(false);
         setAiLoadingMessage('');
+        setAiLoadingSubDetail('');
+        setIsMonitorMinimized(false);
+        setConfirmingCancelAutoFill(false);
 
         // 手直し後も解消しきれなかった違反・人数不足・必須スキル不足が残っている場合は検算レポートモーダルを開いて案内
         if (finalReport.totalActionableCount > 0) {
@@ -3655,13 +3970,16 @@ ${dailyCheckExampleLines}
           });
           setShowValidationModal(true);
         }
-      }, 400);
+      }, 500);
     } catch (error) {
-      clearInterval(progressInterval);
-      setIsAiLoading(false);
-      setAiLoadingMessage('');
+      if (!isRunActive()) {
+        clearInterval(progressInterval);
+        clearInterval(timerInterval);
+        return;
+      }
+      stopAllIntervalsAndRollback();
       console.error("AI自動入力エラー:", error);
-      alert("通信エラーまたはタイムアウトが発生しました。");
+      alert("通信エラーまたはタイムアウトが発生しました。作成前の状態に戻しました。");
     }
   };
 
@@ -6800,22 +7118,268 @@ ${messageText}`;
         )}
 
         {isAiLoading && !showAiModal && (
-          <div className="fixed inset-0 bg-black/60 z-[150] flex flex-col items-center justify-center text-white p-4">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mb-4"></div>
-            <p className="text-lg font-bold text-center">{aiLoadingMessage || 'AIがシフトを作成中...'}</p>
-            <p className="text-sm mt-2 text-gray-200 text-center">
-              第1週から週ごとに順番に組み立てて全体検算しています。<br/>完了まで1分ほどかかる場合があります。
-            </p>
-            
-            {/* プログレスバーのUI */}
-            <div className="w-64 bg-gray-700 rounded-full h-2.5 mt-6 overflow-hidden border border-gray-600">
-              <div 
-                className="bg-blue-500 h-2.5 rounded-full transition-all duration-300 ease-out" 
-                style={{ width: `${aiProgress}%` }}
-              ></div>
+          isMonitorMinimized ? (
+            /* 案Cモード：上部フローティング・タスクバー（背景の勤務表をスクロールしながら1週ごとの仮反映を広く確認可能） */
+            <div className="fixed top-0 left-0 right-0 z-[150] bg-slate-900/95 text-white shadow-2xl border-b border-indigo-400/40 backdrop-blur-md px-3 py-2.5 sm:px-5">
+              <div className="max-w-6xl mx-auto flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="p-1.5 rounded-lg bg-indigo-500/25 border border-indigo-400/40 shrink-0">
+                      <Loader2 size={16} className="animate-spin text-indigo-300" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white truncate">
+                        {aiLoadingMessage || 'AIがシフトを作成中...'}
+                      </div>
+                      <div className="text-[11px] text-indigo-200 truncate">
+                        {lastLiveFilledWeekLabel
+                          ? `📡 ${lastLiveFilledWeekLabel}（表をスクロールして確認できます）`
+                          : aiLoadingSubDetail || '完了した週から背景の勤務表にリアルタイム仮反映します'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 ml-auto">
+                    <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-lg px-2.5 py-1 text-xs">
+                      <span className="font-extrabold text-sky-300">{aiProgress}%</span>
+                      <span className="text-slate-500">|</span>
+                      <span className="flex items-center gap-1 text-amber-300 font-bold">
+                        <Clock size={12} />
+                        {aiRemainingText || '計算中...'}
+                      </span>
+                      <span className="text-slate-400 text-[11px]">（経過 {formatElapsedMmSs(aiElapsedSec)}）</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsMonitorMinimized(false)}
+                      className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1 shadow transition"
+                    >
+                      <ArrowDown size={13} />
+                      進捗リストを開く
+                    </button>
+
+                    {!confirmingCancelAutoFill ? (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingCancelAutoFill(true)}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-700 hover:bg-rose-600 text-slate-200 hover:text-white text-xs font-bold flex items-center gap-1 transition"
+                      >
+                        <X size={13} />
+                        中断
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1 bg-rose-950/90 border border-rose-500/60 rounded-lg px-2 py-1">
+                        <span className="text-[11px] text-rose-200 font-bold mr-1">元に戻して中断？</span>
+                        <button
+                          type="button"
+                          onClick={handleCancelAutoFill}
+                          className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold"
+                        >
+                          はい
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingCancelAutoFill(false)}
+                          className="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] font-bold"
+                        >
+                          続行
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 via-indigo-400 to-emerald-400 h-1.5 rounded-full transition-all duration-300 ease-out"
+                    style={{ width: `${aiProgress}%` }}
+                  />
+                </div>
+              </div>
             </div>
-            <p className="mt-2 text-sm font-semibold">{aiProgress}%</p>
-          </div>
+          ) : (
+            /* 案A＋案Cハイブリッド：工程チェックリスト付き「進捗モニターカード」（背景の勤務表も半透明越しにリアルタイム確認可能） */
+            <div className="fixed inset-0 bg-slate-900/30 backdrop-blur-[1px] z-[150] flex items-center justify-center p-3 sm:p-4">
+              <div
+                className="bg-white rounded-2xl shadow-2xl border border-indigo-100 w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]"
+                onClick={e => e.stopPropagation()}
+              >
+                {/* ヘッダー */}
+                <div className="px-4 py-3 bg-gradient-to-r from-indigo-600 via-blue-600 to-indigo-700 text-white flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Sparkles size={18} className="text-yellow-300 shrink-0" />
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-sm sm:text-base truncate">
+                        AIシフト自動作成モニター（{year}年{month}月）
+                      </h3>
+                      <div className="text-[10px] text-indigo-100 truncate">
+                        使用モデル: {AI_MODELS.find(m => m.value === aiModel)?.label || aiModel}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsMonitorMinimized(true)}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 border border-white/25 transition"
+                    title="上部のタスクバーに最小化して、背景の勤務表が埋まっていく様子を広く確認します"
+                  >
+                    <ArrowUp size={13} />
+                    背景の表を見る
+                  </button>
+                </div>
+
+                {/* プログレスバー ＆ 残り時間・経過時間セクション */}
+                <div className="px-4 pt-3.5 pb-3 bg-slate-50 border-b border-slate-200">
+                  <div className="flex items-end justify-between gap-2 mb-1.5">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-2xl sm:text-3xl font-extrabold text-indigo-700 leading-none">
+                        {aiProgress}%
+                      </span>
+                      <span className="text-[11px] font-bold text-slate-500">進行中</span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-bold">
+                        <Clock size={13} className="text-amber-600" />
+                        残り目安: {aiRemainingText || '計算中...'}
+                      </span>
+                      <span className="inline-flex items-center px-2 py-1 rounded-full bg-slate-200/80 text-slate-700 text-[11px] font-semibold">
+                        経過 {formatElapsedMmSs(aiElapsedSec)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden shadow-inner">
+                    <div
+                      className="bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-500 h-3 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${aiProgress}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* 現在実行中の具体的な処理内容 */}
+                <div className="px-4 py-3 bg-indigo-50/60 border-b border-indigo-100">
+                  <div className="flex items-start gap-2.5">
+                    <div className="mt-0.5 p-1.5 rounded-lg bg-indigo-600 text-white shrink-0">
+                      <Activity size={15} className="animate-pulse" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs sm:text-sm font-bold text-indigo-950 leading-snug">
+                        {aiLoadingMessage || 'AIがシフトを作成中...'}
+                      </div>
+                      {aiLoadingSubDetail && (
+                        <div className="text-[11px] text-indigo-800/80 mt-0.5 leading-relaxed">
+                          {aiLoadingSubDetail}
+                        </div>
+                      )}
+                      <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700">
+                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                        <span>
+                          {lastLiveFilledWeekLabel || '完了した週から背景の勤務表へリアルタイムに仮反映します'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 全工程チェックリスト（案A） */}
+                <div className="px-4 py-3 flex-1 overflow-y-auto space-y-1.5 bg-white">
+                  <div className="text-[11px] font-bold text-slate-500 mb-1 flex items-center justify-between">
+                    <span>作成・検算ステップ一覧</span>
+                    <span className="text-[10px] font-normal text-slate-400">第1週完了後の実測速度で残り時間を自動補正</span>
+                  </div>
+                  {autoFillSteps.map(step => {
+                    const isDone = step.status === 'done';
+                    const isActive = step.status === 'active';
+                    const isSkipped = step.status === 'skipped';
+                    return (
+                      <div
+                        key={step.id}
+                        className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-xs transition ${
+                          isActive
+                            ? 'bg-blue-50/90 border-blue-300 text-blue-950 font-bold shadow-sm'
+                            : isDone
+                              ? 'bg-emerald-50/50 border-emerald-200/80 text-slate-700'
+                              : isSkipped
+                                ? 'bg-slate-50 border-slate-200 text-slate-400'
+                                : 'bg-white border-slate-100 text-slate-400'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isActive ? (
+                            <Loader2 size={15} className="animate-spin text-blue-600 shrink-0" />
+                          ) : isDone ? (
+                            <span className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                              <Check size={11} />
+                            </span>
+                          ) : isSkipped ? (
+                            <span className="w-4 h-4 rounded-full bg-slate-300 text-white flex items-center justify-center shrink-0">
+                              <Check size={10} />
+                            </span>
+                          ) : (
+                            <span className="w-4 h-4 rounded-full border-2 border-slate-300 shrink-0" />
+                          )}
+                          <span className="truncate">{step.label}</span>
+                        </div>
+                        <span
+                          className={`text-[11px] shrink-0 px-2 py-0.5 rounded-full ${
+                            isActive
+                              ? 'bg-blue-600 text-white font-bold'
+                              : isDone
+                                ? 'bg-emerald-100 text-emerald-800 font-semibold'
+                                : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {step.detail}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* フッター（安全中断・ロールバックボタン） */}
+                <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                  {!confirmingCancelAutoFill ? (
+                    <>
+                      <span className="text-[11px] text-slate-500">
+                        ※中断すると作成開始前の勤務表にそのまま戻ります
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingCancelAutoFill(true)}
+                        className="px-3 py-1.5 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-rose-600 text-xs font-bold flex items-center gap-1 transition ml-auto"
+                      >
+                        <RotateCcw size={13} />
+                        作成を中断して元に戻す
+                      </button>
+                    </>
+                  ) : (
+                    <div className="w-full flex flex-wrap items-center justify-between gap-2 bg-rose-50 border border-rose-200 rounded-lg px-3 py-1.5">
+                      <span className="text-xs font-bold text-rose-800">
+                        自動作成を中断し、開始前の勤務表に戻しますか？
+                      </span>
+                      <div className="flex items-center gap-1.5 ml-auto">
+                        <button
+                          type="button"
+                          onClick={handleCancelAutoFill}
+                          className="px-3 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition"
+                        >
+                          はい、中断して戻す
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingCancelAutoFill(false)}
+                          className="px-3 py-1 rounded bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-bold transition"
+                        >
+                          作成を続ける
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
         )}
         {/* ↑↑↑ ここまで追加 ↑↑↑ */}
 
