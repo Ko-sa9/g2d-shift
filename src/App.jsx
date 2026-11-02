@@ -17,37 +17,37 @@ const ADMIN_VIEW_PASSWORDS = {
 };
 
 const DEFAULT_CATEGORY_DEFS = {
-  'saka':    { id: 'saka',    label: '坂田',    color: 'bg-blue-50 text-blue-800', order: 1 },
-  'kimi':    { id: 'kimi',    label: '君津',    color: 'bg-green-50 text-green-800', order: 2 },
-  'kikuri':  { id: 'kikuri',  label: '木クリ',  color: 'bg-yellow-50 text-yellow-800', order: 3 }, 
-  'jinkuri': { id: 'jinkuri', label: 'じんクリ', color: 'bg-purple-50 text-purple-800', order: 4 },
-  'me':      { id: 'me',      label: 'ME室',    color: 'bg-red-50 text-red-800', order: 5 },
-  'basic':   { id: 'basic',   label: 'その他',   color: 'bg-gray-50 text-gray-800', order: 6 },
-  'off':     { id: 'off',     label: '休み',    color: 'bg-gray-100 text-gray-500', order: 7 },
-  'role':    { id: 'role',    label: '役割',    color: 'bg-gray-50 text-gray-800', order: 8 },
-  'req':     { id: 'req',     label: '希望',    color: 'bg-pink-50 text-pink-600', order: 9 },
+  'saka':    { id: 'saka',    label: '坂田',    color: 'bg-blue-50 text-blue-800',   order: 1, kind: 'facility' },
+  'kimi':    { id: 'kimi',    label: '君津',    color: 'bg-green-50 text-green-800',  order: 2, kind: 'facility' },
+  'kikuri':  { id: 'kikuri',  label: '木クリ',  color: 'bg-yellow-50 text-yellow-800', order: 3, kind: 'facility' },
+  'jinkuri': { id: 'jinkuri', label: 'じんクリ', color: 'bg-purple-50 text-purple-800', order: 4, kind: 'facility' },
+  'me':      { id: 'me',      label: 'ME室',    color: 'bg-red-50 text-red-800',     order: 5, kind: 'me' },
+  'basic':   { id: 'basic',   label: 'その他',   color: 'bg-gray-50 text-gray-800',    order: 6, kind: 'basic' },
+  'off':     { id: 'off',     label: '休み',    color: 'bg-gray-100 text-gray-500',   order: 7, kind: 'off' },
+  'role':    { id: 'role',    label: '役割',    color: 'bg-gray-50 text-gray-800',    order: 8, kind: 'role' },
+  'req':     { id: 'req',     label: '希望',    color: 'bg-pink-50 text-pink-600',    order: 9, kind: 'req' },
 };
 
 const DEFAULT_SHIFT_TYPES = {
-  'A': { order: 0, code: 'A', label: '坂3', color: 'bg-transparent', text: 'text-blue-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'saka', type: 'shift' },
-  'P': { order: 1, code: 'P', label: '坂2', color: 'bg-transparent', text: 'text-blue-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'saka', type: 'shift' },
-  'C': { order: 2, code: 'C', label: '坂日', color: 'bg-transparent', text: 'text-blue-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'saka', type: 'shift' },
-  'F': { order: 3, code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift' },
-  'B': { order: 4, code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift' },
-  'D': { order: 5, code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift' },
-  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' },
-  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift' },
-  'Z2': { order: 8, code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift' },
-  'Z1': { order: 9, code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift' },
-  'L':  { order: 10, code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
-  'G':  { order: 11, code: 'G',  label: 'G',    color: 'bg-transparent', text: 'text-orange-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift' },
-  '/':  { order: 12, code: '/',  label: '出勤', color: 'bg-transparent', text: 'text-gray-800',   startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
-  'O':  { order: 13, code: 'O',  label: '公出', color: 'bg-transparent', text: 'text-indigo-700', startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift' },
-  'S':  { order: 14, code: 'S',  label: '指定', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'H':  { order: 15, code: 'H',  label: '振休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'Y':  { order: 16, code: 'Y',  label: '年休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'R':  { order: 17, code: 'R',  label: 'リフレ',color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift' },
-  'HOPE': { order: 18, code: 'HOPE', label: '希望', color: 'bg-pink-100', text: 'text-pink-600', startTime: '', endTime: '', overtime: 0, time: 'Request', category: 'req', type: 'shift' },
+  'A': { order: 0, code: 'A', label: '坂3', color: 'bg-transparent', text: 'text-blue-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'saka', type: 'shift', shiftSlot: 'cool3' },
+  'P': { order: 1, code: 'P', label: '坂2', color: 'bg-transparent', text: 'text-blue-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'saka', type: 'shift', shiftSlot: 'cool2' },
+  'C': { order: 2, code: 'C', label: '坂日', color: 'bg-transparent', text: 'text-blue-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'saka', type: 'shift', shiftSlot: 'day' },
+  'F': { order: 3, code: 'F', label: '君3', color: 'bg-transparent', text: 'text-green-600', startTime: '07:50', endTime: '22:00', overtime: 0, time: '07:50-22:00', category: 'kimi', type: 'shift', shiftSlot: 'cool3' },
+  'B': { order: 4, code: 'B', label: '君2', color: 'bg-transparent', text: 'text-green-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kimi', type: 'shift', shiftSlot: 'cool2' },
+  'D': { order: 5, code: 'D', label: '君日', color: 'bg-transparent', text: 'text-green-800', startTime: '07:20', endTime: '16:00', overtime: 0, time: '07:20-16:00', category: 'kimi', type: 'shift', shiftSlot: 'day' },
+  'I': { order: 6, code: 'I', label: '木2', color: 'bg-transparent', text: 'text-yellow-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift', shiftSlot: 'cool2' },
+  'K': { order: 7, code: 'K', label: '木日', color: 'bg-transparent', text: 'text-yellow-700', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'kikuri', type: 'shift', shiftSlot: 'day' },
+  'Z2': { order: 8, code: 'Z2', label: 'じ',   color: 'bg-transparent', text: 'text-purple-600', startTime: '13:30', endTime: '', overtime: 0, time: '13:30-', category: 'jinkuri', type: 'shift', shiftSlot: 'other' },
+  'Z1': { order: 9, code: 'Z1', label: 'じ半', color: 'bg-transparent', text: 'text-purple-700', startTime: '', endTime: '', overtime: 0, time: 'Short', category: 'jinkuri', type: 'shift', shiftSlot: 'half' },
+  'L':  { order: 10, code: 'L',  label: 'L',    color: 'bg-transparent', text: 'text-red-600',    startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift', shiftSlot: 'day' },
+  'G':  { order: 11, code: 'G',  label: 'G',    color: 'bg-transparent', text: 'text-orange-600', startTime: '07:50', endTime: '18:00', overtime: 0, time: '07:50-18:00', category: 'me', type: 'shift', shiftSlot: 'day' },
+  '/':  { order: 12, code: '/',  label: '出勤', color: 'bg-transparent', text: 'text-gray-800',   startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift', shiftSlot: 'other' },
+  'O':  { order: 13, code: 'O',  label: '公出', color: 'bg-transparent', text: 'text-indigo-700', startTime: '', endTime: '', overtime: 0, time: '-', category: 'basic', type: 'shift', shiftSlot: 'other' },
+  'S':  { order: 14, code: 'S',  label: '指定', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift', offSubType: 'regular_off' },
+  'H':  { order: 15, code: 'H',  label: '振休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift', offSubType: 'regular_off' },
+  'Y':  { order: 16, code: 'Y',  label: '年休', color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift', offSubType: 'paid_leave' },
+  'R':  { order: 17, code: 'R',  label: 'リフレ',color: 'bg-transparent', text: 'text-red-400',   startTime: '', endTime: '', overtime: 0, time: 'Off', category: 'off', type: 'shift', offSubType: 'paid_leave' },
+  'HOPE': { order: 18, code: 'HOPE', label: '希望', color: 'bg-pink-100', text: 'text-pink-600', startTime: '', endTime: '', overtime: 0, time: 'Request', category: 'req', type: 'shift', offSubType: 'regular_off' },
   
   'task_A': { order: 19, code: 'task_A', label: 'A', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
   'task_P': { order: 20, code: 'task_P', label: 'P', color: 'bg-transparent', text: 'text-gray-800', category: 'role', type: 'task' },
@@ -108,23 +108,27 @@ const AI_MODELS = [
   { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (高精度推論)' },
 ];
 
-const AI_QUICK_PROMPTS = [
-  {
-    label: '🔍 不足日・スコア割れを診断',
-    text: '今月の勤務表で、必要人数が足りていない日や各施設（坂田・君津・木クリ）の目標スコアを下回っている日をチェックして、どう補うとよさそうか相談させてください。',
-  },
-  {
-    label: '⚖️ 出勤・3クール・残業の偏り確認',
-    text: 'スタッフごとの出勤日数・3クール回数・残業時間のバランスを見て、負担が偏っている人がいないか確認してください。',
-  },
-  {
-    label: '🧩 空欄を仮組みして提案して',
-    text: 'スタッフ本人の希望箇所と既存のシフトを尊重しつつ、現在空欄になっている箇所をルールに沿って埋める変更案を作成してください。',
-  },
-  {
-    label: '💡 今月の注意点・改善ポイント',
-    text: '現在のシフト表全体を見て、連勤やスキル配置（リーダー・エコー等）の観点から気をつけた方がよい日や改善アイデアがあれば教えてください。',
-  },
+const CATEGORY_KIND_OPTIONS = [
+  { value: 'facility', label: '透析・勤務施設（AI配置・人数・スキル・スコア対象）', shortLabel: '勤務施設' },
+  { value: 'me', label: 'ME室・オペ班枠（OPE班管理・AI自動配置対象外）', shortLabel: 'ME室' },
+  { value: 'basic', label: 'その他出勤（公出など・施設スコア対象外）', shortLabel: 'その他出勤' },
+  { value: 'off', label: '休み（指定休・振休・年休・リフレ等）', shortLabel: '休み' },
+  { value: 'req', label: '希望（休み希望など）', shortLabel: '希望' },
+  { value: 'role', label: '役割・タスク（セル下段タスク）', shortLabel: '役割タスク' },
+];
+
+const SHIFT_WORK_SLOTS = [
+  { value: 'cool3', label: '3クール', badgeClass: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
+  { value: 'cool2', label: '2クール', badgeClass: 'bg-sky-100 text-sky-700 border-sky-200' },
+  { value: 'cool1', label: '1クール', badgeClass: 'bg-cyan-100 text-cyan-700 border-cyan-200' },
+  { value: 'day',   label: '日勤',    badgeClass: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  { value: 'half',  label: '半日',    badgeClass: 'bg-purple-100 text-purple-700 border-purple-200' },
+  { value: 'other', label: 'その他',  badgeClass: 'bg-gray-100 text-gray-600 border-gray-200' },
+];
+
+const SHIFT_OFF_SUBTYPES = [
+  { value: 'regular_off', label: '週休枠の公休（指定休・振休など）', shortLabel: '公休枠', badgeClass: 'bg-pink-50 text-pink-700 border-pink-200' },
+  { value: 'paid_leave',  label: '別枠の有休（年休・リフレなど）',   shortLabel: '有休枠', badgeClass: 'bg-rose-100 text-rose-700 border-rose-200' },
 ];
 
 const INITIAL_STAFF = [
@@ -149,6 +153,13 @@ const DEFAULT_FACILITY_SKILL_TARGETS = {
   jinkuri: { isLeader: 0, canEcho: 0, canMachine: 0, canFollow: 0, isVeteran: 0 },
 };
 
+const DEFAULT_FACILITY_POWER_TARGETS = {
+  saka: 30,
+  kimi: 30,
+  kikuri: 40,
+  jinkuri: 0,
+};
+
 const DEFAULT_ADMIN_SETTINGS = {
   'all':   { password: 'admin',       label: '全体管理者' },
   'ope':   { password: 'admin-ope',   label: 'オペ班管理者' }, 
@@ -162,6 +173,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   'maxConsecutiveWorkDays': 5,  // AI作成時の最大連勤数（週休2日標準: 5連勤まで）
   'monthlyRegularOffDays': 'auto', // 月間の基本公休数（日曜除く指定休・振休枠: 'auto' または数値）
   'facilitySkillTargets': DEFAULT_FACILITY_SKILL_TARGETS, // Step 4: 施設ごとの必須スキル最低人数
+  'facilityPowerTargets': DEFAULT_FACILITY_POWER_TARGETS, // 施設ごとの目標パワースコア目安
+  'facilitySplitDays': {},      // 施設ごとの必要人数曜日区分モード ('uniform' | 'mwf_tts' | 'daily')
 };
 
 const TIME_OPTIONS = [];
@@ -306,6 +319,309 @@ const getDayColor = (year, month, day, clinicClosedDays = []) => {
   return 'text-gray-700';
 };
 
+// ------------------------------------------------------------------
+// カスタムシフト設定・カテゴリ設定の動的解決ヘルパー群（初期設定との差異に完全対応）
+// ------------------------------------------------------------------
+
+const resolveCategoryKind = (cat) => {
+  if (!cat) return 'basic';
+  if (CATEGORY_KIND_OPTIONS.some(o => o.value === cat.kind)) {
+    return cat.kind;
+  }
+  const id = String(cat.id || '').trim();
+  const lbl = String(cat.label || '').trim();
+  if (id === 'role' || lbl.includes('役割') || lbl.includes('タスク')) return 'role';
+  if (id === 'req' || lbl.includes('希望')) return 'req';
+  if (id === 'off' || (lbl.includes('休') && !lbl.includes('休診'))) return 'off';
+  if (id === 'me' || lbl.toUpperCase().includes('ME') || lbl.includes('オペ')) return 'me';
+  if (id === 'basic' || lbl === 'その他') return 'basic';
+  return 'facility';
+};
+
+const getCategoryKindById = (catId, categoryDefs = {}) => {
+  if (!catId) return 'basic';
+  if (categoryDefs && categoryDefs[catId]) {
+    return resolveCategoryKind(categoryDefs[catId]);
+  }
+  return resolveCategoryKind({ id: catId, label: '' });
+};
+
+const isOffOrReqCategoryId = (catId, categoryDefs = {}) => {
+  const kind = getCategoryKindById(catId, categoryDefs);
+  return kind === 'off' || kind === 'req';
+};
+
+const isReqCategoryId = (catId, categoryDefs = {}) => {
+  return getCategoryKindById(catId, categoryDefs) === 'req';
+};
+
+const getEffectiveShiftType = (def, categoryDefs = {}) => {
+  if (!def) return 'shift';
+  if (def.type === 'task' || def.type === 'shift') return def.type;
+  return getCategoryKindById(def.category, categoryDefs) === 'role' || String(def.code || '').startsWith('task_')
+    ? 'task'
+    : 'shift';
+};
+
+const resolveShiftWorkSlot = (def, categoryDefs = {}) => {
+  if (!def) return null;
+  if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return null;
+  if (isOffOrReqCategoryId(def.category, categoryDefs)) return null;
+
+  if (SHIFT_WORK_SLOTS.some(s => s.value === def.shiftSlot)) {
+    return def.shiftSlot;
+  }
+
+  // 未設定データ向けの自動推定（コードではなく実際の終了時刻・表示名を優先し、初期設定のままの時のみA=坂3/F=君3を判定）
+  if (def.endTime && def.endTime >= '21:00') return 'cool3';
+  const lbl = String(def.label || '').trim();
+  if ((def.code === 'A' && lbl === '坂3') || (def.code === 'F' && lbl === '君3')) return 'cool3';
+  if (lbl.includes('3') || lbl.includes('３')) return 'cool3';
+  if (lbl.includes('2') || lbl.includes('２')) return 'cool2';
+  if (lbl.includes('1') || lbl.includes('１')) return 'cool1';
+  if (lbl.includes('半') || def.time === 'Short') return 'half';
+  if (lbl.includes('日')) return 'day';
+  return 'other';
+};
+
+const getShiftWorkSlotMeta = (slotValue) => {
+  return SHIFT_WORK_SLOTS.find(s => s.value === slotValue) || SHIFT_WORK_SLOTS[SHIFT_WORK_SLOTS.length - 1];
+};
+
+const isCool3ShiftDef = (def, categoryDefs = {}) => {
+  return resolveShiftWorkSlot(def, categoryDefs) === 'cool3';
+};
+
+const resolveOffSubType = (def, categoryDefs = {}) => {
+  if (!def) return null;
+  const catKind = getCategoryKindById(def.category, categoryDefs);
+  if (catKind === 'req') return 'regular_off';
+  if (catKind !== 'off') return null;
+
+  if (def.offSubType === 'regular_off' || def.offSubType === 'paid_leave') {
+    return def.offSubType;
+  }
+
+  const lbl = String(def.label || '').trim();
+  if (
+    lbl.includes('年') ||
+    lbl.includes('有') ||
+    lbl.includes('リフ') ||
+    lbl.includes('夏') ||
+    lbl.includes('特') ||
+    lbl.includes('慶') ||
+    lbl.includes('忌') ||
+    lbl.includes('産') ||
+    lbl.includes('育') ||
+    lbl.includes('病')
+  ) {
+    return 'paid_leave';
+  }
+  if (lbl.includes('指') || lbl.includes('振') || lbl.includes('公') || lbl.includes('希') || lbl.includes('代')) {
+    return 'regular_off';
+  }
+  if ((def.code === 'S' && lbl === '指定') || (def.code === 'H' && lbl === '振休')) {
+    return 'regular_off';
+  }
+  return 'paid_leave';
+};
+
+const isPaidLeaveShiftDef = (def, categoryDefs = {}) => {
+  return resolveOffSubType(def, categoryDefs) === 'paid_leave';
+};
+
+const isMeShiftDef = (code, shiftDefs = {}, categoryDefs = {}) => {
+  if (!code || !shiftDefs[code]) return false;
+  const def = shiftDefs[code];
+  if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return false;
+  const catKind = getCategoryKindById(def.category, categoryDefs);
+  if (catKind === 'me') return true;
+  if (catKind === 'off' || catKind === 'req' || catKind === 'role') return false;
+  // 透析施設カテゴリに明示所属するシフト（表示名がA〜G等のアルファベットである場合を含む）をME室と誤認しないよう保護
+  if (catKind === 'facility' && categoryDefs && categoryDefs[def.category]) return false;
+  const normLabel = String(def.label || '').trim();
+  return (
+    normLabel === 'L' ||
+    normLabel === 'G' ||
+    normLabel === 'Ｌ' ||
+    normLabel === 'Ｇ' ||
+    ((code === 'L' || code === 'G') && normLabel === code)
+  );
+};
+
+const getHolidayMeTargetCount = (code, shiftDefs = {}, categoryDefs = {}, fallbackCount = 0) => {
+  const def = shiftDefs[code];
+  if (!def || !isMeShiftDef(code, shiftDefs, categoryDefs)) return fallbackCount;
+  const normLabel = String(def.label || '').trim();
+  if (normLabel === 'G' || normLabel === 'Ｇ' || (code === 'G' && normLabel === 'G')) return 1;
+  if (normLabel === 'L' || normLabel === 'Ｌ' || (code === 'L' && normLabel === 'L')) return 0;
+  return fallbackCount;
+};
+
+const getFacilityTargetPowerScore = (cat, adminSettings = {}) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return 0;
+  const customMap = adminSettings?.facilityPowerTargets;
+  if (customMap && customMap[cat.id] !== undefined && customMap[cat.id] !== '') {
+    return Math.max(0, parseInt(customMap[cat.id], 10) || 0);
+  }
+  if (DEFAULT_FACILITY_POWER_TARGETS[cat.id] !== undefined) {
+    return DEFAULT_FACILITY_POWER_TARGETS[cat.id];
+  }
+  const lbl = String(cat.label || '').trim();
+  if (lbl.includes('じん') || lbl.includes('腎')) return 0;
+  if (lbl.includes('木')) return 40;
+  if (lbl.includes('坂') || lbl.includes('君')) return 30;
+  return 0;
+};
+
+const resolveFacilitySkillTarget = (cat, skillKey, adminSettings = {}) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return 0;
+  const customMap = adminSettings?.facilitySkillTargets;
+  if (customMap && customMap[cat.id] && customMap[cat.id][skillKey] !== undefined) {
+    return Math.max(0, parseInt(customMap[cat.id][skillKey], 10) || 0);
+  }
+  if (DEFAULT_FACILITY_SKILL_TARGETS[cat.id]?.[skillKey] !== undefined) {
+    return DEFAULT_FACILITY_SKILL_TARGETS[cat.id][skillKey];
+  }
+  if (skillKey === 'isLeader') {
+    const lbl = String(cat.label || '').trim();
+    if (lbl.includes('坂') || lbl.includes('君') || lbl.includes('木')) return 1;
+  }
+  return 0;
+};
+
+// AIが万一シフトコードではなく画面表示名（例: コード"1"の代わりに表示名"A"）を出力した場合でも安全に解決するヘルパー
+const resolveAiOutputCode = (rawVal, shiftDefs = {}, categoryDefs = {}, expectedType = 'shift', staffObj = null) => {
+  if (rawVal === null || rawVal === undefined) return null;
+  const rawStr = String(rawVal).trim();
+  if (!rawStr || rawStr === 'CLEAR' || rawStr === 'NONE') return null;
+
+  // 1. シフトコード完全一致（最優先）
+  if (shiftDefs[rawStr] && getEffectiveShiftType(shiftDefs[rawStr], categoryDefs) === expectedType) {
+    return rawStr;
+  }
+
+  // 2. コードに該当がない場合のみ、同種別の表示名完全一致で一意に特定できる場合にコードへ変換
+  const labelMatches = Object.values(shiftDefs).filter(
+    d => d && getEffectiveShiftType(d, categoryDefs) === expectedType && String(d.label || '').trim() === rawStr
+  );
+  if (labelMatches.length === 1) {
+    return labelMatches[0].code;
+  }
+  if (labelMatches.length > 1 && staffObj && expectedType === 'shift') {
+    const exCats = Array.isArray(staffObj.excludedCategories) ? staffObj.excludedCategories : [];
+    const exShifts = Array.isArray(staffObj.excludedShifts) ? staffObj.excludedShifts : [];
+    const allowedMatches = labelMatches.filter(
+      d =>
+        !isOffOrReqCategoryId(d.category, categoryDefs) &&
+        !isMeShiftDef(d.code, shiftDefs, categoryDefs) &&
+        !exCats.includes(d.category) &&
+        !exShifts.includes(d.code)
+    );
+    if (allowedMatches.length === 1) {
+      return allowedMatches[0].code;
+    }
+  }
+  return null;
+};
+
+// 現在のシフト設定・カテゴリ設定をAIへ誤解ゼロで伝えるライブ対応表テキストを生成
+const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminSettings = {}) => {
+  const sortedCats = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+  const lines = [
+    '【現在のシステム設定：シフトコード・表示名・勤務区分 対応表（★初期設定ではなく必ずこの最新設定に従うこと★）】',
+    '※重要：画面上の「表示名」とデータ保存用の「シフトコード」が異なる設定に対応しています（例：コード "1" ＝ 表示名「A」など）。',
+    '・管理者がカスタム条件やチャットでシフト名・施設名を書くときは、主に「表示名（例: A）」や「施設名＋区分（例: 坂田の3クール、1クール、日勤）」で呼びます。必ず下の対応表で該当する「コード」を確認して解釈してください。',
+    '・JSONの "shift" / "task" に出力する値は、表示名ではなく必ず【コード】の文字列（例: "1"）を指定してください。',
+  ];
+
+  const assignedCodes = new Set();
+  sortedCats.forEach(cat => {
+    const kind = resolveCategoryKind(cat);
+    const kindMeta = CATEGORY_KIND_OPTIONS.find(o => o.value === kind);
+    const items = Object.values(shiftDefs)
+      .filter(s => s && s.category === cat.id)
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
+    if (items.length === 0) return;
+
+    const headerExtras = [];
+    if (kind === 'facility') {
+      const pTarget = getFacilityTargetPowerScore(cat, adminSettings);
+      headerExtras.push(pTarget > 0 ? `目標スコア:${pTarget}点以上` : 'スコア判定なし');
+      const reqSkills = STAFF_SKILLS
+        .map(sk => ({ label: sk.label, cnt: resolveFacilitySkillTarget(cat, sk.key, adminSettings) }))
+        .filter(x => x.cnt > 0)
+        .map(x => `${x.label}${x.cnt}名以上`);
+      if (reqSkills.length > 0) headerExtras.push(`必須スキル:${reqSkills.join('・')}`);
+    } else if (kind === 'me') {
+      headerExtras.push('OPE班管理・AIからの新規出力や既存変更は禁止');
+    } else if (kind === 'off' || kind === 'req') {
+      headerExtras.push('AIは公休を空欄のまま残すため出力禁止');
+    }
+
+    lines.push(
+      `- [${kindMeta?.shortLabel || kind}] ${cat.label} (categoryId: "${cat.id}"${headerExtras.length > 0 ? ` / ${headerExtras.join(' / ')}` : ''}):`
+    );
+
+    items.forEach(s => {
+      assignedCodes.add(s.code);
+      const effType = getEffectiveShiftType(s, categoryDefs);
+      const timePart = (s.startTime || s.endTime) ? ` / 時間:${s.startTime || ''}-${s.endTime || ''}` : '';
+      const otPart = Number(s.overtime) > 0 ? ` / 残業:${s.overtime}h` : '';
+      if (effType === 'task') {
+        lines.push(`  ・タスク コード "${s.code}" ＝ 表示名「${s.label}」`);
+      } else if (kind === 'off' || kind === 'req') {
+        const sub = resolveOffSubType(s, categoryDefs);
+        const subLbl = sub === 'paid_leave' ? '別枠の有休' : '週休枠の公休';
+        lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:${subLbl}]`);
+      } else {
+        const slot = resolveShiftWorkSlot(s, categoryDefs);
+        const slotLbl = getShiftWorkSlotMeta(slot).label;
+        const meFlag = isMeShiftDef(s.code, shiftDefs, categoryDefs) ? '・ME室ロック' : '';
+        lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:${slotLbl}${meFlag}${timePart}${otPart}]`);
+      }
+    });
+  });
+
+  const orphanItems = Object.values(shiftDefs).filter(s => s && !assignedCodes.has(s.code));
+  if (orphanItems.length > 0) {
+    lines.push('- [その他・未分類カテゴリ]:');
+    orphanItems.forEach(s => {
+      const slot = resolveShiftWorkSlot(s, categoryDefs);
+      const slotPart = slot ? ` [区分:${getShiftWorkSlotMeta(slot).label}]` : '';
+      lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」${slotPart}`);
+    });
+  }
+
+  return lines.join('\n');
+};
+
+const buildAiQuickPrompts = (categoryDefs = {}) => {
+  const facilityNames = Object.values(categoryDefs)
+    .filter(c => resolveCategoryKind(c) === 'facility')
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+    .map(c => c.label);
+  const facText = facilityNames.length > 0 ? `各施設（${facilityNames.join('・')}）` : '各施設';
+  return [
+    {
+      label: '🔍 不足日・スコア割れを診断',
+      text: `今月の勤務表で、必要人数が足りていない日や${facText}の目標スコア・必須スキルを下回っている日をチェックして、どう補うとよさそうか相談させてください。`,
+    },
+    {
+      label: '⚖️ 出勤・3クール・残業の偏り確認',
+      text: 'スタッフごとの出勤日数・3クール回数・残業時間のバランスを見て、負担が偏っている人がいないか確認してください。',
+    },
+    {
+      label: '🧩 空欄を仮組みして提案して',
+      text: 'スタッフ本人の希望箇所と既存のシフトを尊重しつつ、現在空欄になっている箇所をルールに沿って埋める変更案を作成してください。',
+    },
+    {
+      label: '💡 今月の注意点・改善ポイント',
+      text: '現在のシフト表全体を見て、連勤やスキル配置（リーダー・エコー等）の観点から気をつけた方がよい日や改善アイデアがあれば教えてください。',
+    },
+  ];
+};
+
 // Step 6: 勤務表全体のルール違反・人数不足・必須スキル不足・スコア未達を一括検算する純粋関数
 const evaluateScheduleValidation = ({
   year,
@@ -325,21 +641,20 @@ const evaluateScheduleValidation = ({
   const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
   const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
   const monthlyOffSetting = adminSettings?.monthlyRegularOffDays || 'auto';
-  const cool3Set = new Set(prevMonthCarryOver?.cool3ShiftCodes || []);
+  const dynamicCool3Codes =
+    Array.isArray(prevMonthCarryOver?.cool3ShiftCodes) && prevMonthCarryOver.cool3ShiftCodes.length > 0
+      ? prevMonthCarryOver.cool3ShiftCodes
+      : Object.values(shiftDefs)
+          .filter(s => isCool3ShiftDef(s, categoryDefs))
+          .map(s => s.code);
+  const cool3Set = new Set(dynamicCool3Codes);
   const baselineMap = lockedBaselineShifts || shiftsMap;
 
-  const isMeCode = (code) => {
-    const def = shiftDefs[code];
-    if (!def) return false;
-    if (def.category === 'me') return true;
-    const nl = (def.label || '').trim();
-    return code === 'L' || code === 'G' || nl === 'L' || nl === 'G' || nl === 'Ｌ' || nl === 'Ｇ';
-  };
+  const isMeCode = (code) => isMeShiftDef(code, shiftDefs, categoryDefs);
 
   const isPaidLeaveCode = (code) => {
     if (!code || !shiftDefs[code]) return false;
-    const def = shiftDefs[code];
-    return def.category === 'off' && code !== 'S' && code !== 'H';
+    return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
   };
 
   const isShiftAllowed = (staff, code) => {
@@ -347,6 +662,7 @@ const evaluateScheduleValidation = ({
     if (!def) return false;
     if (Array.isArray(staff?.excludedCategories) && staff.excludedCategories.includes(def.category)) return false;
     if (Array.isArray(staff?.excludedShifts) && staff.excludedShifts.includes(code)) return false;
+    if ((staff?.maxCool3 ?? 5) <= 0 && cool3Set.has(code)) return false;
     return true;
   };
 
@@ -379,22 +695,17 @@ const evaluateScheduleValidation = ({
   };
 
   const readSkillMin = (catId, skillKey) => {
-    if (!catId || ['me', 'off', 'req', 'role', 'basic'].includes(catId)) return 0;
-    const cm = adminSettings?.facilitySkillTargets;
-    if (cm && cm[catId] && cm[catId][skillKey] !== undefined) {
-      return Math.max(0, parseInt(cm[catId][skillKey], 10) || 0);
-    }
-    return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+    if (!catId || !categoryDefs[catId]) return 0;
+    return resolveFacilitySkillTarget(categoryDefs[catId], skillKey, adminSettings);
   };
 
   const readTargetCount = (code, d) => {
     if (isSunday(year, month, d)) return 0;
-    const def = shiftDefs[code];
+    const normalTarget = targetCounts?.[code]?.[getDayOfWeek(year, month, d)] || 0;
     if (isMeCode(code) && isHoliday(year, month, d, closedRules)) {
-      const nl = (def?.label || '').trim();
-      return (code === 'G' || nl === 'G' || nl === 'Ｇ') ? 1 : 0;
+      return getHolidayMeTargetCount(code, shiftDefs, categoryDefs, normalTarget);
     }
-    return targetCounts?.[code]?.[getDayOfWeek(year, month, d)] || 0;
+    return normalTarget;
   };
 
   // 営業日と週情報の集計
@@ -406,7 +717,7 @@ const evaluateScheduleValidation = ({
     const hasWork = staffList.some(s => {
       const c = shiftsMap?.[s.id]?.[d];
       const def = c ? shiftDefs[c] : null;
-      return !!(def && def.category !== 'off' && def.category !== 'req');
+      return !!(def && getEffectiveShiftType(def, categoryDefs) === 'shift' && !isOffOrReqCategoryId(def.category, categoryDefs));
     });
     if (hasWork) filledOperatingDaysCount++;
   }
@@ -488,7 +799,7 @@ const evaluateScheduleValidation = ({
         continue;
       }
 
-      if (def.category === 'off' || def.category === 'req') {
+      if (isOffOrReqCategoryId(def.category, categoryDefs)) {
         flushStreakRun(d - 1);
         if (isPaidLeaveCode(code)) paidLeaveDays++;
         continue;
@@ -516,7 +827,7 @@ const evaluateScheduleValidation = ({
           });
           if (isAiFixable) {
             aiRepairableItems.push(
-              `[3クール連続] ${s.name}(ID:${s.id}): 前月最終日が3クールのため ${month}/1 に「${def.label}」は入れられません。1日は3クール以外のシフトへ変更してください。`
+              `[3クール連続] ${s.name}(ID:${s.id}): 前月最終日が3クールのため ${month}/1 に表示名「${def.label}」(コード:"${code}")は入れられません。1日は3クール以外のシフトコードへ変更してください。`
             );
           }
         }
@@ -538,7 +849,7 @@ const evaluateScheduleValidation = ({
             });
             if (isAiFixable) {
               aiRepairableItems.push(
-                `[3クール連続] ${s.name}(ID:${s.id}): ${month}/${d - 1}(${prevLabel}) と ${month}/${d}(${def.label}) が連続しています。編集可能な日 [${editablePair.join(', ')}] の3クールを通常シフトに入れ替えてください。`
+                `[3クール連続] ${s.name}(ID:${s.id}): ${month}/${d - 1}(${prevLabel} / コード:"${prevCode}") と ${month}/${d}(${def.label} / コード:"${code}") が連続しています。編集可能な日 [${editablePair.join(', ')}] の3クールを通常シフトに入れ替えてください。`
               );
             }
           }
@@ -561,7 +872,7 @@ const evaluateScheduleValidation = ({
         });
         if (isAiFixable) {
           aiRepairableItems.push(
-            `[配置制限違反] ${s.name}(ID:${s.id}): ${month}/${d} の「${def.label}」は配置不可です。許可された allowedWorkShifts 内のシフトに変更してください。`
+            `[配置制限違反] ${s.name}(ID:${s.id}): ${month}/${d} の表示名「${def.label}」(コード:"${code}")は配置不可です。許可された allowedWorkShifts 内のシフトコードに変更してください。`
           );
         }
       }
@@ -612,7 +923,7 @@ const evaluateScheduleValidation = ({
 
   // 2. 日別の必要人数不足・必須スキル不足・目標パワースコア未達の検算
   const facilityCats = Object.values(categoryDefs)
-    .filter(cat => !['me', 'off', 'req', 'role', 'basic'].includes(cat.id))
+    .filter(cat => resolveCategoryKind(cat) === 'facility')
     .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
 
   const skillPoints = { isLeader: 5, isVeteran: 3, canEcho: 2, canMachine: 2, canFollow: 1 };
@@ -638,9 +949,11 @@ const evaluateScheduleValidation = ({
 
     const codeCounts = {};
     const actualHeadcountByCat = {};
+    const powerScoreByCat = {};
     const skillCountsByCat = {};
     facilityCats.forEach(cat => {
       actualHeadcountByCat[cat.id] = 0;
+      powerScoreByCat[cat.id] = 0;
       skillCountsByCat[cat.id] = {};
       STAFF_SKILLS.forEach(sk => {
         skillCountsByCat[cat.id][sk.key] = 0;
@@ -648,22 +961,19 @@ const evaluateScheduleValidation = ({
     });
 
     let workingOnDay = 0;
-    let sakaScore = 0;
-    let kimiScore = 0;
-    let kikuriScore = 0;
 
     staffList.forEach(s => {
       const code = shiftsMap?.[s.id]?.[d];
       if (!code || !shiftDefs[code]) return;
       const def = shiftDefs[code];
+      if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return;
       codeCounts[code] = (codeCounts[code] || 0) + 1;
-      if (def.category !== 'off' && def.category !== 'req') {
+      if (!isOffOrReqCategoryId(def.category, categoryDefs)) {
         workingOnDay++;
         const pScore = staffPowerMap[s.id] || 0;
-        if (def.category === 'saka') sakaScore += pScore;
-        else if (def.category === 'kimi') kimiScore += pScore;
-        else if (def.category === 'kikuri') kikuriScore += pScore;
-
+        if (powerScoreByCat[def.category] !== undefined) {
+          powerScoreByCat[def.category] += pScore;
+        }
         if (skillCountsByCat[def.category] !== undefined) {
           actualHeadcountByCat[def.category] = (actualHeadcountByCat[def.category] || 0) + 1;
           STAFF_SKILLS.forEach(sk => {
@@ -683,7 +993,7 @@ const evaluateScheduleValidation = ({
     // (a) シフト必要人数チェック
     const hcItems = [];
     Object.values(shiftDefs)
-      .filter(sd => sd && sd.type === 'shift' && sd.category !== 'off' && sd.category !== 'req')
+      .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && !isOffOrReqCategoryId(sd.category, categoryDefs))
       .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
       .forEach(sd => {
         const target = readTargetCount(sd.code, d);
@@ -713,7 +1023,7 @@ const evaluateScheduleValidation = ({
           .map(s => `${s.name}(ID:${s.id})`)
           .slice(0, 6);
         aiRepairableItems.push(
-          `[必要人数不足] ${month}/${d}(${dowLabel}): ${nonMeItems.map(it => `${it.label}(${it.code}) ${it.actual}/${it.target}名`).join('・')}${
+          `[必要人数不足] ${month}/${d}(${dowLabel}): ${nonMeItems.map(it => `表示名「${it.label}」(コード:"${it.code}") ${it.actual}/${it.target}名`).join('・')}${
             blankCandidates.length > 0 ? `（当日の空欄候補: ${blankCandidates.join(', ')} ほか）` : ''
           }`
         );
@@ -724,7 +1034,7 @@ const evaluateScheduleValidation = ({
     const skItems = [];
     facilityCats.forEach(cat => {
       const catShiftCodes = Object.values(shiftDefs)
-        .filter(sd => sd && sd.type === 'shift' && sd.category === cat.id)
+        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
         .map(sd => sd.code);
       if (catShiftCodes.length === 0) return;
 
@@ -786,16 +1096,21 @@ const evaluateScheduleValidation = ({
       });
     }
 
-    // (c) 目標パワースコア参考チェック
+    // (c) 目標パワースコア参考チェック（各施設の実際のカテゴリ設定・目標スコア設定を動的参照）
     const pItems = [];
-    const hasCatActive = (catId) => {
-      const codes = Object.values(shiftDefs).filter(sd => sd && sd.type === 'shift' && sd.category === catId).map(sd => sd.code);
+    facilityCats.forEach(cat => {
+      const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
+      if (targetScore <= 0) return;
+      const codes = Object.values(shiftDefs)
+        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
+        .map(sd => sd.code);
       const tSum = codes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
-      return tSum > 0 || (actualHeadcountByCat[catId] || 0) > 0;
-    };
-    if (hasCatActive('saka') && sakaScore < 30) pItems.push(`坂田 ${sakaScore}/30点`);
-    if (hasCatActive('kimi') && kimiScore < 30) pItems.push(`君津 ${kimiScore}/30点`);
-    if (hasCatActive('kikuri') && kikuriScore < 40) pItems.push(`木クリ ${kikuriScore}/40点`);
+      const isActive = tSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
+      const actualScore = powerScoreByCat[cat.id] || 0;
+      if (isActive && actualScore < targetScore) {
+        pItems.push(`${cat.label} ${actualScore}/${targetScore}点`);
+      }
+    });
     if (pItems.length > 0) {
       dailyPowerShortages.push({
         day: d,
@@ -1127,29 +1442,49 @@ export default function WorkScheduleApp() {
         }));
 
         const loadedCategoryDefs = { ...(data.categoryDefs || DEFAULT_CATEGORY_DEFS) };
-        if (!loadedCategoryDefs['me'] && !Object.values(loadedCategoryDefs).some(c => c?.label?.includes('ME'))) {
+        let existingMeCat = Object.values(loadedCategoryDefs).find(c => c && resolveCategoryKind(c) === 'me');
+        if (!existingMeCat) {
           loadedCategoryDefs['me'] = { ...DEFAULT_CATEGORY_DEFS['me'] };
+          existingMeCat = loadedCategoryDefs['me'];
         }
+        const meCatId = existingMeCat.id || 'me';
 
         const rawShiftDefs = data.shiftDefs || DEFAULT_SHIFT_TYPES;
         const loadedShiftDefs = {};
         Object.keys(rawShiftDefs).forEach(k => {
           if (rawShiftDefs[k]) {
+            const catKind = getCategoryKindById(rawShiftDefs[k].category, loadedCategoryDefs);
             loadedShiftDefs[k] = {
               ...rawShiftDefs[k],
               code: rawShiftDefs[k].code || k,
-              type: rawShiftDefs[k].type || (rawShiftDefs[k].category === 'role' || k.startsWith('task_') ? 'task' : 'shift'),
+              type: rawShiftDefs[k].type || (catKind === 'role' || k.startsWith('task_') ? 'task' : 'shift'),
             };
           }
         });
-        const hasShiftL = Object.values(loadedShiftDefs).some(
-          s => s && s.type === 'shift' && (s.code === 'L' || (s.label || '').trim() === 'L' || (s.label || '').trim() === 'Ｌ')
+        const existingMeShifts = Object.values(loadedShiftDefs).filter(
+          s => s && isMeShiftDef(s.code, loadedShiftDefs, loadedCategoryDefs)
         );
-        const hasShiftG = Object.values(loadedShiftDefs).some(
-          s => s && s.type === 'shift' && (s.code === 'G' || (s.label || '').trim() === 'G' || (s.label || '').trim() === 'Ｇ')
+        const hasMeL = existingMeShifts.some(
+          s => s.code === 'L' || (s.label || '').trim() === 'L' || (s.label || '').trim() === 'Ｌ'
         );
-        if (!hasShiftL) loadedShiftDefs['L'] = { ...DEFAULT_SHIFT_TYPES['L'] };
-        if (!hasShiftG) loadedShiftDefs['G'] = { ...DEFAULT_SHIFT_TYPES['G'] };
+        const hasMeG = existingMeShifts.some(
+          s => s.code === 'G' || (s.label || '').trim() === 'G' || (s.label || '').trim() === 'Ｇ'
+        );
+        // ME室シフトが未登録、または従来のL/G片方のみ登録されている場合のみ不足分を安全に補完（既存の他シフトコードは絶対に上書きしない）
+        if (existingMeShifts.length === 0 || hasMeL || hasMeG) {
+          if (!hasMeL) {
+            const lKey = !loadedShiftDefs['L'] ? 'L' : 'ME_L';
+            if (!loadedShiftDefs[lKey]) {
+              loadedShiftDefs[lKey] = { ...DEFAULT_SHIFT_TYPES['L'], code: lKey, category: meCatId };
+            }
+          }
+          if (!hasMeG) {
+            const gKey = !loadedShiftDefs['G'] ? 'G' : 'ME_G';
+            if (!loadedShiftDefs[gKey]) {
+              loadedShiftDefs[gKey] = { ...DEFAULT_SHIFT_TYPES['G'], code: gKey, category: meCatId };
+            }
+          }
+        }
 
         setStaffList(loadedStaffList);
         setShiftDefs(loadedShiftDefs);
@@ -1454,9 +1789,23 @@ export default function WorkScheduleApp() {
     saveSchedule(nextShifts, nextTasks, nextUserInputs);
   };
 
+  // 現在のシフト設定に整合した休み希望カウント対象コード一覧を解決
+  const resolveEffectiveCountedOffShifts = (settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
+    const rawList = Array.isArray(settingsObj?.countedOffShifts) ? settingsObj.countedOffShifts : ['HOPE'];
+    const existingMatched = rawList.filter(c => Boolean(defs[c]));
+    if (existingMatched.length > 0) return existingMatched;
+    // 初期値['HOPE']のままコードが変更されている場合は、希望(req)カテゴリのシフトを自動フォールバック対象にする
+    if (rawList.length === 1 && rawList[0] === 'HOPE' && !defs['HOPE']) {
+      return Object.values(defs)
+        .filter(s => s && getEffectiveShiftType(s, cats) === 'shift' && isReqCategoryId(s.category, cats))
+        .map(s => s.code);
+    }
+    return rawList;
+  };
+
   // 基本設定でカウント対象シフトをON/OFF切り替え
   const toggleCountedOffShift = (code) => {
-    const currentList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
+    const currentList = resolveEffectiveCountedOffShifts(adminSettings, shiftDefs, categoryDefs);
     const nextList = currentList.includes(code)
       ? currentList.filter(c => c !== code)
       : [...currentList, code];
@@ -1552,14 +1901,7 @@ export default function WorkScheduleApp() {
 
   // ME室（オペ班のL/G等）に該当するシフトコードかどうかを判定するヘルパー
   const isMeRoomShiftCode = (code, defs = shiftDefs, cats = categoryDefs) => {
-    if (!code || !defs[code]) return false;
-    const def = defs[code];
-    if (def.type && def.type !== 'shift') return false;
-    if (def.category === 'me') return true;
-    const catLabel = cats[def.category]?.label || '';
-    if (catLabel.includes('ME')) return true;
-    const normLabel = (def.label || '').trim();
-    return code === 'L' || code === 'G' || normLabel === 'L' || normLabel === 'G' || normLabel === 'Ｌ' || normLabel === 'Ｇ';
+    return isMeShiftDef(code, defs, cats);
   };
 
   // 現在ログイン中または選択中の班管理者キー（ope / echo / hhd）を取得
@@ -1813,15 +2155,15 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   const isShiftAllowedForStaff = (staff, shiftCode) => {
     if (!staff || !shiftCode) return true;
     const def = shiftDefs[shiftCode];
-    if (!def || def.type !== 'shift') return true;
-    if (def.category === 'off' || def.category === 'req') return true;
+    if (!def || getEffectiveShiftType(def, categoryDefs) !== 'shift') return true;
+    if (isOffOrReqCategoryId(def.category, categoryDefs)) return true;
 
     const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
     const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
     if (exCats.includes(def.category)) return false;
     if (exShifts.includes(shiftCode)) return false;
 
-    const isCool3 = shiftCode === 'A' || shiftCode === 'F' || (def.label && def.label.includes('3')) || (def.endTime && def.endTime >= '21:00');
+    const isCool3 = isCool3ShiftDef(def, categoryDefs);
     if ((staff.maxCool3 ?? 5) <= 0 && isCool3) return false;
 
     return true;
@@ -1940,11 +2282,18 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   // --- カテゴリ編集関連 ---
   const handleEditCategory = (catId) => {
     const cat = categoryDefs[catId];
-    setTargetCategory({ ...cat, originalId: catId });
+    setTargetCategory({ ...cat, kind: resolveCategoryKind(cat), originalId: catId });
   };
 
   const handleAddCategory = () => {
-    setTargetCategory({ id: '', label: '', color: 'bg-gray-50 text-gray-800', order: Object.keys(categoryDefs).length + 1, originalId: null });
+    setTargetCategory({
+      id: '',
+      label: '',
+      color: 'bg-gray-50 text-gray-800',
+      kind: 'facility',
+      order: Object.keys(categoryDefs).length + 1,
+      originalId: null,
+    });
   };
 
   const saveCategory = () => {
@@ -1963,7 +2312,8 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       id: targetCategory.id,
       label: targetCategory.label,
       color: targetCategory.color,
-      order: targetCategory.order
+      order: targetCategory.order,
+      kind: resolveCategoryKind(targetCategory),
     };
     
     setCategoryDefs(newDefs);
@@ -2011,13 +2361,60 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleAddNewShift = () => {
-    setEditingShift({ code: '', label: '', color: 'bg-transparent', text: 'text-gray-800', startTime: '', endTime: '', overtime: '', time: '', category: 'saka', type: 'shift', originalCode: null, isRequestable: false });
+    const sortedCats = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const defaultCat = sortedCats.find(c => resolveCategoryKind(c) === 'facility') || sortedCats[0];
+    const defaultCatId = defaultCat ? defaultCat.id : 'saka';
+    const defaultType = getCategoryKindById(defaultCatId, categoryDefs) === 'role' ? 'task' : 'shift';
+    setEditingShift({
+      code: '',
+      label: '',
+      color: 'bg-transparent',
+      text: 'text-gray-800',
+      startTime: '',
+      endTime: '',
+      overtime: '',
+      time: '',
+      category: defaultCatId,
+      type: defaultType,
+      shiftSlot: 'other',
+      offSubType: 'regular_off',
+      originalCode: null,
+      isRequestable: false,
+    });
     setShowShiftEditModal(true);
   };
 
   const handleEditShift = (code) => {
-    setEditingShift({ ...shiftDefs[code], originalCode: code });
+    const target = shiftDefs[code];
+    if (!target) return;
+    const effType = getEffectiveShiftType(target, categoryDefs);
+    const catKind = getCategoryKindById(target.category, categoryDefs);
+    setEditingShift({
+      ...target,
+      type: effType,
+      shiftSlot:
+        effType === 'shift' && catKind !== 'off' && catKind !== 'req'
+          ? resolveShiftWorkSlot(target, categoryDefs) || 'other'
+          : target.shiftSlot,
+      offSubType:
+        effType === 'shift' && catKind === 'off'
+          ? resolveOffSubType(target, categoryDefs) || 'regular_off'
+          : target.offSubType,
+      originalCode: code,
+    });
     setShowShiftEditModal(true);
+  };
+
+  // シフト一覧から勤務区分・休み区分をワンタップ即時変更＆自動保存するハンドラ
+  const handleQuickShiftMetaChange = (code, patch) => {
+    if (!code || !shiftDefs[code]) return;
+    const updatedShift = { ...shiftDefs[code], ...patch };
+    const newDefs = { ...shiftDefs, [code]: updatedShift };
+    setShiftDefs(newDefs);
+    saveMasterData({ shiftDefs: newDefs });
+    if (editingShift && editingShift.originalCode === code) {
+      setEditingShift(prev => (prev ? { ...prev, ...patch } : prev));
+    }
   };
 
   const saveShiftConfig = () => {
@@ -2030,6 +2427,20 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       delete newDefs[editingShift.originalCode];
     }
     const { originalCode, ...cleanShift } = editingShift;
+    const catKind = getCategoryKindById(cleanShift.category, categoryDefs);
+    cleanShift.type = catKind === 'role' ? 'task' : (cleanShift.type || 'shift');
+    if (cleanShift.type === 'shift') {
+      if (catKind === 'off') {
+        cleanShift.offSubType = resolveOffSubType(cleanShift, categoryDefs) || 'regular_off';
+        delete cleanShift.shiftSlot;
+      } else if (catKind === 'req') {
+        cleanShift.offSubType = 'regular_off';
+        delete cleanShift.shiftSlot;
+      } else {
+        cleanShift.shiftSlot = resolveShiftWorkSlot(cleanShift, categoryDefs) || 'other';
+        delete cleanShift.offSubType;
+      }
+    }
     if (newDefs[cleanShift.code]?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
@@ -2084,7 +2495,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
 
   const saveTargetCounts = () => {
     saveMasterData({ targetCounts: targetCounts, adminSettings: adminSettings });
-    alert('必要人数・必須スキル設定を保存しました');
+    alert('必要人数・必須スキル・目標スコア設定を保存しました');
     setShowTargetCountModal(false);
   };
 
@@ -2141,28 +2552,20 @@ const handleResetSchedule = () => {
 
   const getTargetCount = (shiftCode, day) => {
     if (isSunday(year, month, day)) return 0;
-    const def = shiftDefs[shiftCode];
+    const dow = getDayOfWeek(year, month, day);
+    const normalTarget = targetCounts[shiftCode]?.[dow] || 0;
     const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
     // 祝日・外来休診日のME室は「Gのみ1人（Lは0人）」として判定
     if (isMeRoomShiftCode(shiftCode) && isHoliday(year, month, day, closedRules)) {
-      const normLabel = (def?.label || '').trim();
-      return (shiftCode === 'G' || normLabel === 'G' || normLabel === 'Ｇ') ? 1 : 0;
+      return getHolidayMeTargetCount(shiftCode, shiftDefs, categoryDefs, normalTarget);
     }
-    if (!targetCounts[shiftCode]) return 0;
-    const dow = getDayOfWeek(year, month, day);
-    return targetCounts[shiftCode][dow] || 0;
+    return normalTarget;
   };
 
-  // Step 4: 施設ごとの必須スキル最低人数を取得するヘルパー（初期値: 坂田・君津・木クリはリーダー1名以上）
+  // Step 4: 施設ごとの必須スキル最低人数を取得するヘルパー（現在のカテゴリ設定・役割種別を動的参照）
   const getFacilitySkillTarget = (catId, skillKey, settingsObj = adminSettings) => {
-    if (!catId || catId === 'me' || catId === 'off' || catId === 'req' || catId === 'role' || catId === 'basic') {
-      return 0;
-    }
-    const customMap = settingsObj?.facilitySkillTargets;
-    if (customMap && customMap[catId] && customMap[catId][skillKey] !== undefined) {
-      return Math.max(0, parseInt(customMap[catId][skillKey], 10) || 0);
-    }
-    return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+    if (!catId || !categoryDefs[catId]) return 0;
+    return resolveFacilitySkillTarget(categoryDefs[catId], skillKey, settingsObj);
   };
 
   // Step 4: 指定日における各施設のスキル保持者数と必須スキル不足一覧を計算するヘルパー
@@ -2176,7 +2579,7 @@ const handleResetSchedule = () => {
     }
 
     const facilityCats = Object.values(categoryDefs)
-      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
+      .filter(cat => resolveCategoryKind(cat) === 'facility')
       .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
 
     facilityCats.forEach(cat => {
@@ -2190,7 +2593,7 @@ const handleResetSchedule = () => {
       const code = shiftsMap[s.id]?.[day];
       if (!code || !shiftDefs[code]) return;
       const def = shiftDefs[code];
-      if (def.type !== 'shift' || def.category === 'off' || def.category === 'req') return;
+      if (getEffectiveShiftType(def, categoryDefs) !== 'shift' || isOffOrReqCategoryId(def.category, categoryDefs)) return;
       if (!skillCountsByCat[def.category]) return;
 
       STAFF_SKILLS.forEach(sk => {
@@ -2203,7 +2606,7 @@ const handleResetSchedule = () => {
     facilityCats.forEach(cat => {
       const catShortages = [];
       const catShiftCodes = Object.values(shiftDefs)
-        .filter(sd => sd.type === 'shift' && sd.category === cat.id)
+        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
         .map(sd => sd.code);
       if (catShiftCodes.length === 0) return;
 
@@ -2249,9 +2652,9 @@ const handleResetSchedule = () => {
     const maxConsecutiveWorkDays = Number(adminSettings.maxConsecutiveWorkDays) || 5;
     const currDaysInMonth = getDaysInMonth(year, month);
 
-    // 3クール該当シフトコード判定
+    // 3クール該当シフトコード判定（現在のシフト設定の勤務区分を動的参照）
     const cool3ShiftCodes = Object.values(shiftDefs)
-      .filter(s => (s.type === 'shift' || !s.type) && (s.code === 'A' || s.code === 'F' || (s.label && s.label.includes('3')) || (s.endTime && s.endTime >= '21:00')))
+      .filter(s => isCool3ShiftDef(s, categoryDefs))
       .map(s => s.code);
     const cool3Set = new Set(cool3ShiftCodes);
 
@@ -2271,7 +2674,7 @@ const handleResetSchedule = () => {
       const staffPrevMap = prevMonthShiftData[s.id] || {};
       const staffHasPrevWorkShift = Object.keys(staffPrevMap).some(dKey => {
         const c = staffPrevMap[dKey];
-        return c && shiftDefs[c] && shiftDefs[c].category !== 'off' && shiftDefs[c].category !== 'req';
+        return c && shiftDefs[c] && getEffectiveShiftType(shiftDefs[c], categoryDefs) === 'shift' && !isOffOrReqCategoryId(shiftDefs[c].category, categoryDefs);
       });
 
       let trailingWorkStreak = 0;
@@ -2287,9 +2690,9 @@ const handleResetSchedule = () => {
           const holSuffix = isHoliday(prevYear, prevMonth, pd, closedRules) ? '・祝' : '';
           if (c && shiftDefs[c]) {
             const def = shiftDefs[c];
-            if (def.category === 'off' || def.category === 'req') {
+            if (isOffOrReqCategoryId(def.category, categoryDefs)) {
               trailingWorkStreak = 0;
-              if (def.category === 'off' && c !== 'S' && c !== 'H') {
+              if (isPaidLeaveShiftDef(def, categoryDefs)) {
                 prevWeekPaidOffCount++;
               } else {
                 prevWeekRegOffCount++;
@@ -2324,7 +2727,7 @@ const handleResetSchedule = () => {
         for (let d = 1; d <= currDaysInMonth; d++) {
           if (isSunday(year, month, d)) break;
           const currCode = shiftData[s.id]?.[d];
-          if (currCode && shiftDefs[currCode] && shiftDefs[currCode].category !== 'off' && shiftDefs[currCode].category !== 'req') {
+          if (currCode && shiftDefs[currCode] && !isOffOrReqCategoryId(shiftDefs[currCode].category, categoryDefs)) {
             currentLeadingWorkStreak++;
           } else {
             break;
@@ -2392,7 +2795,7 @@ const handleResetSchedule = () => {
       cool3ShiftCodes,
       byStaff,
     };
-  }, [year, month, prevMonthShiftData, staffList, shiftDefs, adminSettings.maxConsecutiveWorkDays, adminSettings.clinicClosedDays, shiftData]);
+  }, [year, month, prevMonthShiftData, staffList, shiftDefs, categoryDefs, adminSettings.maxConsecutiveWorkDays, adminSettings.clinicClosedDays, shiftData]);
 
 const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskData) => {
     const days = getDaysInMonth(year, month);
@@ -2455,11 +2858,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     const cool3ShiftCodes = prevMonthCarryOver.cool3ShiftCodes;
     const cool3Set = new Set(cool3ShiftCodes);
 
-    // 指定(S)・振休(H)・希望カテゴリ(HOPE等)は「週1日の通常公休枠」、年休(Y)・リフレ(R)等は「公休とは別枠の有休」として区別
+    // 現在のシフト設定に即して「週休枠の公休」と「別枠の有休」を区別（コードではなく設定区分・表示名を参照）
     const isPaidLeaveShiftCode = (code) => {
       if (!code || !shiftDefs[code]) return false;
-      const def = shiftDefs[code];
-      return def.category === 'off' && code !== 'S' && code !== 'H';
+      return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
     };
 
     // 【追加】各スキルの重み付け（点数）を定義
@@ -2518,8 +2920,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         if (!code || !shiftDefs[code]) {
           blankDays++;
           currentStreak = 0;
-          // 管理者がHOPE等をクリアして空欄にした（希望履歴が残っている）セルは、既に休み確定の空欄として扱う
-          if (reqShift && shiftDefs[reqShift] && (shiftDefs[reqShift].category === 'off' || shiftDefs[reqShift].category === 'req')) {
+          // 管理者が希望休等をクリアして空欄にした（希望履歴が残っている）セルは、既に休み確定の空欄として扱う
+          if (reqShift && shiftDefs[reqShift] && isOffOrReqCategoryId(shiftDefs[reqShift].category, categoryDefs)) {
             lockedBlankOffDays++;
             if (isPaidLeaveShiftCode(reqShift)) {
               paidLeaveDays++;
@@ -2536,7 +2938,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           }
         } else {
           const def = shiftDefs[code];
-          if (def.category === 'off' || def.category === 'req') {
+          if (isOffOrReqCategoryId(def.category, categoryDefs)) {
             offDays++;
             currentStreak = 0;
             if (isPaidLeaveShiftCode(code)) {
@@ -2546,7 +2948,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               regularOffEnteredDays++;
               dayStateMap[d] = 'regular_off';
             }
-          } else {
+          } else if (getEffectiveShiftType(def, categoryDefs) === 'shift') {
             workDays++;
             currentStreak++;
             if (currentStreak > currentMaxStreak) currentMaxStreak = currentStreak;
@@ -2557,7 +2959,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         }
       }
 
-      // 週単位で「まだ週1日の通常公休(S/H/HOPE等)が入っておらず、AIが空欄を残すべき週」を特定（第1週は前月末からの月またぎ週も考慮）
+      // 週単位で「まだ週1日の通常公休が入っておらず、AIが空欄を残すべき週」を特定（第1週は前月末からの月またぎ週も考慮）
       const weeksNeedingBlankOff = [];
       calendarWeeks.forEach((w, wIdx) => {
         const weekRegOff = w.days.filter(d => dayStateMap[d] === 'regular_off').length;
@@ -2596,7 +2998,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         }
       });
 
-      // 年休(Y)・リフレ(R)等の有休分は基本目標出勤日数から差し引きつつ、週単位で必須となる空欄公休数と矛盾しないよう整合させる
+      // 有休分は基本目標出勤日数から差し引きつつ、週単位で必須となる空欄公休数と矛盾しないよう整合させる
       const targetWorkDaysMin = Math.max(workDays, standardWorkDaysMin - paidLeaveDays);
       const targetWorkDaysMax = Math.max(workDays, standardWorkDaysMax - paidLeaveDays);
       const rawBlankKeepMin = Math.max(0, assignableBlankDays - Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMax - workDays)));
@@ -2608,7 +3010,14 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
       // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出（※ME室はOPE班管理のため常時除外）
       const allowedWorkShifts = Object.values(shiftDefs)
-        .filter(def => (def.type === 'shift' || !def.type) && def.category !== 'off' && def.category !== 'req' && !isMeRoomShiftCode(def.code) && isShiftAllowedForStaff(s, def.code))
+        .filter(
+          def =>
+            def &&
+            getEffectiveShiftType(def, categoryDefs) === 'shift' &&
+            !isOffOrReqCategoryId(def.category, categoryDefs) &&
+            !isMeRoomShiftCode(def.code) &&
+            isShiftAllowedForStaff(s, def.code)
+        )
         .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
         .map(def => def.code);
 
@@ -2701,50 +3110,75 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
     });
 
-    // Step 4: 施設ごとの必須スキル最低人数設定を整形
+    // 現在のカテゴリ設定から透析施設一覧・目標パワースコア・必須スキル設定を動的整形
+    const sortedCategories = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const facilityCats = sortedCategories.filter(cat => resolveCategoryKind(cat) === 'facility');
+
+    const categoriesMeta = {};
+    const facilityPowerTargetsSummary = {};
+    sortedCategories.forEach(cat => {
+      const kind = resolveCategoryKind(cat);
+      const targetPowerScore = kind === 'facility' ? getFacilityTargetPowerScore(cat, adminSettings) : 0;
+      categoriesMeta[cat.id] = {
+        id: cat.id,
+        label: cat.label,
+        kind,
+        order: cat.order ?? 99,
+        ...(kind === 'facility' ? { targetPowerScore } : {}),
+      };
+      if (kind === 'facility') {
+        facilityPowerTargetsSummary[cat.id] = {
+          facilityLabel: cat.label,
+          targetPowerScore,
+        };
+      }
+    });
+
     const facilitySkillRequirements = {};
-    Object.values(categoryDefs)
-      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
-      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
-      .forEach(cat => {
-        const reqSkills = {};
-        STAFF_SKILLS.forEach(sk => {
-          const minCnt = getFacilitySkillTarget(cat.id, sk.key);
-          if (minCnt > 0) {
-            reqSkills[sk.key] = { label: sk.label, minCount: minCnt };
-          }
-        });
-        if (Object.keys(reqSkills).length > 0) {
-          facilitySkillRequirements[cat.id] = {
-            facilityLabel: cat.label,
-            requiredSkills: reqSkills,
-          };
+    facilityCats.forEach(cat => {
+      const reqSkills = {};
+      STAFF_SKILLS.forEach(sk => {
+        const minCnt = getFacilitySkillTarget(cat.id, sk.key);
+        if (minCnt > 0) {
+          reqSkills[sk.key] = { label: sk.label, minCount: minCnt };
         }
       });
+      if (Object.keys(reqSkills).length > 0) {
+        facilitySkillRequirements[cat.id] = {
+          facilityLabel: cat.label,
+          requiredSkills: reqSkills,
+        };
+      }
+    });
 
     // 各日付の施設別スコア・必須スキル充足状況・不足状況を事前計算してAIの判断精度を高める
     const dailySummary = {};
     for (let d = 1; d <= days; d++) {
       if (calendarInfo[d].isSunday) continue;
-      let sakaScore = 0;
-      let kimiScore = 0;
-      let kikuriScore = 0;
       let workingCount = 0;
       let meWorkingCount = 0;
       const codeCounts = {};
+      const actualScoreByCat = {};
+      const actualHeadcountByCat = {};
+      facilityCats.forEach(cat => {
+        actualScoreByCat[cat.id] = 0;
+        actualHeadcountByCat[cat.id] = 0;
+      });
 
       staffList.forEach(s => {
         const code = customShifts[s.id]?.[d];
         if (!code || !shiftDefs[code]) return;
         const def = shiftDefs[code];
+        if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return;
         codeCounts[code] = (codeCounts[code] || 0) + 1;
-        if (def.category !== 'off' && def.category !== 'req') {
+        if (!isOffOrReqCategoryId(def.category, categoryDefs)) {
           workingCount++;
           if (isMeRoomShiftCode(code)) meWorkingCount++;
           const pScore = staffPowerMap[s.id] || 0;
-          if (def.category === 'saka') sakaScore += pScore;
-          else if (def.category === 'kimi') kimiScore += pScore;
-          else if (def.category === 'kikuri') kikuriScore += pScore;
+          if (actualScoreByCat[def.category] !== undefined) {
+            actualScoreByCat[def.category] += pScore;
+            actualHeadcountByCat[def.category] += 1;
+          }
         }
       });
 
@@ -2752,28 +3186,44 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
       const shortages = [];
       Object.keys(targetCounts || {}).forEach(code => {
-        // ME室(L/G)はOPE班管理者が入力するため、AIが埋めるべき不足リスト(shortages)からは除外
+        // ME室はOPE班管理者が入力するため、AIが埋めるべき不足リスト(shortages)からは除外
         if (isMeRoomShiftCode(code)) return;
+        if (!shiftDefs[code] || getEffectiveShiftType(shiftDefs[code], categoryDefs) !== 'shift') return;
+        if (isOffOrReqCategoryId(shiftDefs[code].category, categoryDefs)) return;
         const target = getTargetCount(code, d);
         const actual = codeCounts[code] || 0;
         if (target > 0 && actual < target) {
           const label = shiftDefs[code]?.label || code;
-          shortages.push(`${label}(${code}): ${actual}/${target}名`);
+          shortages.push(`表示名「${label}」(コード:"${code}"): ${actual}/${target}名`);
         }
       });
       skillEval.allShortages.forEach(sh => {
         shortages.push(`${sh.catLabel} 必須スキル[${sh.skillLabel}]: ${sh.actual}/${sh.target}名`);
       });
-      if (sakaScore < 30) shortages.push(`坂田スコア: ${sakaScore}/30点`);
-      if (kimiScore < 30) shortages.push(`君津スコア: ${kimiScore}/30点`);
-      if (kikuriScore < 40) shortages.push(`木クリスコア: ${kikuriScore}/40点`);
+
+      const facilityPowerScores = {};
+      facilityCats.forEach(cat => {
+        const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
+        const actualScore = actualScoreByCat[cat.id] || 0;
+        const catShiftCodes = Object.values(shiftDefs)
+          .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
+          .map(sd => sd.code);
+        const targetHcSum = catShiftCodes.reduce((sum, c) => sum + getTargetCount(c, d), 0);
+        const isActive = targetHcSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
+        facilityPowerScores[cat.id] = {
+          label: cat.label,
+          actualScore,
+          targetScore,
+        };
+        if (targetScore > 0 && isActive && actualScore < targetScore) {
+          shortages.push(`${cat.label}スコア: ${actualScore}/${targetScore}点`);
+        }
+      });
 
       dailySummary[d] = {
         workingCount,
         meWorkingCount,
-        sakaScore,
-        kimiScore,
-        kikuriScore,
+        facilityPowerScores,
         facilitySkillCounts: skillEval.skillCountsByCat,
         shortages
       };
@@ -2798,13 +3248,15 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         standardMonthlyRegularOffDays: baseRegularOffMin === baseRegularOffMax
           ? `${baseRegularOffMin}日`
           : `${baseRegularOffMin}〜${baseRegularOffMax}日`,
-        offDayRepresentation: '空欄（SやH等のコードは入れず未入力のまま残す）',
-        meRoomRule: 'ME室(L, G)、個人(スタッフ本人)が入力したシフト・希望（管理者が対応済みの空欄休みや変更後シフトも含む）、およびHHD班・エコー班・オペ班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止（条件・スコア・スキル・連勤計算には必ず含める）'
+        offDayRepresentation: '空欄（休みカテゴリのコードは入れず未入力のまま残す）',
+        meRoomRule: 'ME室カテゴリのシフト、個人(スタッフ本人)が入力したシフト・希望（管理者が対応済みの空欄休みや変更後シフトも含む）、およびHHD班・エコー班・オペ班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止（条件・スコア・スキル・連勤計算には必ず含める）'
       },
       customConditions: {
         strict: strictConditionsList,
         soft: softConditionsList,
       },
+      categories: categoriesMeta,
+      facilityPowerTargets: facilityPowerTargetsSummary,
       facilitySkillRequirements,
       calendar: calendarInfo,
       calendarWeeks,
@@ -2817,11 +3269,25 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       tasks: customTasks,
       targetCounts,
       definitions: Object.keys(shiftDefs).reduce((acc, key) => {
+        const def = shiftDefs[key];
+        const effType = getEffectiveShiftType(def, categoryDefs);
+        const catObj = categoryDefs[def.category];
+        const catKind = getCategoryKindById(def.category, categoryDefs);
+        const workSlot = resolveShiftWorkSlot(def, categoryDefs);
+        const offSubType = resolveOffSubType(def, categoryDefs);
         acc[key] = {
-          label: shiftDefs[key].label,
-          type: shiftDefs[key].type,
-          category: shiftDefs[key].category,
-          overtime: shiftDefs[key].overtime || 0
+          code: key,
+          displayLabel: def.label,
+          label: def.label,
+          type: effType,
+          category: def.category,
+          categoryLabel: catObj?.label || def.category || '',
+          categoryKind: catKind,
+          ...(workSlot ? { workSlot, workSlotLabel: getShiftWorkSlotMeta(workSlot).label } : {}),
+          ...(offSubType ? { offSubType } : {}),
+          ...(def.startTime ? { startTime: def.startTime } : {}),
+          ...(def.endTime ? { endTime: def.endTime } : {}),
+          overtime: def.overtime || 0
         };
         return acc;
       }, {})
@@ -2916,13 +3382,15 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 ? changes.shift[key][dayNum]
                 : changes.shift[key][String(dayNum)];
 
-              // Step 6 自動手直し時（allowClearAiCells = true）は、AIが割当済みのセルを空欄公休（null等、または誤って休みコードを出力した場合）に戻す操作を許可
+              const resolvedCode = resolveAiOutputCode(rawVal, shiftDefs, categoryDefs, 'shift', staffObj);
+
+              // Step 6 自動手直し時（allowClearAiCells = true）は、AIが割当済みのセルを空欄公休（null等、または誤って休みコード/表示名を出力した場合）に戻す操作を許可
               const isClearOp =
                 rawVal === null ||
                 rawVal === '' ||
                 rawVal === 'CLEAR' ||
                 rawVal === 'NONE' ||
-                (typeof rawVal === 'string' && shiftDefs[rawVal] && (shiftDefs[rawVal].category === 'off' || shiftDefs[rawVal].category === 'req'));
+                (resolvedCode && shiftDefs[resolvedCode] && isOffOrReqCategoryId(shiftDefs[resolvedCode].category, categoryDefs));
 
               if (isClearOp) {
                 if (allowClearAiCells && ns[staffId]?.[dayNum]) {
@@ -2932,11 +3400,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 return;
               }
 
-              let code = String(rawVal);
+              let code = resolvedCode;
               if (!code || !shiftDefs[code]) return;
               const def = shiftDefs[code];
-              // ME室(L/G)および休みコード(off/req)の書き込みは禁止
-              if (isMeRoomShiftCode(code) || def.category === 'off' || def.category === 'req') return;
+              // ME室および休みコード(off/req)の書き込みは禁止
+              if (isMeRoomShiftCode(code) || isOffOrReqCategoryId(def.category, categoryDefs)) return;
 
               // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
               if (cool3Set.has(code)) {
@@ -2950,7 +3418,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                   const sameFacilityAlt = Object.values(shiftDefs)
                     .filter(
                       alt =>
-                        alt.type === 'shift' &&
+                        alt &&
+                        getEffectiveShiftType(alt, categoryDefs) === 'shift' &&
                         alt.category === def.category &&
                         !cool3Set.has(alt.code) &&
                         !isMeRoomShiftCode(alt.code) &&
@@ -2960,9 +3429,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                   const anyAllowedAlt = Object.values(shiftDefs)
                     .filter(
                       alt =>
-                        alt.type === 'shift' &&
-                        alt.category !== 'off' &&
-                        alt.category !== 'req' &&
+                        alt &&
+                        getEffectiveShiftType(alt, categoryDefs) === 'shift' &&
+                        !isOffOrReqCategoryId(alt.category, categoryDefs) &&
                         !cool3Set.has(alt.code) &&
                         !isMeRoomShiftCode(alt.code) &&
                         isShiftAllowedForStaff(staffObj, alt.code)
@@ -3014,7 +3483,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 return;
               }
 
-              const code = String(rawTaskVal || '');
+              const code = resolveAiOutputCode(rawTaskVal, shiftDefs, categoryDefs, 'task', staffObj);
               if (code && shiftDefs[code] && nt[staffId][dayNum] !== code) {
                 nt[staffId][dayNum] = code;
                 updatedCount++;
@@ -3242,15 +3711,33 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     try {
       const initialData = prepareScheduleDataForAi(originalShifts, originalTasks);
       const calendarWeeks = initialData.calendarWeeks || [];
-      const cool3LabelStr = (initialData.cool3ShiftCodes || ['A', 'F']).join(', ');
-      const cool3Set = new Set(initialData.cool3ShiftCodes || []);
+      const cool3Codes = initialData.cool3ShiftCodes || [];
+      const cool3DescStr = cool3Codes.length > 0
+        ? cool3Codes.map(c => (shiftDefs[c] ? `表示名「${shiftDefs[c].label}」(コード:"${c}")` : `コード:"${c}"`)).join('・')
+        : '設定なし';
+      const cool3Set = new Set(cool3Codes);
+      const meShiftDescList = Object.values(shiftDefs)
+        .filter(sd => sd && isMeRoomShiftCode(sd.code))
+        .map(sd => `表示名「${sd.label}」(コード:"${sd.code}")`);
+      const meShiftDescStr = meShiftDescList.length > 0 ? meShiftDescList.join('・') : 'ME室カテゴリのシフト';
       const maxStreak = initialData.pacingRules?.maxConsecutiveWorkDays || 5;
       const skillReqLines = Object.values(initialData.facilitySkillRequirements || {}).map(fReq => {
         const parts = Object.values(fReq.requiredSkills || {}).map(sr => `${sr.label}${sr.minCount}名以上`);
         return `${fReq.facilityLabel}: ${parts.join('・')}`;
       });
       const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
-      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供されたデータと条件をもとに、可能な範囲でシフトを組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
+      const powerTargetEntries = Object.entries(initialData.facilityPowerTargets || {});
+      const powerScoreSummaryText = powerTargetEntries.length > 0
+        ? powerTargetEntries
+            .map(([catId, fp]) =>
+              fp.targetPowerScore > 0
+                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
+                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+            )
+            .join(' ／ ')
+        : '設定なし';
+      const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings);
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
 
       const strictConditions = autoFillConditions
         .filter(c => c.active && c.priority !== 'soft')
@@ -3263,7 +3750,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
       const isPaidLeaveCode = (code) => {
         if (!code || !shiftDefs[code]) return false;
-        return shiftDefs[code].category === 'off' && code !== 'S' && code !== 'H';
+        return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
       };
 
       let workingShifts = { ...originalShifts };
@@ -3297,6 +3784,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           if (!sum) return false;
           if (sum.workingCount === 0) return true;
           return Object.keys(targetCounts || {}).some(code => {
+            if (!shiftDefs[code] || getEffectiveShiftType(shiftDefs[code], categoryDefs) !== 'shift') return false;
+            if (isOffOrReqCategoryId(shiftDefs[code].category, categoryDefs)) return false;
             if (isMeRoomShiftCode(code)) return false;
             const target = getTargetCount(code, d);
             if (target <= 0) return false;
@@ -3392,6 +3881,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           weekDailySummary[d] = weekAiData.dailySummary[d];
           const dayTargets = {};
           Object.keys(targetCounts || {}).forEach(code => {
+            if (!shiftDefs[code] || getEffectiveShiftType(shiftDefs[code], categoryDefs) !== 'shift') return;
+            if (isOffOrReqCategoryId(shiftDefs[code].category, categoryDefs)) return;
             if (isMeRoomShiftCode(code)) return;
             const t = getTargetCount(code, d);
             if (t > 0) dayTargets[code] = t;
@@ -3430,7 +3921,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 break;
               }
               const prevCode = workingShifts[st.id]?.[cursor];
-              if (prevCode && shiftDefs[prevCode] && shiftDefs[prevCode].category !== 'off' && shiftDefs[prevCode].category !== 'req') {
+              if (
+                prevCode &&
+                shiftDefs[prevCode] &&
+                getEffectiveShiftType(shiftDefs[prevCode], categoryDefs) === 'shift' &&
+                !isOffOrReqCategoryId(shiftDefs[prevCode].category, categoryDefs)
+              ) {
                 enteringWorkStreak++;
                 cursor--;
               } else {
@@ -3461,13 +3957,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
             if (code && shiftDefs[code]) {
               existingShiftsInThisWeek[d] = code;
-              if (shiftDefs[code].category === 'off' || shiftDefs[code].category === 'req') {
+              if (isOffOrReqCategoryId(shiftDefs[code].category, categoryDefs)) {
                 if (isPaidLeaveCode(code)) paidOffInThisWeek++;
                 else regOffInThisWeek++;
               }
             } else if (reqShift || teamLock) {
               lockedBlankOffDaysInThisWeek.push(d);
-              if (reqShift && shiftDefs[reqShift] && (shiftDefs[reqShift].category === 'off' || shiftDefs[reqShift].category === 'req')) {
+              if (reqShift && shiftDefs[reqShift] && isOffOrReqCategoryId(shiftDefs[reqShift].category, categoryDefs)) {
                 if (isPaidLeaveCode(reqShift)) paidOffInThisWeek++;
                 else regOffInThisWeek++;
               }
@@ -3489,7 +3985,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = `0〜${maxNew}日（パート条件・必要人数に応じて配置）`;
           } else if (targetWeek.isFullWeek) {
-            // 月〜土のフル6日週: 指定休(S)・振休(H)・希望休が未入力なら必ず1日を空欄公休として残す（年休Yがある週も指定休1日は別枠で確保）
+            // 月〜土のフル6日週: 週休枠の公休・希望休が未入力なら必ず1日を空欄公休として残す（別枠の有休がある週も週休1日は別枠で確保）
             mustKeepBlankDaysMinInThisWeek = regOffInThisWeek === 0 ? 1 : 0;
             const recWork = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = `${recWork}日`;
@@ -3582,6 +4078,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             currentDailySummary: weekDailySummary,
           },
           pacingRules: weekAiData.pacingRules,
+          categories: weekAiData.categories,
+          facilityPowerTargets: weekAiData.facilityPowerTargets,
           facilitySkillRequirements: weekAiData.facilitySkillRequirements,
           cool3ShiftCodes: weekAiData.cool3ShiftCodes,
           definitions: weekAiData.definitions,
@@ -3599,36 +4097,38 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       1ヶ月分を第1週から順番に組み立てています。今回は **第${targetWeek.weekIndex}週の対象日 [${targetWeek.days.join(', ')}] のみ** について、前週までの実績（cumulativeStatsSoFar）と各職員の今週プラン（thisWeekPlan）を守りながら、必要な出勤シフトのみを割り当ててください。
       ※対象日 [${targetWeek.days.join(', ')}] 以外の日付は絶対に出力しないでください。
 
+      ${shiftSystemRefText}
+
       【基本ルール】
       1. 既存データ・各班管理者入力・個人希望の維持と活用（★絶対厳守★）:
          - 各職員の "thisWeekPlan.assignableDaysInThisWeek" に含まれる日付のみ、AIから出勤シフトを新規割り当てできます。
          - 既にシフトが入っている箇所（thisWeekPlan.existingShiftsInThisWeek）、希望休をクリアした確定空欄日（lockedBlankOffDaysInThisWeek）、"teamAdminLocksInWeek"・"staffRequestsInWeek" にある箇所は絶対に変更しないでください。
-         - ただし、既存シフトのメンバー（HHD班・エコー班・オペ班管理者が入力した分やME室のL/G等も含む）の人数・powerScore・保持スキル（リーダー等）・連勤数は、すべて条件計算に含めてください（currentDailySummary に事前集計済みです）。
+         - ただし、既存シフトのメンバー（HHD班・エコー班・オペ班管理者が入力した分やME室（${meShiftDescStr}）も含む）の人数・powerScore・保持スキル（リーダー等）・連勤数は、すべて条件計算に含めてください（currentDailySummary に事前集計済みです）。
       2. AI除外・配置可能シフト制限・ME室除外（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のため対象外。
          - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
-         - 「ME室 (category: me / コード: L, G)」はOPE班管理のためAI配置対象外です（L, G の出力禁止・既存変更禁止）。
-         - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれるコードのみから選んでください。
+         - ME室（${meShiftDescStr}）はOPE班管理のためAI配置対象外です（新規出力禁止・既存変更禁止）。
+         - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
       3. 今週の週休確保（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
          - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak"（今週初日の直前までの連勤数）と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" を必ず守ってください（0の場合は今週初日 ${firstDay}日 を必ず空欄休みにすること）。
-         - AIが休ませる日（指定休・祝日の振替休にあたる日）には S や H 等のコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
+         - AIが休ませる日（週休枠の公休・振替休にあたる日）には休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
          - 各職員の "thisWeekPlan" にある:
            ・mustKeepBlankDaysMinInThisWeek（assignableDaysInThisWeek のうち必ず空欄のまま残すべき最低日数）
            ・recommendedNewWorkDaysInThisWeek（今週AIが新規に割り当てる出勤日数の目安）
            を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
       4. 3クール制限・連続3クール禁止（★絶対厳守★）:
-         - 3クールシフト（コード: ${cool3LabelStr}）は "cumulativeStatsSoFar.remainingCool3"（残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
-         - 同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
+         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
+         - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
       5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
          - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
          - まず各施設に該当スキル保持者（リーダー等）が最低人数以上入るように優先配置してください。
          - どうしても出勤可能な保持者が足りない日は、希望休・既存シフト・配置不可制限・最大${maxStreak}連勤上限を破らず、「1施設に2名以上偏らせず1名ずつ分散配置」し、0名の施設にはベテラン（skills.isVeteran: true）や高powerScoreスタッフを配置してカバーしてください。
       6. パワーバランスと必要人数・負担平準化:
-         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay" と "currentDailySummary" を参照して満たしてください。
-         - 各施設の合計powerScore基準: 坂田(saka) 30点以上 ／ 君津(kimi) 30点以上 ／ 木クリ(kikuri) 40点以上（※じんクリはスコア計算不要、ME室は対象外）。
+         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して満たしてください。
+         - 各施設の合計powerScore基準: 【${powerScoreSummaryText}】（ME室は対象外）。
          - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、前週までに負担が多い職員に3クールや残業が偏らないよう平準化してください。
 
-      【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★）】
+      【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表の表示名・区分からコードへ変換して適用すること）】
       ${strictConditions ? strictConditions : '特になし'}
 
       【カスタム条件②：[なるべく] ルール（努力目標・ソフト条件）】
@@ -3637,13 +4137,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
       【出力形式】
       必ず以下のJSONフォーマットのみを出力してください（Markdownタグ禁止）。
-      対象日 [${targetWeek.days.join(', ')}] を1日ずつチェックして "dailyCheck" に記載し、今週出勤させるセルのみ "shift" に出力してください（休みの日は空欄のままにするため出力しないこと）。
+      対象日 [${targetWeek.days.join(', ')}] を1日ずつチェックして "dailyCheck" に記載し、今週出勤させるセルのみ "shift" に【シフトコード】で出力してください（休みの日は空欄のままにするため出力しないこと）。
       {
         "dailyCheck": {
 ${dailyCheckExampleLines}
         },
         "shift": {
-          "職員ID": { "今週の対象日付(${firstDay}〜${lastDay})": "出勤シフトコード" }
+          "職員ID": { "今週の対象日付(${firstDay}〜${lastDay})": "出勤シフトコード（※表示名ではなくコード文字列）" }
         },
         "reason": "第${targetWeek.weekIndex}週（${targetWeek.label}）の調整メモ"
       }
@@ -3839,22 +4339,24 @@ ${dailyCheckExampleLines}
           第1週から最終週まで順番に作成した仮シフトを1ヶ月通しで検算したところ、以下の違反・不足箇所が見つかりました。
           問題のない他の日程・職員のバランスは崩さず、以下の指摘事項を解消するための「修正差分のみ」をJSONで出力してください。
 
+          ${shiftSystemRefText}
+
           【検算で検出された要修正リスト】
           ${repairListText}
 
           【手直し時の厳守ルール】
-          1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室(L/G)・日曜日は絶対に変更しないでください。
+          1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室（${meShiftDescStr}）・日曜日は絶対に変更しないでください。
           2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、減ったシフトをその日に出勤可能（最大${maxStreak}連勤や3クール連続に違反しない）な他スタッフへ割り当ててください。
-          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、出勤日数に余力のある未ロック空欄スタッフへ出勤シフト（allowedWorkShifts内）を割り当ててください。
-          4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、3クール連続（${cool3LabelStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
-          ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件】\n${strictConditions}\n` : ''}
+          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、出勤日数に余力のある未ロック空欄スタッフへ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。
+          4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
+          ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件（※文中のシフト名・施設名は上の対応表からコードへ変換して適用）】\n${strictConditions}\n` : ''}
           【各職員のAI編集可能日リスト（aiEditableDaysByStaff）】
           ${JSON.stringify(aiEditableDaysByStaff)}
 
           【現在の仮シフト全体データ】
           ${JSON.stringify(pass1AiData)}
 
-          【出力JSONフォーマット（修正する差分セルのみ出力。休みの空欄に戻すセルは null を指定）】
+          【出力JSONフォーマット（修正する差分セルのみ出力。表示名ではなくシフトコードを指定し、休みの空欄に戻すセルは null を指定）】
           {
             "shift": {
               "職員ID": { "日付(1-31の数値)": "新しいシフトコード または 空欄公休に戻す場合は null" }
@@ -4050,14 +4552,14 @@ ${dailyCheckExampleLines}
 
           const rawCode = dayMap[dayKey];
           const isClear = rawCode === null || rawCode === '' || rawCode === 'CLEAR' || rawCode === 'NONE';
-          const normalizedAfter = isClear ? null : String(rawCode);
-          if (normalizedAfter && !shiftDefs[normalizedAfter]) return;
+          const normalizedAfter = isClear ? null : resolveAiOutputCode(rawCode, shiftDefs, categoryDefs, kind, staff);
+          if (!isClear && !normalizedAfter) return;
 
           const currentCode = (kind === 'shift' ? shiftData[staffId]?.[dayNum] : taskData[staffId]?.[dayNum]) || null;
           if (currentCode === normalizedAfter) return;
 
           // 個人(スタッフ本人)が入力したシフト・希望（管理者が空欄公休や別シフトに対応済みのものも含む）、
-          // HHD班・エコー班・オペ班管理者が入力したシフト・タスク、およびME室(L/G)の新規自動配置はAIからも一切変更不可とする
+          // HHD班・エコー班・オペ班管理者が入力したシフト・タスク、およびME室の新規自動配置はAIからも一切変更不可とする
           if (kind === 'shift') {
             if (getUserRequestedShift(staffId, dayNum)) return;
             if (getTeamLockedShiftSource(staffId, dayNum)) return;
@@ -4080,7 +4582,8 @@ ${dailyCheckExampleLines}
           const getProjectedShiftAt = (d) => {
             if (Object.prototype.hasOwnProperty.call(dayMap, d) || Object.prototype.hasOwnProperty.call(dayMap, String(d))) {
               const rawAdj = dayMap[d] ?? dayMap[String(d)];
-              return rawAdj === null || rawAdj === '' || rawAdj === 'CLEAR' || rawAdj === 'NONE' ? null : String(rawAdj);
+              if (rawAdj === null || rawAdj === '' || rawAdj === 'CLEAR' || rawAdj === 'NONE') return null;
+              return resolveAiOutputCode(rawAdj, shiftDefs, categoryDefs, 'shift', staff);
             }
             return shiftData[staffId]?.[d] || null;
           };
@@ -4254,13 +4757,31 @@ ${dailyCheckExampleLines}
 
     try {
       const data = prepareScheduleDataForAi();
-      const cool3LabelStr = (data.cool3ShiftCodes || ['A', 'F']).join(', ');
+      const cool3Codes = data.cool3ShiftCodes || [];
+      const cool3DescStr = cool3Codes.length > 0
+        ? cool3Codes.map(c => (shiftDefs[c] ? `表示名「${shiftDefs[c].label}」(コード:"${c}")` : `コード:"${c}"`)).join('・')
+        : '設定なし';
+      const meShiftDescList = Object.values(shiftDefs)
+        .filter(sd => sd && isMeRoomShiftCode(sd.code))
+        .map(sd => `表示名「${sd.label}」(コード:"${sd.code}")`);
+      const meShiftDescStr = meShiftDescList.length > 0 ? meShiftDescList.join('・') : 'ME室カテゴリのシフト';
       const maxStreak = data.pacingRules?.maxConsecutiveWorkDays || 5;
       const skillReqLines = Object.values(data.facilitySkillRequirements || {}).map(fReq => {
         const parts = Object.values(fReq.requiredSkills || {}).map(sr => `${sr.label}${sr.minCount}名以上`);
         return `${fReq.facilityLabel}: ${parts.join('・')}`;
       });
       const skillReqSummaryText = skillReqLines.length > 0 ? skillReqLines.join(' ／ ') : '設定なし';
+      const powerTargetEntries = Object.entries(data.facilityPowerTargets || {});
+      const powerScoreSummaryText = powerTargetEntries.length > 0
+        ? powerTargetEntries
+            .map(([catId, fp]) =>
+              fp.targetPowerScore > 0
+                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
+                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+            )
+            .join(' ／ ')
+        : '設定なし';
+      const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings);
 
       const strictConditions = autoFillConditions
         .filter(c => c.active && c.priority !== 'soft')
@@ -4276,7 +4797,9 @@ ${dailyCheckExampleLines}
 
 【会話と出力の鉄則】
 1. 出力は必ず指定されたJSONオブジェクト形式のみとしてください（Markdownコードブロックは不要）。
-2. "reply" には管理者に語りかける自然な日本語メッセージを書いてください。内部のシフトコード（A, P, HOPEなど）や職員IDは使わず、必ず表示名（坂3、坂2、希望 など）と職員名（職員Aさん など）で分かりやすく伝えてください。
+2. 画面上の「表示名」とデータ保存用の「シフトコード」が異なる設定に対応しています（例：コード "1" ＝ 表示名「A」など）。
+   ・"reply" には管理者に語りかける自然な日本語メッセージを書き、内部のシフトコードや職員IDではなく、必ず現在のシステム設定の【表示名】と【職員名】で分かりやすく伝えてください。
+   ・一方、JSONの "shift" / "task" に出力する値は、表示名ではなく必ず対応表の【シフトコード】（または空欄に戻す null）を指定してください。
 3. 質問への回答、現状の診断、または複数候補の比較相談の段階では、"shift" と "task" は空オブジェクト {} のままにし、まず会話で相談に乗ってください。
 4. 管理者が「変更案を作って」「仮組みして」「その案で進めて」「〇〇さんを△△に変えて」などシフト変更を求めた場合や、具体的な変更プレビューを提示した方が話が早い場合は、"reply" で理由や配慮点を説明した上で、"shift"（および必要なら "task"）に変更する箇所の差分だけを入れてください（管理者が画面上の「勤務表に反映する」ボタンを押すまで実際の表は書き換わらない安心設計になっています）。
 5. "staffRequests" にある箇所（個人＝スタッフ本人が入力したシフト・希望、およびそれに対して管理者が空欄休みや別シフトに対応済みの箇所）と、"teamAdminLocks" にある箇所（HHD班・エコー班・オペ班管理者が入力したシフト・タスク）は管理者が直接対応する確定領域のため、AIからは絶対に変更・上書きできません。そのまま維持し、条件計算（人数・スコア・必須スキル・連勤・公休数）にのみ反映してください。
@@ -4285,28 +4808,30 @@ ${dailyCheckExampleLines}
       const currentContextPrompt = `
 【現在の対象年月】${year}年${month}月
 
+${shiftSystemRefText}
+
 【基本ルール】
 - 日曜日は透析休診（空欄のまま）。祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜以外は通常通り透析を実施するため出勤日として扱います。
 - "excludeFromAi": true の職員は原則変更不可（管理者が名指しで指示した場合のみ例外）。
-- 個人（スタッフ本人）入力箇所・各班管理者（HHD班・エコー班・オペ班管理者）入力箇所・ME室（L, G）の扱い（★絶対厳守★）:
-  ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、およびME室（category: me / コード: L, G）は、AIから新規に L・G を入れたり、変更・移動・削除することは絶対禁止です（※祝日のME室必要人数は G:1名 / L:0名 として集計されます）。
+- 個人（スタッフ本人）入力箇所・各班管理者（HHD班・エコー班・オペ班管理者）入力箇所・ME室の扱い（★絶対厳守★）:
+  ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、およびME室（${meShiftDescStr}）は、AIから新規に入れたり、変更・移動・削除することは絶対禁止です。
   ・ただし、それらのセルに入っているシフトや確定公休も、該当施設の人数・powerScore・必須スキル（リーダー等）・その職員の出勤日数・週休消化・連勤数・3クール回数には必ず含めて考慮してください。
-- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれるシフトコードのみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
+- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
   ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
   ・各職員の "prevMonthCarryOver" に前月末最終週からの連勤数（trailingWorkStreak）、1日からの最大許容連勤数（maxAllowedConsecutiveWorkFromDay1）、前月側での公休取得有無（alreadyTookWeeklyOffInPrevMonthPart）が入っていますので必ず考慮してください。
-  ・AIが休ませる日（指定休・祝日の振替休枠）には、S や H 等のコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
-  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（年休Y・リフレR等の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週 ※月またぎ第1週も含む）を守ってください。
+  ・AIが休ませる日（週休枠の公休・祝日の振替休枠）には、休みコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
+  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（別枠の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週 ※月またぎ第1週も含む）を守ってください。
 - 3クール制限・連続3クール禁止（月またぎ含む・重要）:
-  ・各職員の maxCool3 は3クールシフト（コード: ${cool3LabelStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
-  ・同じ職員に3クールシフト（${cool3LabelStr}）を2日連続で割り当てないでください（日曜休診を挟む場合を除く）。特に "prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを入れず "day1AllowedWorkShifts" から選んでください。
+  ・各職員の maxCool3 は現在のシステム設定における3クールシフト（${cool3DescStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
+  ・同じ職員に3クールシフトを2日連続で割り当てないでください（日曜休診を挟む場合を除く）。特に "prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを入れず "day1AllowedWorkShifts" から選んでください。
 - 施設ごとの必須スキル配置（Step 4）と不足時の次善策:
   ・各施設の必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】（dailySummary[d].facilitySkillCounts と shortages に現状が計算済みです）。
   ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
-- 施設別目標パワースコア: 坂田(saka) 30点以上、君津(kimi) 30点以上、木クリ(kikuri) 40点以上（dailySummary に各日の現在スコアと不足一覧 shortages が計算済みです）。じんクリ(jinkuri)は人数充足のみ。
-- 必要人数: targetCounts を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
+- 施設別目標パワースコア: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores と不足一覧 shortages に計算済みです）。
+- 必要人数: targetCounts（キーはシフトコード）を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
 
-【有効なカスタム条件①：[絶対]（★最優先で必ず守る条件★）】
+【有効なカスタム条件①：[絶対]（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表からコードへ変換して解釈すること）】
 ${strictConditions ? strictConditions : '特になし'}
 
 【有効なカスタム条件②：[なるべく]（基本ルール・必要人数・必須スキルを崩さない範囲で配慮する努力目標）】
@@ -4314,9 +4839,9 @@ ${softConditions ? softConditions : '特になし'}
 
 【出力JSONスキーマ】
 {
-  "reply": "管理者に向けた丁寧で分かりやすい返答メッセージ（改行可）",
+  "reply": "管理者に向けた丁寧で分かりやすい返答メッセージ（内部コードではなく表示名を使用・改行可）",
   "shift": {
-    "職員ID": { "日付(1-31の数値文字列)": "シフトコード（空欄に戻す場合のみ null）" }
+    "職員ID": { "日付(1-31の数値文字列)": "シフトコード（※表示名ではなくコード文字列。空欄に戻す場合のみ null）" }
   },
   "task": {
     "職員ID": { "日付(1-31の数値文字列)": "タスクコード（空欄に戻す場合のみ null）" }
@@ -4455,22 +4980,44 @@ ${messageText}`;
   const daysInMonth = useMemo(() => getDaysInMonth(year, month), [year, month]);
   const daysArray = useMemo(() => Array.from({ length: daysInMonth }, (_, i) => i + 1), [daysInMonth]);
   const calendarDays = useMemo(() => generateCalendarDays(year, month), [year, month]);
+  const aiQuickPrompts = useMemo(() => buildAiQuickPrompts(categoryDefs), [categoryDefs]);
 
   const dynamicPaletteGroups = useMemo(() => {
     const groups = {};
-    Object.keys(categoryDefs).forEach(catId => groups[catId] = []);
+    Object.keys(categoryDefs).forEach(catId => { groups[catId] = []; });
+    const fallbackBasicId = Object.values(categoryDefs).find(c => resolveCategoryKind(c) === 'basic')?.id || null;
+    const uncategorized = [];
     Object.values(shiftDefs).sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)).forEach(shift => {
+      if (!shift) return;
       if (groups[shift.category]) groups[shift.category].push(shift.code);
-      else { if (!groups['basic']) groups['basic'] = []; groups['basic'].push(shift.code); }
+      else if (fallbackBasicId && groups[fallbackBasicId]) groups[fallbackBasicId].push(shift.code);
+      else uncategorized.push(shift.code);
     });
-    return Object.values(categoryDefs).sort((a, b) => a.order - b.order).map(cat => ({ id: cat.id, name: cat.label, items: groups[cat.id] || [] })).filter(g => g.items.length > 0);
+    const result = Object.values(categoryDefs)
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+      .map(cat => ({ id: cat.id, name: cat.label, kind: resolveCategoryKind(cat), items: groups[cat.id] || [] }))
+      .filter(g => g.items.length > 0);
+    if (uncategorized.length > 0) {
+      result.push({ id: '__uncategorized', name: '未分類', kind: 'basic', items: uncategorized });
+    }
+    return result;
   }, [shiftDefs, categoryDefs]);
 
   const dynamicSummaryGroups = useMemo(() => {
-    return Object.values(categoryDefs).filter(cat => cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role').sort((a, b) => a.order - b.order).map(def => {
+    return Object.values(categoryDefs)
+      .filter(cat => {
+        const kind = resolveCategoryKind(cat);
+        return kind !== 'off' && kind !== 'req' && kind !== 'role';
+      })
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+      .map(def => {
         const catKey = def.id;
-        const categoryItems = Object.values(shiftDefs).filter(s => s.category === catKey && s.type === 'shift').sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999)).map(s => s.code);
-        return { id: catKey, name: def.label, items: categoryItems, totalLabel: `${def.label} 計`, headerColor: def.color };
+        const kind = resolveCategoryKind(def);
+        const categoryItems = Object.values(shiftDefs)
+          .filter(s => s && s.category === catKey && getEffectiveShiftType(s, categoryDefs) === 'shift')
+          .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+          .map(s => s.code);
+        return { id: catKey, name: def.label, kind, items: categoryItems, totalLabel: `${def.label} 計`, headerColor: def.color };
       });
   }, [shiftDefs, categoryDefs]);
 
@@ -4496,28 +5043,30 @@ ${messageText}`;
         const sCode = shiftData[staff.id]?.[day];
         if (sCode && shiftDefs[sCode]) {
           stats[day][sCode] = (stats[day][sCode] || 0) + 1;
-          if (shiftDefs[sCode].category !== 'off' && shiftDefs[sCode].category !== 'req') stats[day].total++;
+          if (
+            getEffectiveShiftType(shiftDefs[sCode], categoryDefs) === 'shift' &&
+            !isOffOrReqCategoryId(shiftDefs[sCode].category, categoryDefs)
+          ) {
+            stats[day].total++;
+          }
         }
         const tCode = taskData[staff.id]?.[day];
         if (tCode && shiftDefs[tCode]) stats[day][tCode] = (stats[day][tCode] || 0) + 1;
       });
     });
     return stats;
-  }, [shiftData, taskData, staffList, daysArray, shiftDefs]);
+  }, [shiftData, taskData, staffList, daysArray, shiftDefs, categoryDefs]);
 
   // Step 4: 各日・各施設のスキル保持者数と必須スキル不足（オレンジ警告表示用）をメモ化
   const dailyFacilitySkillSummary = useMemo(() => {
     const summary = {};
     const facilityCats = Object.values(categoryDefs)
-      .filter(cat => cat.id !== 'me' && cat.id !== 'off' && cat.id !== 'req' && cat.id !== 'role' && cat.id !== 'basic')
+      .filter(cat => resolveCategoryKind(cat) === 'facility')
       .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
-    const customSkillMap = adminSettings?.facilitySkillTargets;
 
     const readSkillMin = (catId, skillKey) => {
-      if (customSkillMap && customSkillMap[catId] && customSkillMap[catId][skillKey] !== undefined) {
-        return Math.max(0, parseInt(customSkillMap[catId][skillKey], 10) || 0);
-      }
-      return DEFAULT_FACILITY_SKILL_TARGETS[catId]?.[skillKey] ?? 0;
+      if (!catId || !categoryDefs[catId]) return 0;
+      return resolveFacilitySkillTarget(categoryDefs[catId], skillKey, adminSettings);
     };
 
     daysArray.forEach(day => {
@@ -4543,7 +5092,7 @@ ${messageText}`;
         const code = shiftData[s.id]?.[day];
         if (!code || !shiftDefs[code]) return;
         const def = shiftDefs[code];
-        if (def.type !== 'shift' || def.category === 'off' || def.category === 'req') return;
+        if (getEffectiveShiftType(def, categoryDefs) !== 'shift' || isOffOrReqCategoryId(def.category, categoryDefs)) return;
         if (skillCountsByCat[def.category] === undefined) return;
 
         actualHeadcountByCat[def.category] = (actualHeadcountByCat[def.category] || 0) + 1;
@@ -4556,7 +5105,7 @@ ${messageText}`;
 
       facilityCats.forEach(cat => {
         const catShiftCodes = Object.values(shiftDefs)
-          .filter(sd => sd.type === 'shift' && sd.category === cat.id)
+          .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
           .map(sd => sd.code);
         if (catShiftCodes.length === 0) return;
 
@@ -4595,8 +5144,16 @@ ${messageText}`;
   }, [daysArray, shiftData, staffList, shiftDefs, categoryDefs, targetCounts, adminSettings, year, month]);
 
   const countedOffShifts = useMemo(() => {
-    return Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
-  }, [adminSettings.countedOffShifts]);
+    const rawList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
+    const existingMatched = rawList.filter(c => Boolean(shiftDefs[c]));
+    if (existingMatched.length > 0) return existingMatched;
+    if (rawList.length === 1 && rawList[0] === 'HOPE' && !shiftDefs['HOPE']) {
+      return Object.values(shiftDefs)
+        .filter(s => s && getEffectiveShiftType(s, categoryDefs) === 'shift' && isReqCategoryId(s.category, categoryDefs))
+        .map(s => s.code);
+    }
+    return rawList;
+  }, [adminSettings.countedOffShifts, shiftDefs, categoryDefs]);
 
   const clinicClosedDays = useMemo(() => {
     return Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
@@ -4619,7 +5176,7 @@ ${messageText}`;
           : rawUserEntry.shift || null;
 
         const isCurrentCounted = !!(currentCode && countedSet.has(currentCode));
-        const isCurrentBlankOrOff = !currentCode || shiftDefs[currentCode]?.category === 'off' || shiftDefs[currentCode]?.category === 'req';
+        const isCurrentBlankOrOff = !currentCode || isOffOrReqCategoryId(shiftDefs[currentCode]?.category, categoryDefs);
         const isOriginalRequestMaintained = !!(reqCode && countedSet.has(reqCode) && isCurrentBlankOrOff);
 
         if (isCurrentCounted || isOriginalRequestMaintained) {
@@ -4629,21 +5186,23 @@ ${messageText}`;
       counts[day] = count;
     });
     return counts;
-  }, [daysArray, staffList, shiftData, userInputs, shiftDefs, countedOffShifts]);
+  }, [daysArray, staffList, shiftData, userInputs, shiftDefs, categoryDefs, countedOffShifts]);
 
   // 基本設定タブ用: シフトのみ(type === 'shift')をカテゴリごとに整理し、「希望」「休み」カテゴリを先頭に並べる
   const basicSettingsShiftGroups = useMemo(() => {
-    const priorityOrder = { req: 0, off: 1 };
+    const priorityByKind = { req: 0, off: 1 };
     return dynamicPaletteGroups
       .map(g => ({
         ...g,
         color: categoryDefs[g.id]?.color || 'bg-gray-50 text-gray-800',
-        items: g.items.filter(code => shiftDefs[code]?.type === 'shift')
+        items: g.items.filter(code => getEffectiveShiftType(shiftDefs[code], categoryDefs) === 'shift')
       }))
       .filter(g => g.items.length > 0)
       .sort((a, b) => {
-        const pa = priorityOrder[a.id] ?? 99;
-        const pb = priorityOrder[b.id] ?? 99;
+        const kindA = getCategoryKindById(a.id, categoryDefs);
+        const kindB = getCategoryKindById(b.id, categoryDefs);
+        const pa = priorityByKind[kindA] ?? 99;
+        const pb = priorityByKind[kindB] ?? 99;
         if (pa !== pb) return pa - pb;
         return (categoryDefs[a.id]?.order ?? 99) - (categoryDefs[b.id]?.order ?? 99);
       });
@@ -4682,7 +5241,7 @@ ${messageText}`;
   const getPopupOptions = (type) => {
     if ((currentView === 'ope' || appUser.initialView === 'ope') && type === 'shift') {
       const meShifts = Object.values(shiftDefs)
-        .filter(s => s && (s.type === 'shift' || !s.type) && isMeRoomShiftCode(s.code, shiftDefs, categoryDefs))
+        .filter(s => s && getEffectiveShiftType(s, categoryDefs) === 'shift' && isMeShiftDef(s.code, shiftDefs, categoryDefs))
         .sort((a, b) => {
           const getRank = (item) => {
             const lbl = (item.label || '').trim();
@@ -4693,23 +5252,23 @@ ${messageText}`;
           const rankDiff = getRank(a) - getRank(b);
           return rankDiff !== 0 ? rankDiff : (a.order ?? 9999) - (b.order ?? 9999);
         });
-      const hasL = meShifts.some(s => s.code === 'L' || (s.label || '').trim() === 'L' || (s.label || '').trim() === 'Ｌ');
-      const hasG = meShifts.some(s => s.code === 'G' || (s.label || '').trim() === 'G' || (s.label || '').trim() === 'Ｇ');
-      const opts = [...meShifts];
-      if (!hasL) opts.unshift(shiftDefs['L'] || DEFAULT_SHIFT_TYPES['L']);
-      if (!hasG) opts.push(shiftDefs['G'] || DEFAULT_SHIFT_TYPES['G']);
-      return opts;
+      if (meShifts.length > 0) {
+        return meShifts;
+      }
+      return [shiftDefs['L'] || DEFAULT_SHIFT_TYPES['L'], shiftDefs['G'] || DEFAULT_SHIFT_TYPES['G']];
     }
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
-    let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && s.type === type);
+    let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && getEffectiveShiftType(s, categoryDefs) === type);
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
       // 希望カテゴリ(req) または isRequestable が true のものを表示させる
-      opts = opts.filter(s => s.category === 'req' || s.isRequestable);
+      opts = opts.filter(s => isReqCategoryId(s.category, categoryDefs) || s.isRequestable);
       
-      // ★追加: 「希望(req)」カテゴリが必ず一番上(配列の先頭)になるように並び替え
+      // ★追加: 「希望」カテゴリが必ず一番上(配列の先頭)になるように並び替え
       opts.sort((a, b) => {
-        if (a.category === 'req' && b.category !== 'req') return -1;
-        if (a.category !== 'req' && b.category === 'req') return 1;
+        const aReq = isReqCategoryId(a.category, categoryDefs);
+        const bReq = isReqCategoryId(b.category, categoryDefs);
+        if (aReq && !bReq) return -1;
+        if (!aReq && bReq) return 1;
         return 0; // それ以外は元の順序を維持
       });
     }
@@ -4917,7 +5476,9 @@ ${messageText}`;
                                 </>
                               ) : reqShiftCode ? (
                                 <span className="text-[9px] sm:text-[10px] font-bold text-pink-500 leading-tight text-center">
-                                  {reqShiftCode === 'HOPE' ? '希望済' : `${reqShift?.label || reqShiftCode}(希)`}
+                                  {(reqShiftCode === 'HOPE' || (reqShift && isReqCategoryId(reqShift.category, categoryDefs) && reqShift.label === '希望'))
+                                    ? '希望済'
+                                    : `${reqShift?.label || reqShiftCode}(希)`}
                                 </span>
                               ) : (
                                 <span className="text-[8px] text-gray-300">選択</span>
@@ -5834,9 +6395,9 @@ ${messageText}`;
                             </div>
                           </div>
                           <div className="text-[11px] text-gray-600 bg-white border border-gray-200 rounded-md p-3 space-y-1 leading-relaxed">
-                            <div>・<strong>休みの表現：</strong>AIは公休（指定休・振替休枠）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
-                            <div>・<strong>有休の扱い：</strong>既に入力済みの「指定(S)・振休(H)・希望(HOPE)」は公休枠として数え、「年休(Y)・リフレ(R)」などの有休は公休とは別枠（目標出勤日数から差し引き）として計算します。</div>
-                            <div>・<strong>祝日・ME室の扱い：</strong>祝日・外来休診日も日曜以外は透析出勤日として組みます。ME室（L/G）はOPE班管理のためAIでの自動入力・既存変更は行いません（祝日のME室必要人数は G:1名 / L:0名 として集計）。</div>
+                            <div>・<strong>休みの表現：</strong>AIは公休（週休枠の指定休・振替休）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
+                            <div>・<strong>有休の扱い：</strong>「シフト設定」で<strong>週休枠の公休</strong>に設定された休みや希望休は週1日の公休枠として数え、<strong>別枠の有休</strong>（年休・リフレ等）は公休とは別枠（目標出勤日数から差し引き）として計算します。</div>
+                            <div>・<strong>祝日・ME室の扱い：</strong>祝日・外来休診日も日曜以外は透析出勤日として組みます。ME室カテゴリのシフトはOPE班管理のためAIでの自動入力・既存変更は行いません。</div>
                           </div>
                         </div>
                       </div>
@@ -5846,16 +6407,63 @@ ${messageText}`;
                     <div className="flex h-full gap-4">
                       <div className="w-1/3 border-r pr-4 overflow-y-auto">
                         <button onClick={handleAddCategory} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規カテゴリ</button>
-                        <div className="space-y-2">{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => (<div key={cat.id} className={`p-2 rounded border text-xs font-bold flex items-center gap-2 cursor-pointer ${targetCategory?.originalId === cat.id ? 'ring-2 ring-blue-400' : ''} ${cat.color}`} onClick={() => handleEditCategory(cat.id)} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortCategory(e.dataTransfer.getData('text/plain'), cat.id); }}><GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" /><span className="flex-1 truncate">{cat.label}</span></div>))}</div>
+                        <div className="space-y-2">
+                          {Object.values(categoryDefs).sort((a,b)=>(a.order ?? 99) - (b.order ?? 99)).map(cat => {
+                            const kindVal = resolveCategoryKind(cat);
+                            const kindMeta = CATEGORY_KIND_OPTIONS.find(o => o.value === kindVal);
+                            return (
+                              <div
+                                key={cat.id}
+                                className={`p-2 rounded border text-xs font-bold flex items-center gap-2 cursor-pointer ${targetCategory?.originalId === cat.id ? 'ring-2 ring-blue-400' : ''} ${cat.color}`}
+                                onClick={() => handleEditCategory(cat.id)}
+                                draggable
+                                onDragStart={(e) => e.dataTransfer.setData('text/plain', cat.id)}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={(e) => { e.preventDefault(); handleSortCategory(e.dataTransfer.getData('text/plain'), cat.id); }}
+                              >
+                                <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
+                                <span className="flex-1 truncate">{cat.label}</span>
+                                <span className="px-1.5 py-0.5 rounded bg-white/80 text-gray-600 border border-black/10 text-[10px] font-semibold shrink-0">
+                                  {kindMeta?.shortLabel || kindVal}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                      <div className="flex-1 pl-4">
+                      <div className="flex-1 pl-4 overflow-y-auto">
                         {targetCategory ? (
-                          <div className="space-y-4 max-w-md">
+                          <div className="space-y-4 max-w-lg pb-4">
                             <h4 className="font-bold text-gray-700 border-b pb-2">カテゴリ編集</h4>
-                            <div><label className="text-xs font-bold text-gray-500">ID (英数字)</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.id} onChange={e => setTargetCategory({...targetCategory, id: e.target.value})} disabled={!!targetCategory.originalId}/></div>
-                            <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={targetCategory.label} onChange={e => setTargetCategory({...targetCategory, label: e.target.value})}/></div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div><label className="text-xs font-bold text-gray-500">ID (英数字)</label><input type="text" className="w-full border p-2 rounded text-sm disabled:bg-gray-100" value={targetCategory.id} onChange={e => setTargetCategory({...targetCategory, id: e.target.value.trim()})} disabled={!!targetCategory.originalId}/></div>
+                              <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetCategory.label} onChange={e => setTargetCategory({...targetCategory, label: e.target.value})}/></div>
+                            </div>
+                            <div>
+                              <label className="text-xs font-bold text-gray-500 block mb-1">カテゴリの種類（AI作成・集計での役割）</label>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                {CATEGORY_KIND_OPTIONS.map(opt => {
+                                  const selected = resolveCategoryKind(targetCategory) === opt.value;
+                                  return (
+                                    <button
+                                      key={opt.value}
+                                      type="button"
+                                      onClick={() => setTargetCategory({ ...targetCategory, kind: opt.value })}
+                                      className={`text-left p-2.5 rounded-lg border transition ${
+                                        selected
+                                          ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-400'
+                                          : 'bg-white border-gray-200 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <div className={`text-xs font-bold ${selected ? 'text-blue-800' : 'text-gray-800'}`}>{opt.label}</div>
+                                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">{opt.desc}</div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                             <div><label className="text-xs font-bold text-gray-500">色スタイル</label><div className="grid grid-cols-3 gap-2 mt-1">{BG_COLOR_OPTIONS.map(opt => (<button key={opt.value} onClick={() => setTargetCategory({...targetCategory, color: opt.value})} className={`text-xs p-2 rounded border font-bold ${opt.value} ${targetCategory.color === opt.value ? 'ring-2 ring-blue-500' : ''}`}>{opt.label}</button>))}</div></div>
-                            <div className="flex justify-between pt-4">{targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}<button onClick={saveCategory} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button></div>
+                            <div className="flex justify-between pt-4">{targetCategory.originalId && <button onClick={() => deleteCategory(targetCategory.originalId)} className="text-red-500 text-sm hover:underline">削除</button>}<button onClick={saveCategory} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 ml-auto">保存</button></div>
                           </div>
                         ) : <div className="text-gray-400 text-center mt-20">左側からカテゴリを選択または新規作成してください</div>}
                       </div>
@@ -5863,46 +6471,233 @@ ${messageText}`;
                   )}
                   {activeSettingsTab === 'shift' && (
                     <div className="flex h-full gap-4">
-                      <div className="w-1/3 border-r pr-4 overflow-y-auto">
-                        <button onClick={handleAddNewShift} className="w-full mb-3 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規シフト</button>
-                        <div className="space-y-4">{dynamicPaletteGroups.map(g => (<div key={g.id}><div className="text-[10px] text-gray-400 font-bold uppercase mb-1">{g.name}</div><div className="space-y-1">{g.items.map(code => (<div key={code} draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', code)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); handleSortShift(e.dataTransfer.getData('text/plain'), code); }} onClick={() => handleEditShift(code)} className={`p-2 rounded cursor-pointer border text-xs flex items-center gap-2 ${editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400' : 'bg-white border-gray-200 hover:bg-gray-100'}`}><GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" /><span className={shiftDefs[code].text}>{shiftDefs[code].label}</span></div>))}</div></div>))}</div>
+                      <div className="w-2/5 border-r pr-4 overflow-y-auto">
+                        <button onClick={handleAddNewShift} className="w-full mb-2.5 py-2 bg-blue-100 text-blue-700 font-bold rounded text-xs flex items-center justify-center gap-1 hover:bg-blue-200"><Plus size={12}/> 新規シフト</button>
+                        <p className="text-[10px] text-gray-500 mb-3 leading-snug bg-gray-50 border border-gray-200 rounded p-2">
+                          右端の区分プルダウンを切り替えると即座に自動保存され、AI作成・検算ルールに反映されます。
+                        </p>
+                        <div className="space-y-4">
+                          {dynamicPaletteGroups.map(g => (
+                            <div key={g.id}>
+                              <div className="text-[10px] text-gray-400 font-bold uppercase mb-1 flex items-center justify-between">
+                                <span>{g.name}</span>
+                                <span className="text-[9px] font-normal">表示名 (コード) / AI区分</span>
+                              </div>
+                              <div className="space-y-1">
+                                {g.items.map(code => {
+                                  const sItem = shiftDefs[code];
+                                  if (!sItem) return null;
+                                  const effType = getEffectiveShiftType(sItem, categoryDefs);
+                                  const catKind = getCategoryKindById(sItem.category, categoryDefs);
+                                  const workSlot = resolveShiftWorkSlot(sItem, categoryDefs);
+                                  const slotMeta = workSlot ? getShiftWorkSlotMeta(workSlot) : null;
+                                  const offSub = resolveOffSubType(sItem, categoryDefs);
+                                  return (
+                                    <div
+                                      key={code}
+                                      draggable
+                                      onDragStart={(e) => e.dataTransfer.setData('text/plain', code)}
+                                      onDragOver={(e) => e.preventDefault()}
+                                      onDrop={(e) => { e.preventDefault(); handleSortShift(e.dataTransfer.getData('text/plain'), code); }}
+                                      onClick={() => handleEditShift(code)}
+                                      className={`p-1.5 rounded cursor-pointer border text-xs flex items-center gap-1.5 ${
+                                        editingShift?.originalCode === code ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-300' : 'bg-white border-gray-200 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <GripVertical size={13} className="text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
+                                      <span className={`font-bold truncate ${sItem.text}`}>{sItem.label}</span>
+                                      <span className="text-[10px] text-gray-400 shrink-0">({sItem.code})</span>
+                                      <div className="ml-auto shrink-0" onClick={e => e.stopPropagation()}>
+                                        {effType === 'task' ? (
+                                          <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200 text-[10px]">
+                                            タスク
+                                          </span>
+                                        ) : catKind === 'req' ? (
+                                          <span className="px-1.5 py-0.5 rounded bg-pink-50 text-pink-700 border border-pink-200 text-[10px] font-bold">
+                                            希望枠
+                                          </span>
+                                        ) : catKind === 'off' ? (
+                                          <select
+                                            value={offSub || 'regular_off'}
+                                            onChange={e => handleQuickShiftMetaChange(code, { offSubType: e.target.value })}
+                                            className={`text-[10px] font-bold rounded border px-1.5 py-0.5 cursor-pointer focus:outline-none ${
+                                              offSub === 'paid_leave'
+                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                                : 'bg-slate-100 text-slate-700 border-slate-300'
+                                            }`}
+                                            title="AIでの休みカウント区分を切り替え（即時保存）"
+                                          >
+                                            <option value="regular_off">公休枠</option>
+                                            <option value="paid_leave">有休枠</option>
+                                          </select>
+                                        ) : (
+                                          <select
+                                            value={workSlot || 'other'}
+                                            onChange={e => handleQuickShiftMetaChange(code, { shiftSlot: e.target.value })}
+                                            className={`text-[10px] font-bold rounded border px-1.5 py-0.5 cursor-pointer focus:outline-none ${
+                                              slotMeta?.badgeClass || 'bg-slate-100 text-slate-600 border-slate-200'
+                                            }`}
+                                            title="勤務・クール区分を切り替え（即時保存）"
+                                          >
+                                            {SHIFT_WORK_SLOTS.map(sl => (
+                                              <option key={sl.value} value={sl.value}>{sl.label}</option>
+                                            ))}
+                                          </select>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                       <div className="flex-1 pl-4 overflow-y-auto">
-                        {editingShift ? (
-                          <div className="space-y-4 max-w-lg">
-                            <h4 className="font-bold text-gray-700 border-b pb-2">シフト編集</h4>
-                            <div className="grid grid-cols-2 gap-4">
-                              <div><label className="text-xs font-bold text-gray-500">コード</label><input type="text" className="w-full border p-2 rounded" value={editingShift.code || ''} onChange={e => setEditingShift({...editingShift, code: e.target.value.toUpperCase()})} /></div>
-                              <div><label className="text-xs font-bold text-gray-500">表示名</label><input type="text" className="w-full border p-2 rounded" value={editingShift.label || ''} onChange={e => setEditingShift({...editingShift, label: e.target.value})} /></div>
-                            </div>
-                            <div><label className="text-xs font-bold text-gray-500">カテゴリ</label><select className="w-full border p-2 rounded" value={editingShift.category || 'saka'} onChange={e => setEditingShift({...editingShift, category: e.target.value})}>{Object.values(categoryDefs).sort((a,b)=>a.order-b.order).map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}</select></div>
-                            <div className="grid grid-cols-2 gap-4">
-                              <div><label className="text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
-                              <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
-                            </div>
-                            {editingShift.type === 'shift' && (
-                              <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
-                                <div><label className="text-xs font-bold text-blue-700">開始</label><input type="time" className="w-full border rounded p-1" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value})} /></div>
-                                <div><label className="text-xs font-bold text-blue-700">終了</label><input type="time" className="w-full border rounded p-1" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value})} /></div>
+                        {editingShift ? (() => {
+                          const editCatKind = getCategoryKindById(editingShift.category, categoryDefs);
+                          const editEffType = editCatKind === 'role' ? 'task' : (editingShift.type || 'shift');
+                          const activeWorkSlot = resolveShiftWorkSlot({ ...editingShift, type: editEffType }, categoryDefs) || 'other';
+                          const activeOffSubType = resolveOffSubType({ ...editingShift, type: editEffType }, categoryDefs) || 'regular_off';
+                          return (
+                            <div className="space-y-4 max-w-lg pb-4">
+                              <h4 className="font-bold text-gray-700 border-b pb-2">シフト編集</h4>
+                              <div className="p-2.5 rounded-lg bg-indigo-50/70 border border-indigo-200 text-[11px] text-indigo-900 leading-relaxed">
+                                <strong>💡 現在の設定をAIへ自動連携：</strong>コードと表示名が異なる設定（例：コード「1」・表示名「A」）でも、ここで設定した<strong>「カテゴリ」</strong>と<strong>「勤務・クール区分」</strong>をAI作成・AIチャット・検算が直接参照します。
                               </div>
-                            )}
-                            <div className="mt-4 p-3 border rounded-lg bg-gray-50">
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input 
-                                  type="checkbox" 
-                                  className="w-4 h-4 text-blue-600 rounded" 
-                                  checked={editingShift.isRequestable || false} 
-                                  onChange={e => setEditingShift({...editingShift, isRequestable: e.target.checked})} 
-                                />
-                                <span className="text-sm font-bold text-gray-700">シフト希望に表示する</span>
-                              </label>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="text-xs font-bold text-gray-500">コード（内部キー・英数字可）</label>
+                                  <input
+                                    type="text"
+                                    className="w-full border p-2 rounded text-sm"
+                                    value={editingShift.code || ''}
+                                    onChange={e => setEditingShift({ ...editingShift, code: e.target.value.trim() })}
+                                    placeholder="例: 1, A, S1 など"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-xs font-bold text-gray-500">表示名（勤務表・チャット上の表記）</label>
+                                  <input
+                                    type="text"
+                                    className="w-full border p-2 rounded text-sm"
+                                    value={editingShift.label || ''}
+                                    onChange={e => setEditingShift({ ...editingShift, label: e.target.value })}
+                                    placeholder="例: A, 坂3, 指定 など"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="text-xs font-bold text-gray-500">カテゴリ</label>
+                                <select
+                                  className="w-full border p-2 rounded text-sm"
+                                  value={editingShift.category || ''}
+                                  onChange={e => {
+                                    const nextCat = e.target.value;
+                                    const nextKind = getCategoryKindById(nextCat, categoryDefs);
+                                    const nextType = nextKind === 'role' ? 'task' : 'shift';
+                                    setEditingShift({
+                                      ...editingShift,
+                                      category: nextCat,
+                                      type: nextType,
+                                    });
+                                  }}
+                                >
+                                  {Object.values(categoryDefs).sort((a,b)=>(a.order ?? 99) - (b.order ?? 99)).map(cat => (
+                                    <option key={cat.id} value={cat.id}>{cat.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {editEffType === 'shift' && editCatKind !== 'off' && editCatKind !== 'req' && (
+                                <div className="p-3 rounded-lg border border-blue-200 bg-blue-50/40 space-y-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <label className="text-xs font-bold text-blue-900">勤務・クール区分（AI作成・検算で参照）</label>
+                                    {activeWorkSlot === 'cool3' && (
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-300">
+                                        3クール上限・連続禁止の対象
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                                    {SHIFT_WORK_SLOTS.map(slot => {
+                                      const isSelected = activeWorkSlot === slot.value;
+                                      return (
+                                        <button
+                                          key={slot.value}
+                                          type="button"
+                                          onClick={() => setEditingShift({ ...editingShift, shiftSlot: slot.value })}
+                                          className={`py-1.5 px-2 rounded-lg border text-xs font-bold transition ${
+                                            isSelected
+                                              ? `${slot.badgeClass} ring-2 ring-blue-500 shadow-xs`
+                                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          {slot.label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  <p className="text-[10px] text-gray-500 leading-snug">
+                                    ※「3クール」を選ぶと、職員ごとの3クール上限回数および連続3クール禁止（月またぎ含む）として判定されます。また「坂田の1クールに〇〇さん」等の条件指定もこの区分を参照します。
+                                  </p>
+                                </div>
+                              )}
+
+                              {editEffType === 'shift' && editCatKind === 'off' && (
+                                <div className="p-3 rounded-lg border border-emerald-200 bg-emerald-50/40 space-y-2">
+                                  <label className="text-xs font-bold text-emerald-900 block">休みの種類（AIの週休・目標出勤日数カウント）</label>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    {SHIFT_OFF_SUBTYPES.map(opt => {
+                                      const isSelected = activeOffSubType === opt.value;
+                                      return (
+                                        <button
+                                          key={opt.value}
+                                          type="button"
+                                          onClick={() => setEditingShift({ ...editingShift, offSubType: opt.value })}
+                                          className={`text-left p-2 rounded-lg border transition ${
+                                            isSelected
+                                              ? 'bg-white border-emerald-500 ring-2 ring-emerald-400'
+                                              : 'bg-white/70 border-gray-200 hover:bg-white'
+                                          }`}
+                                        >
+                                          <div className="text-xs font-bold text-gray-800">{opt.label}</div>
+                                          <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">{opt.desc}</div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div><label className="text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded text-sm" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
+                                <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
+                              </div>
+                              {editEffType === 'shift' && (
+                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
+                                  <div><label className="text-xs font-bold text-blue-700">開始</label><input type="time" className="w-full border rounded p-1 bg-white" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value})} /></div>
+                                  <div><label className="text-xs font-bold text-blue-700">終了</label><input type="time" className="w-full border rounded p-1 bg-white" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value})} /></div>
+                                </div>
+                              )}
+                              <div className="mt-4 p-3 border rounded-lg bg-gray-50">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input 
+                                    type="checkbox" 
+                                    className="w-4 h-4 text-blue-600 rounded" 
+                                    checked={editingShift.isRequestable || false} 
+                                    onChange={e => setEditingShift({...editingShift, isRequestable: e.target.checked})} 
+                                  />
+                                  <span className="text-sm font-bold text-gray-700">シフト希望に表示する</span>
+                                </label>
+                              </div>
+                              <div className="flex justify-between pt-4 mt-4">
+                                {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
+                                <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 ml-auto">保存</button>
+                              </div>
                             </div>
-                            <div className="flex justify-between pt-4 mt-4">
-                              {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
-                              <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">保存</button>
-                            </div>
-                          </div>
-                        ) : <div className="text-gray-400 text-center mt-20">左側からシフトを選択または新規作成してください</div>}
+                          );
+                        })() : <div className="text-gray-400 text-center mt-20">左側からシフトを選択または新規作成してください</div>}
                       </div>
                     </div>
                   )}
@@ -5952,7 +6747,7 @@ ${messageText}`;
                                   <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
                                   <td className="p-2 border">
                                     <div className="flex flex-wrap items-center gap-1">
-                                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
+                                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind !== 'me').map(group => {
                                         const isAllowed = !exCats.includes(group.id);
                                         return (
                                           <button
@@ -6229,7 +7024,7 @@ ${messageText}`;
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {AI_QUICK_PROMPTS.map((qp, idx) => (
+                      {aiQuickPrompts.map((qp, idx) => (
                         <button
                           key={idx}
                           type="button"
@@ -6335,7 +7130,7 @@ ${messageText}`;
                                   <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-2.5 py-1.5">
                                     <AlertTriangle size={13} className="text-amber-600 shrink-0 mt-0.5" />
                                     <span>
-                                      職員の「配置制限」外・「ME室(L/G)」・または「3クール連続」に関する変更が <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
+                                      職員の「配置制限」外・「ME室」・または「3クール連続」に関する変更が <strong>{restrictedShiftCount}件</strong> 含まれています（特例でない場合はご注意ください）。
                                     </span>
                                   </div>
                                 )}
@@ -6377,7 +7172,7 @@ ${messageText}`;
                                             className="text-[9px] px-1 rounded bg-amber-100 text-amber-800 font-bold shrink-0"
                                             title={
                                               item.isMeTouch
-                                                ? 'ME室(L/G)は通常OPE班管理のためAI対象外です'
+                                                ? 'ME室は通常OPE班管理のためAI対象外です'
                                                 : item.isConsecutiveCool3
                                                   ? '前日または翌日（前月最終日含む）と3クールが連続しています'
                                                   : 'この職員のAI配置制限外のシフトです'
@@ -6479,7 +7274,7 @@ ${messageText}`;
               <div className="p-3 sm:p-4 border-t bg-white space-y-2">
                 {aiMessages.length > 0 && (
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                    {AI_QUICK_PROMPTS.map((qp, idx) => (
+                    {aiQuickPrompts.map((qp, idx) => (
                       <button
                         key={idx}
                         type="button"
@@ -6561,7 +7356,7 @@ ${messageText}`;
                   <div className="bg-gray-50 border rounded-lg p-3 space-y-2.5">
                     <div className="text-[11px] font-bold text-gray-600">配置可能な施設（チェックを外すとAI配置対象外）</div>
                     <div className="flex flex-wrap gap-2">
-                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
+                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind !== 'me').map(group => {
                         const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                         const isAllowed = !exCats.includes(group.id);
                         return (
@@ -6608,9 +7403,9 @@ ${messageText}`;
                       {showStaffShiftDetailRestriction && (
                         <div className="mt-2 space-y-2.5 bg-white border rounded-lg p-2.5">
                           <p className="text-[10px] text-gray-400">
-                            チェックを外したシフトにはAIが割り振りません（例：坂田は行けるが「坂2」「坂3」は外して「坂日」のみにする等）。
+                            チェックを外したシフトにはAIが割り振りません（特定のクールや時間帯のみ除外したい場合に使えます）。
                           </p>
-                          {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.id !== 'me').map(group => {
+                          {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind !== 'me').map(group => {
                             const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                             const exShifts = Array.isArray(targetStaff.excludedShifts) ? targetStaff.excludedShifts : [];
                             const isCatDisabled = exCats.includes(group.id);
@@ -6716,109 +7511,231 @@ ${messageText}`;
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users size={18}/> 必要人数設定</h3>
+                 <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users size={18}/> 必要人数・目標スコア・必須スキル設定</h3>
                  <button onClick={() => setShowTargetCountModal(false)}><X size={20} className="text-gray-400"/></button>
                </div>
                <div className="p-4 overflow-y-auto">
                  <p className="text-xs text-gray-500 mb-4 leading-relaxed">
-                   各シフト・曜日ごとの必要人数と、施設ごとの必須スキル最低人数を設定してください。<br/>
+                   各シフト・曜日ごとの必要人数と、施設ごとの目標パワースコア・必須スキル最低人数を設定してください。<br/>
                    ※人数不足は<strong className="text-red-600">赤色</strong>、人数は足りているが必須スキル（リーダー等）が不足している日は集計欄が<strong className="text-amber-700">オレンジ色（⚠）</strong>で表示されます。
                  </p>
                  <div className="space-y-6">
-                   {dynamicSummaryGroups.map(group => (
-                     <div key={group.id} className="border rounded-lg overflow-hidden">
-                       <div className={`px-4 py-2 font-bold text-sm flex flex-wrap items-center justify-between gap-2 ${group.headerColor}`}>
-                         <span>{group.name}</span>
-                         {group.id === 'me' && (
-                           <span className="text-[11px] font-normal opacity-90">
-                             ※祝日・外来休診日は自動的に G:1名 / L:0名 として判定（AI自動入力対象外）
-                           </span>
-                         )}
-                       </div>
-                       <table className="w-full text-center text-xs border-collapse">
-                         <thead><tr className="bg-gray-100 text-gray-600"><th className="p-2 border text-left w-32">シフト</th>{group.id === 'jinkuri' ? (<><th className="p-2 border w-24">月・水・金</th><th className="p-2 border w-24">火・木・土</th></>) : (<th className="p-2 border w-32">通常 (月～土)</th>)}</tr></thead>
-                         <tbody>
-                           {group.items.map(code => {
-                             const shift = shiftDefs[code];
-                             const val1 = targetCounts[code]?.[1] ?? 0;
-                             const val2 = targetCounts[code]?.[2] ?? 0;
-                             return (
-                               <tr key={code} className="border-b last:border-b-0">
-                                 <td className="p-2 border text-left font-bold text-gray-700"><span className={shift.text}>{shift.label}</span></td>
-                                 {group.id === 'jinkuri' ? (
+                   {dynamicSummaryGroups.map(group => {
+                     const savedSplitMode = adminSettings?.facilitySplitDays?.[group.id];
+                     const hasAnyDayDiff = group.items.some(c => {
+                       const tc = targetCounts[c] || {};
+                       return [2, 3, 4, 5, 6].some(dow => (tc[dow] ?? 0) !== (tc[1] ?? 0));
+                     });
+                     const isMwfTtsPattern = group.items.every(c => {
+                       const tc = targetCounts[c] || {};
+                       return (
+                         (tc[1] ?? 0) === (tc[3] ?? 0) &&
+                         (tc[1] ?? 0) === (tc[5] ?? 0) &&
+                         (tc[2] ?? 0) === (tc[4] ?? 0) &&
+                         (tc[2] ?? 0) === (tc[6] ?? 0)
+                       );
+                     });
+                     const defaultSplitMode =
+                       group.id === 'jinkuri' || group.name.includes('じん') || group.name.includes('腎')
+                         ? 'mwf_tts'
+                         : hasAnyDayDiff
+                           ? (isMwfTtsPattern ? 'mwf_tts' : 'daily')
+                           : 'uniform';
+                     const splitMode = savedSplitMode || defaultSplitMode;
+                     const catObj = categoryDefs[group.id];
+                     const powerTargetVal = group.kind === 'facility' ? getFacilityTargetPowerScore(catObj, adminSettings) : 0;
+
+                     return (
+                       <div key={group.id} className="border rounded-lg overflow-hidden">
+                         <div className={`px-4 py-2 font-bold text-sm flex flex-wrap items-center justify-between gap-2 ${group.headerColor}`}>
+                           <div className="flex items-center gap-2">
+                             <span>{group.name}</span>
+                           </div>
+                           {group.kind === 'me' ? (
+                             <span className="text-[11px] font-normal opacity-90">
+                               ※OPE班管理のためAI自動入力対象外（祝日・外来休診日のL/Gは自動判定）
+                             </span>
+                           ) : (
+                             <div className="flex flex-wrap items-center gap-2 text-xs font-normal">
+                               <label className="inline-flex items-center gap-1 bg-white/85 text-gray-700 px-2 py-0.5 rounded border border-black/10">
+                                 <span className="text-[11px] font-bold">曜日入力:</span>
+                                 <select
+                                   value={splitMode}
+                                   onChange={(e) => {
+                                     const nextMode = e.target.value;
+                                     setAdminSettings(prev => ({
+                                       ...prev,
+                                       facilitySplitDays: {
+                                         ...(prev.facilitySplitDays || {}),
+                                         [group.id]: nextMode,
+                                       },
+                                     }));
+                                   }}
+                                   className="bg-transparent text-[11px] font-bold text-blue-700 focus:outline-none cursor-pointer"
+                                 >
+                                   <option value="uniform">月〜土共通</option>
+                                   <option value="mwf_tts">月水金 / 火木土</option>
+                                   <option value="daily">各曜日別 (月〜土)</option>
+                                 </select>
+                               </label>
+                               {group.kind === 'facility' && (
+                                 <label className="inline-flex items-center gap-1 bg-white/85 text-gray-700 px-2 py-0.5 rounded border border-black/10">
+                                   <span className="text-[11px] font-bold">目標スコア:</span>
+                                   <input
+                                     type="number"
+                                     min="0"
+                                     max="200"
+                                     step="5"
+                                     value={powerTargetVal}
+                                     onChange={(e) => {
+                                       const nextScore = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                       setAdminSettings(prev => ({
+                                         ...prev,
+                                         facilityPowerTargets: {
+                                           ...(prev.facilityPowerTargets || {}),
+                                           [group.id]: nextScore,
+                                         },
+                                       }));
+                                     }}
+                                     className="w-12 px-1 py-0.5 border border-gray-300 rounded text-center text-xs font-bold bg-white text-indigo-700"
+                                     title="AI作成・検算で目安にする施設の1日あたり合計パワースコア（0にするとスコア判定なし）"
+                                   />
+                                   <span className="text-[10px] text-gray-500">点</span>
+                                 </label>
+                               )}
+                             </div>
+                           )}
+                         </div>
+                         <div className="overflow-x-auto">
+                           <table className="w-full text-center text-xs border-collapse">
+                             <thead>
+                               <tr className="bg-gray-100 text-gray-600">
+                                 <th className="p-2 border text-left w-36">シフト（コード）</th>
+                                 {splitMode === 'mwf_tts' ? (
                                    <>
-                                     <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } })); }} /></td>
-                                     <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val2} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } })); }} /></td>
+                                     <th className="p-2 border w-24">月・水・金</th>
+                                     <th className="p-2 border w-24">火・木・土</th>
+                                   </>
+                                 ) : splitMode === 'daily' ? (
+                                   <>
+                                     <th className="p-2 border">月</th>
+                                     <th className="p-2 border">火</th>
+                                     <th className="p-2 border">水</th>
+                                     <th className="p-2 border">木</th>
+                                     <th className="p-2 border">金</th>
+                                     <th className="p-2 border text-blue-600">土</th>
                                    </>
                                  ) : (
-                                   <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } })); }} /></td>
+                                   <th className="p-2 border w-32">通常 (月～土)</th>
                                  )}
                                </tr>
-                             );
-                           })}
-                         </tbody>
-                       </table>
-                       {group.id !== 'me' && (
-                         <div className="bg-amber-50/50 border-t px-3 py-2.5">
-                           <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
-                             <span className="text-xs font-bold text-amber-900 flex items-center gap-1">
-                               <ShieldCheck size={14} className="text-amber-600" />
-                               必須スキル最低人数（月〜土・AI配置＆集計チェック）
-                             </span>
-                             <span className="text-[10px] text-amber-700">
-                               ※0名の項目はチェックなし（揃わない日は分散配置＋ベテラン補完しオレンジ⚠表示）
-                             </span>
-                           </div>
-                           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                             {STAFF_SKILLS.map(sk => {
-                               const reqVal = getFacilitySkillTarget(group.id, sk.key);
-                               return (
-                                 <label
-                                   key={sk.key}
-                                   className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded border text-xs ${
-                                     reqVal > 0
-                                       ? 'bg-white border-amber-400 text-amber-900 font-bold'
-                                       : 'bg-white/70 border-gray-200 text-gray-600'
-                                   }`}
-                                 >
-                                   <span className="truncate">{sk.label}</span>
-                                   <div className="flex items-center gap-0.5 shrink-0">
-                                     <input
-                                       type="number"
-                                       min="0"
-                                       max="5"
-                                       className="w-11 p-0.5 border rounded text-center text-xs font-bold"
-                                       value={reqVal}
-                                       onChange={(e) => {
-                                         const nextNum = Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0));
-                                         setAdminSettings(prev => {
-                                           const baseTargets = prev.facilitySkillTargets || DEFAULT_FACILITY_SKILL_TARGETS;
-                                           const currentCatTargets = {
-                                             ...(DEFAULT_FACILITY_SKILL_TARGETS[group.id] || {}),
-                                             ...(baseTargets[group.id] || {}),
-                                             [sk.key]: nextNum,
-                                           };
-                                           return {
-                                             ...prev,
-                                             facilitySkillTargets: {
-                                               ...DEFAULT_FACILITY_SKILL_TARGETS,
-                                               ...baseTargets,
-                                               [group.id]: currentCatTargets,
-                                             },
-                                           };
-                                         });
-                                       }}
-                                     />
-                                     <span className="text-[10px] text-gray-500">名</span>
-                                   </div>
-                                 </label>
-                               );
-                             })}
-                           </div>
+                             </thead>
+                             <tbody>
+                               {group.items.map(code => {
+                                 const shift = shiftDefs[code];
+                                 if (!shift) return null;
+                                 const val1 = targetCounts[code]?.[1] ?? 0;
+                                 const val2 = targetCounts[code]?.[2] ?? 0;
+                                 return (
+                                   <tr key={code} className="border-b last:border-b-0">
+                                     <td className="p-2 border text-left font-bold text-gray-700">
+                                       <span className={shift.text}>{shift.label}</span>
+                                       <span className="text-[10px] text-gray-400 font-normal ml-1">({shift.code})</span>
+                                     </td>
+                                     {splitMode === 'mwf_tts' ? (
+                                       <>
+                                         <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } })); }} /></td>
+                                         <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val2} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } })); }} /></td>
+                                       </>
+                                     ) : splitMode === 'daily' ? (
+                                       [1, 2, 3, 4, 5, 6].map(dow => (
+                                         <td key={dow} className="p-1 border">
+                                           <input
+                                             type="number"
+                                             min="0"
+                                             className="w-12 p-1 border rounded text-center"
+                                             value={targetCounts[code]?.[dow] ?? 0}
+                                             onChange={(e) => {
+                                               const v = parseInt(e.target.value, 10) || 0;
+                                               setTargetCounts(prev => ({
+                                                 ...prev,
+                                                 [code]: { ...(prev[code] || {}), [dow]: v },
+                                               }));
+                                             }}
+                                           />
+                                         </td>
+                                       ))
+                                     ) : (
+                                       <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } })); }} /></td>
+                                     )}
+                                   </tr>
+                                 );
+                               })}
+                             </tbody>
+                           </table>
                          </div>
-                       )}
-                     </div>
-                   ))}
+                         {group.kind === 'facility' && (
+                           <div className="bg-amber-50/50 border-t px-3 py-2.5">
+                             <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+                               <span className="text-xs font-bold text-amber-900 flex items-center gap-1">
+                                 <ShieldCheck size={14} className="text-amber-600" />
+                                 必須スキル最低人数（月〜土・AI配置＆集計チェック）
+                               </span>
+                               <span className="text-[10px] text-amber-700">
+                                 ※0名の項目はチェックなし（揃わない日は分散配置＋ベテラン補完しオレンジ⚠表示）
+                               </span>
+                             </div>
+                             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                               {STAFF_SKILLS.map(sk => {
+                                 const reqVal = getFacilitySkillTarget(group.id, sk.key);
+                                 return (
+                                   <label
+                                     key={sk.key}
+                                     className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded border text-xs ${
+                                       reqVal > 0
+                                         ? 'bg-white border-amber-400 text-amber-900 font-bold'
+                                         : 'bg-white/70 border-gray-200 text-gray-600'
+                                     }`}
+                                   >
+                                     <span className="truncate">{sk.label}</span>
+                                     <div className="flex items-center gap-0.5 shrink-0">
+                                       <input
+                                         type="number"
+                                         min="0"
+                                         max="5"
+                                         className="w-11 p-0.5 border rounded text-center text-xs font-bold"
+                                         value={reqVal}
+                                         onChange={(e) => {
+                                           const nextNum = Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0));
+                                           setAdminSettings(prev => {
+                                             const baseTargets = prev.facilitySkillTargets || DEFAULT_FACILITY_SKILL_TARGETS;
+                                             const currentCatTargets = {
+                                               ...(DEFAULT_FACILITY_SKILL_TARGETS[group.id] || {}),
+                                               ...(baseTargets[group.id] || {}),
+                                               [sk.key]: nextNum,
+                                             };
+                                             return {
+                                               ...prev,
+                                               facilitySkillTargets: {
+                                                 ...DEFAULT_FACILITY_SKILL_TARGETS,
+                                                 ...baseTargets,
+                                                 [group.id]: currentCatTargets,
+                                               },
+                                             };
+                                           });
+                                         }}
+                                       />
+                                       <span className="text-[10px] text-gray-500">名</span>
+                                     </div>
+                                   </label>
+                                 );
+                               })}
+                             </div>
+                           </div>
+                         )}
+                       </div>
+                     );
+                   })}
                  </div>
                </div>
                <div className="p-4 border-t flex justify-end gap-2 bg-gray-50">
@@ -7006,7 +7923,7 @@ ${messageText}`;
                             <Users size={14} className="text-red-600" />
                             シフト必要人数の不足（{liveValidationReport.dailyHeadcountShortages.length}日）
                           </span>
-                          <span className="text-[10px] font-normal text-red-600">※ME室(L/G)はOPE班管轄</span>
+                          <span className="text-[10px] font-normal text-red-600">※ME室はOPE班管轄</span>
                         </div>
                         <div className="divide-y divide-red-100 bg-white max-h-48 overflow-y-auto">
                           {liveValidationReport.dailyHeadcountShortages.map(dItem => (
