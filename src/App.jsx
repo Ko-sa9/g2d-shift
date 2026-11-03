@@ -120,7 +120,6 @@ const CATEGORY_KIND_OPTIONS = [
 const SHIFT_WORK_SLOTS = [
   { value: 'cool3', label: '3クール', badgeClass: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
   { value: 'cool2', label: '2クール', badgeClass: 'bg-sky-100 text-sky-700 border-sky-200' },
-  { value: 'cool1', label: '1クール', badgeClass: 'bg-cyan-100 text-cyan-700 border-cyan-200' },
   { value: 'day',   label: '日勤',    badgeClass: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   { value: 'half',  label: '半日',    badgeClass: 'bg-purple-100 text-purple-700 border-purple-200' },
   { value: 'other', label: 'その他',  badgeClass: 'bg-gray-100 text-gray-600 border-gray-200' },
@@ -368,6 +367,7 @@ const resolveShiftWorkSlot = (def, categoryDefs = {}) => {
   if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return null;
   if (isOffOrReqCategoryId(def.category, categoryDefs)) return null;
 
+  if (def.shiftSlot === 'cool1') return 'day';
   if (SHIFT_WORK_SLOTS.some(s => s.value === def.shiftSlot)) {
     return def.shiftSlot;
   }
@@ -378,9 +378,8 @@ const resolveShiftWorkSlot = (def, categoryDefs = {}) => {
   if ((def.code === 'A' && lbl === '坂3') || (def.code === 'F' && lbl === '君3')) return 'cool3';
   if (lbl.includes('3') || lbl.includes('３')) return 'cool3';
   if (lbl.includes('2') || lbl.includes('２')) return 'cool2';
-  if (lbl.includes('1') || lbl.includes('１')) return 'cool1';
   if (lbl.includes('半') || def.time === 'Short') return 'half';
-  if (lbl.includes('日')) return 'day';
+  if (lbl.includes('1') || lbl.includes('１') || lbl.includes('日')) return 'day';
   return 'other';
 };
 
@@ -490,6 +489,16 @@ const resolveFacilitySkillTarget = (cat, skillKey, adminSettings = {}) => {
   return 0;
 };
 
+// 配列の順序をランダムにシャッフルした新しい配列を返すヘルパー（AIの機械的な名簿順・施設順の固まり配置を防ぐ）
+const shuffleArray = (items = []) => {
+  const arr = Array.isArray(items) ? [...items] : [];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
 // AIが万一シフトコードではなく画面表示名（例: コード"1"の代わりに表示名"A"）を出力した場合でも安全に解決するヘルパー
 const resolveAiOutputCode = (rawVal, shiftDefs = {}, categoryDefs = {}, expectedType = 'shift', staffObj = null) => {
   if (rawVal === null || rawVal === undefined) return null;
@@ -531,7 +540,7 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
   const lines = [
     '【現在のシステム設定：シフトコード・表示名・勤務区分 対応表（★初期設定ではなく必ずこの最新設定に従うこと★）】',
     '※重要：画面上の「表示名」とデータ保存用の「シフトコード」が異なる設定に対応しています（例：コード "1" ＝ 表示名「A」など）。',
-    '・管理者がカスタム条件やチャットでシフト名・施設名を書くときは、主に「表示名（例: A）」や「施設名＋区分（例: 坂田の3クール、1クール、日勤）」で呼びます。必ず下の対応表で該当する「コード」を確認して解釈してください。',
+    '・管理者がカスタム条件やチャットでシフト名・施設名を書くときは、主に「表示名（例: A）」や「施設名＋区分（例: 坂田の3クール、日勤）」で呼びます（※「1クール」＝「日勤」と同一の意味です）。必ず下の対応表で該当する「コード」を確認して解釈してください。',
     '・JSONの "shift" / "task" に出力する値は、表示名ではなく必ず【コード】の文字列（例: "1"）を指定してください。',
   ];
 
@@ -576,7 +585,7 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
         lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:${subLbl}]`);
       } else {
         const slot = resolveShiftWorkSlot(s, categoryDefs);
-        const slotLbl = getShiftWorkSlotMeta(slot).label;
+        const slotLbl = slot === 'day' ? '日勤(=1クール)' : getShiftWorkSlotMeta(slot).label;
         const meFlag = isMeShiftDef(s.code, shiftDefs, categoryDefs) ? '・ME室ロック' : '';
         lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:${slotLbl}${meFlag}${timePart}${otPart}]`);
       }
@@ -1018,8 +1027,9 @@ const evaluateScheduleValidation = ({
         nonMeItems,
       });
       if (nonMeItems.length > 0) {
-        const blankCandidates = staffList
-          .filter(s => !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d))
+        const blankCandidates = shuffleArray(
+          staffList.filter(s => !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d))
+        )
           .map(s => `${s.name}(ID:${s.id})`)
           .slice(0, 6);
         aiRepairableItems.push(
@@ -2719,6 +2729,18 @@ const handleResetSchedule = () => {
         : null;
       const prevLastDayWasCool3 = !!(lastPrevCode && cool3Set.has(lastPrevCode));
       const prevLastDayLabel = lastPrevCode && shiftDefs[lastPrevCode] ? shiftDefs[lastPrevCode].label : lastPrevCode;
+      // 前月の最終営業日（日曜なら前日の土曜）の施設カテゴリも記録し、当月初日の日替わり勤務地ローテーションに活用
+      const prevLastOpDay = getDayOfWeek(prevYear, prevMonth, prevDaysInMonth) === 0 ? prevDaysInMonth - 1 : prevDaysInMonth;
+      const lastPrevOpCode = staffHasPrevWorkShift && prevLastOpDay >= 1 ? (staffPrevMap[prevLastOpDay] || null) : null;
+      const lastPrevOpDef = lastPrevOpCode && shiftDefs[lastPrevOpCode] ? shiftDefs[lastPrevOpCode] : null;
+      const prevLastDayCategory =
+        lastPrevOpDef && getCategoryKindById(lastPrevOpDef.category, categoryDefs) === 'facility'
+          ? lastPrevOpDef.category
+          : null;
+      const prevLastDayCategoryLabel =
+        prevLastDayCategory && categoryDefs[prevLastDayCategory]
+          ? categoryDefs[prevLastDayCategory].label || prevLastDayCategory
+          : null;
       const maxAllowedStreakFromDay1 = Math.max(0, maxConsecutiveWorkDays - trailingWorkStreak);
 
       // 当月1日からの実入力連勤数と月またぎ違反チェック（案Bバッジのリアルタイム警告用）
@@ -2775,6 +2797,8 @@ const handleResetSchedule = () => {
         prevWeekWorkCount,
         prevLastDayCode: lastPrevCode,
         prevLastDayLabel,
+        prevLastDayCategory,
+        prevLastDayCategoryLabel,
         prevLastDayWasCool3,
         maxAllowedStreakFromDay1,
         currentLeadingWorkStreak,
@@ -2864,6 +2888,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
     };
 
+    // 現在のカテゴリ設定から透析施設一覧を先に抽出（個人別の施設回数カウント・日替わりローテーション・偏り平準化でも使用）
+    const sortedCategories = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const facilityCats = sortedCategories.filter(cat => resolveCategoryKind(cat) === 'facility');
+    const facilityCatIdSet = new Set(facilityCats.map(cat => cat.id));
+
     // 【追加】各スキルの重み付け（点数）を定義
     const skillPoints = {
       isLeader: 5,
@@ -2889,11 +2918,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         prevWeekRegOffCount: 0,
         prevLastDayWasCool3: false,
         prevLastDayLabel: null,
+        prevLastDayCategory: null,
+        prevLastDayCategoryLabel: null,
         maxAllowedStreakFromDay1: maxConsecutiveWorkDays,
         dayBreakdownText: '',
       };
 
-      // AIが数え間違いを起こさないよう、現時点の個人別集計値・連勤数（前月末からの通算含む）・残りの目標出勤/空欄休みを事前計算して渡す
+      // AIが数え間違いを起こさないよう、現時点の個人別集計値・連勤数（前月末からの通算含む）・施設別配置回数・残りの目標出勤/空欄休みを事前計算して渡す
       let workDays = 0;
       let offDays = 0;
       let regularOffEnteredDays = 0;
@@ -2905,6 +2936,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       let overtimeHours = 0;
       let currentStreak = carry.trailingWorkStreak || 0;
       let currentMaxStreak = currentStreak;
+      const facilityCountsById = {};
+      facilityCats.forEach(fc => {
+        facilityCountsById[fc.id] = 0;
+      });
+      const workSlotCounts = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
 
       // 各日の状態マップ（週ごとの公休チェック用）
       const dayStateMap = {};
@@ -2953,6 +2989,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             currentStreak++;
             if (currentStreak > currentMaxStreak) currentMaxStreak = currentStreak;
             dayStateMap[d] = 'work';
+            if (facilityCatIdSet.has(def.category)) {
+              facilityCountsById[def.category] = (facilityCountsById[def.category] || 0) + 1;
+            }
+            const wSlot = resolveShiftWorkSlot(def, categoryDefs);
+            if (wSlot && workSlotCounts[wSlot] !== undefined) {
+              workSlotCounts[wSlot]++;
+            }
           }
           if (cool3Set.has(code)) cool3Count++;
           if (def.overtime) overtimeHours += parseFloat(def.overtime) || 0;
@@ -3009,22 +3052,61 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       const remainingWorkDaysMax = Math.max(0, assignableBlankDays - blankOffDaysToKeepMin);
 
       // この職員がAI配置で入ることができる出勤系シフトコード一覧を算出（※ME室はOPE班管理のため常時除外）
-      const allowedWorkShifts = Object.values(shiftDefs)
-        .filter(
-          def =>
-            def &&
-            getEffectiveShiftType(def, categoryDefs) === 'shift' &&
-            !isOffOrReqCategoryId(def.category, categoryDefs) &&
-            !isMeRoomShiftCode(def.code) &&
-            isShiftAllowedForStaff(s, def.code)
-        )
-        .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
-        .map(def => def.code);
+      // ★固定のカテゴリ順・コード順（常に坂田A→君津F…）で並べるとAIが上から機械的にAAAA,FFFFと固めるため、
+      //   これまでの配置回数が少ない施設を優先しつつ同数施設・施設内シフト順をランダムシャッフルして渡す
+      const rawAllowedShiftDefs = Object.values(shiftDefs).filter(
+        def =>
+          def &&
+          getEffectiveShiftType(def, categoryDefs) === 'shift' &&
+          !isOffOrReqCategoryId(def.category, categoryDefs) &&
+          !isMeRoomShiftCode(def.code) &&
+          isShiftAllowedForStaff(s, def.code)
+      );
+
+      const allowedFacilityCatIdSet = new Set(
+        rawAllowedShiftDefs.map(def => def.category).filter(catId => facilityCatIdSet.has(catId))
+      );
+      const allowedFacilityCats = facilityCats.filter(fc => allowedFacilityCatIdSet.has(fc.id));
+      const balancedFacilityCats = shuffleArray(allowedFacilityCats).sort(
+        (a, b) => (facilityCountsById[a.id] || 0) - (facilityCountsById[b.id] || 0)
+      );
+
+      const shiftsByCat = {};
+      rawAllowedShiftDefs.forEach(def => {
+        const cKey = def.category || '__uncategorized__';
+        if (!shiftsByCat[cKey]) shiftsByCat[cKey] = [];
+        shiftsByCat[cKey].push(def);
+      });
+
+      const orderedCategoryKeys = [
+        ...balancedFacilityCats.map(fc => fc.id),
+        ...shuffleArray(Object.keys(shiftsByCat).filter(cKey => !allowedFacilityCatIdSet.has(cKey))),
+      ];
+
+      const allowedWorkShifts = [];
+      orderedCategoryKeys.forEach(cKey => {
+        const catDefs = shuffleArray(shiftsByCat[cKey] || []).sort((a, b) => {
+          const slotA = resolveShiftWorkSlot(a, categoryDefs) || 'other';
+          const slotB = resolveShiftWorkSlot(b, categoryDefs) || 'other';
+          if (slotA !== 'cool3' && slotB !== 'cool3') {
+            const diff = (workSlotCounts[slotA] || 0) - (workSlotCounts[slotB] || 0);
+            if (Math.abs(diff) >= 2) return diff;
+          }
+          return 0;
+        });
+        catDefs.forEach(d => allowedWorkShifts.push(d.code));
+      });
 
       // 前月最終日に3クールに入っていた場合、当月1日に選べる出勤シフトからは3クールを除外
       const day1AllowedWorkShifts = carry.prevLastDayWasCool3
         ? allowedWorkShifts.filter(c => !cool3Set.has(c))
         : allowedWorkShifts;
+
+      const facilityCountsSummary = {};
+      allowedFacilityCats.forEach(fc => {
+        facilityCountsSummary[fc.label] = facilityCountsById[fc.id] || 0;
+      });
+      const priorityFacilitiesToBalance = balancedFacilityCats.map(fc => fc.label);
 
       const fmtRange = (minV, maxV) => (minV === maxV ? `${minV}日` : `${minV}〜${maxV}日`);
 
@@ -3037,6 +3119,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         powerScore,
         maxCool3: s.maxCool3, 
         excludeFromAi: s.excludeFromAi,
+        allowedFacilities: allowedFacilityCats.map(fc => ({ id: fc.id, label: fc.label })),
         allowedWorkShifts,
         day1AllowedWorkShifts,
         excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
@@ -3048,6 +3131,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           alreadyTookWeeklyOffInPrevMonthPart: carry.prevWeekRegOffCount > 0,
           prevLastDayWasCool3: carry.prevLastDayWasCool3,
           forbidCool3OnDay1: carry.prevLastDayWasCool3,
+          prevLastDayCategory: carry.prevLastDayCategory || null,
+          prevLastDayFacilityLabel: carry.prevLastDayCategoryLabel || null,
           prevStraddlingWeekSummary: carry.dayBreakdownText || '引き継ぎなし（日曜区切りまたは前月未作成）',
         },
         currentStats: {
@@ -3067,7 +3152,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           currentMaxStreak,
           cool3Count,
           remainingCool3: Math.max(0, (s.maxCool3 ?? 0) - cool3Count),
-          overtimeHours
+          overtimeHours,
+          allowedFacilitiesCount: allowedFacilityCats.length,
+          facilityCounts: facilityCountsSummary,
+          priorityFacilitiesToBalance,
         }
       };
     });
@@ -3110,10 +3198,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
     });
 
-    // 現在のカテゴリ設定から透析施設一覧・目標パワースコア・必須スキル設定を動的整形
-    const sortedCategories = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
-    const facilityCats = sortedCategories.filter(cat => resolveCategoryKind(cat) === 'facility');
-
+    // 現在のカテゴリ設定から目標パワースコア・必須スキル設定を動的整形
     const categoriesMeta = {};
     const facilityPowerTargetsSummary = {};
     sortedCategories.forEach(cat => {
@@ -3737,7 +3822,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             .join(' ／ ')
         : '設定なし';
       const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings);
-      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。名簿の上から機械的にAAAA, FFFFのように同じシフト・施設を固めて並べたり、同じ職員を連日同じ施設に固定することは避け、複数施設に入れる職員は日ごとに勤務地・クールをバラけてローテーションさせ、月間の勤務地の偏りが少なくなるように組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
 
       const strictConditions = autoFillConditions
         .filter(c => c.active && c.priority !== 'soft')
@@ -3862,8 +3947,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         );
         setAiLoadingSubDetail(
           targetWeek.weekIndex === 1
-            ? `前月末の連勤・公休引き継ぎを反映し、${skillReqSummaryText}・週休空欄・目標スコアを計算中`
-            : `第${targetWeek.weekIndex - 1}週までの出勤・3クール実績を引き継ぎ、施設リーダー配置・最大${maxStreak}連勤・週休空欄を計算中`
+            ? `前月末の連勤・公休引き継ぎを反映し、${skillReqSummaryText}・日替わり施設ローテーション・週休空欄を計算中`
+            : `第${targetWeek.weekIndex - 1}週までの出勤・施設回数・3クール実績を引き継ぎ、日替わり施設ローテーション・最大${maxStreak}連勤を計算中`
         );
         updateStepItem(weekStepId, { status: 'active', detail: 'AI計算中...' });
 
@@ -3943,6 +4028,27 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             firstDay === 1
               ? Boolean(st.prevMonthCarryOver?.forbidCool3OnDay1)
               : !isSunday(year, month, firstDay - 1) && cool3Set.has(workingShifts[st.id]?.[firstDay - 1]);
+
+          // 当週初日の直前営業日に入った施設を取得（日曜を挟む場合も直前の土曜出勤施設を参照し、週またぎでも同じ施設が連続しにくいようにする）
+          let enteringLastFacilityId = null;
+          let enteringLastFacilityLabel = null;
+          if (firstDay === 1) {
+            enteringLastFacilityId = st.prevMonthCarryOver?.prevLastDayCategory || null;
+            enteringLastFacilityLabel = st.prevMonthCarryOver?.prevLastDayFacilityLabel || null;
+          } else {
+            for (let cursor = firstDay - 1; cursor >= 1; cursor--) {
+              if (isSunday(year, month, cursor)) continue;
+              const pCode = workingShifts[st.id]?.[cursor];
+              if (!pCode || !shiftDefs[pCode]) break;
+              const pDef = shiftDefs[pCode];
+              if (isOffOrReqCategoryId(pDef.category, categoryDefs)) break;
+              if (getCategoryKindById(pDef.category, categoryDefs) === 'facility') {
+                enteringLastFacilityId = pDef.category;
+                enteringLastFacilityLabel = categoryDefs[pDef.category]?.label || pDef.category;
+              }
+              break;
+            }
+          }
 
           const existingShiftsInThisWeek = {};
           const lockedBlankOffDaysInThisWeek = [];
@@ -4027,6 +4133,77 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             else if (fReq) futurePreEnteredShifts[d] = `(希望空欄:${fReq})`;
           }
 
+          // 複数施設に配置可能な職員について、日ごとに勤務地がバラけてローテーションし月間回数も平準化される推奨順ガイドを生成
+          let rotationGuide = null;
+          const allowedFacs = Array.isArray(st.allowedFacilities) ? st.allowedFacilities : [];
+          if (!st.excludeFromAi && allowedFacs.length >= 2 && assignableDaysInThisWeek.length > 0) {
+            const simCounts = {};
+            allowedFacs.forEach(fc => {
+              simCounts[fc.id] = st.currentStats?.facilityCounts?.[fc.label] || 0;
+            });
+
+            const dailyFacilityPreferenceHint = {};
+            let prevFacId = enteringLastFacilityId;
+            const enteringLastShiftCode =
+              firstDay > 1 && !isSunday(year, month, firstDay - 1)
+                ? workingShifts[st.id]?.[firstDay - 1] || null
+                : firstDay === 1
+                  ? prevMonthCarryOver.byStaff?.[st.id]?.prevLastDayCode || null
+                  : null;
+
+            targetWeek.days.forEach((d, idxInWeek) => {
+              const existingCode = existingShiftsInThisWeek[d];
+              if (existingCode && shiftDefs[existingCode]) {
+                const exDef = shiftDefs[existingCode];
+                if (getCategoryKindById(exDef.category, categoryDefs) === 'facility') {
+                  prevFacId = exDef.category;
+                } else if (isOffOrReqCategoryId(exDef.category, categoryDefs)) {
+                  prevFacId = null;
+                }
+                return;
+              }
+              if (!assignableDaysInThisWeek.includes(d)) {
+                prevFacId = null;
+                return;
+              }
+
+              const nextDay = targetWeek.days[idxInWeek + 1];
+              const nextExistingCode = nextDay ? existingShiftsInThisWeek[nextDay] : null;
+              const nextExistingFacId =
+                nextExistingCode &&
+                shiftDefs[nextExistingCode] &&
+                getCategoryKindById(shiftDefs[nextExistingCode].category, categoryDefs) === 'facility'
+                  ? shiftDefs[nextExistingCode].category
+                  : null;
+
+              const rankedFacs = shuffleArray(allowedFacs).sort((a, b) => {
+                const aSamePrev = prevFacId && a.id === prevFacId ? 1 : 0;
+                const bSamePrev = prevFacId && b.id === prevFacId ? 1 : 0;
+                if (aSamePrev !== bSamePrev) return aSamePrev - bSamePrev;
+
+                const aSameNext = nextExistingFacId && a.id === nextExistingFacId ? 1 : 0;
+                const bSameNext = nextExistingFacId && b.id === nextExistingFacId ? 1 : 0;
+                if (aSameNext !== bSameNext) return aSameNext - bSameNext;
+
+                return (simCounts[a.id] || 0) - (simCounts[b.id] || 0);
+              });
+
+              dailyFacilityPreferenceHint[d] = rankedFacs.map(fc => fc.label);
+              const topFac = rankedFacs[0];
+              if (topFac) {
+                prevFacId = topFac.id;
+                simCounts[topFac.id] = (simCounts[topFac.id] || 0) + 1;
+              }
+            });
+
+            rotationGuide = {
+              enteringLastFacility: enteringLastFacilityLabel,
+              ...(enteringLastShiftCode ? { enteringLastShiftCode } : {}),
+              underusedFacilitiesFirst: st.currentStats.priorityFacilitiesToBalance,
+              dailyFacilityPreferenceHint,
+            };
+          }
+
           const staffEntry = {
             id: st.id,
             name: st.name,
@@ -4042,6 +4219,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             cumulativeStatsSoFar: {
               workDaysInMonthSoFar: st.currentStats.workDays,
               targetMonthlyWorkDaysRange: st.currentStats.targetWorkDaysRange,
+              facilityCountsSoFar: st.currentStats.facilityCounts,
               cool3CountSoFar: st.currentStats.cool3Count,
               remainingCool3: st.currentStats.remainingCool3,
               overtimeHoursSoFar: st.currentStats.overtimeHours,
@@ -4055,6 +4233,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               forbidCool3OnFirstDayOfWeek: forbidCool3OnFirstDay,
               mustKeepBlankDaysMinInThisWeek,
               recommendedNewWorkDaysInThisWeek,
+              ...(rotationGuide ? { rotationGuide } : {}),
             },
           };
 
@@ -4062,6 +4241,18 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             staffEntry.futurePreEnteredShifts = futurePreEnteredShifts;
           }
           return staffEntry;
+        });
+
+        // AIが名簿の上から機械的に「AAAA, FFFF」と固めて割り当てる癖を断ち切るため、
+        // 週データの職員配列順をシャッフルし、日ごとの割り当て検討順もランダム化する（※職員IDキー出力のため画面上の名簿順は変わらない）
+        const shuffledWeeklyStaffList = shuffleArray(weeklyStaffList);
+        const dailyShuffledStaffOrder = {};
+        targetWeek.days.forEach(d => {
+          dailyShuffledStaffOrder[d] = shuffleArray(
+            weeklyStaffList
+              .filter(st => !st.excludeFromAi && st.thisWeekPlan.assignableDaysInThisWeek.includes(d))
+              .map(st => st.id)
+          );
         });
 
         const weeklyPayload = {
@@ -4076,6 +4267,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             calendar: weekCalendar,
             exactTargetCountsByDay,
             currentDailySummary: weekDailySummary,
+            dailyShuffledStaffOrder,
           },
           pacingRules: weekAiData.pacingRules,
           categories: weekAiData.categories,
@@ -4083,7 +4275,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           facilitySkillRequirements: weekAiData.facilitySkillRequirements,
           cool3ShiftCodes: weekAiData.cool3ShiftCodes,
           definitions: weekAiData.definitions,
-          staff: weeklyStaffList,
+          staff: shuffledWeeklyStaffList,
           staffRequestsInWeek,
           teamAdminLocksInWeek,
         };
@@ -4127,6 +4319,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して満たしてください。
          - 各施設の合計powerScore基準: 【${powerScoreSummaryText}】（ME室は対象外）。
          - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、前週までに負担が多い職員に3クールや残業が偏らないよう平準化してください。
+      7. 日ごとの勤務地ローテーション・ランダム分散・施設偏りの防止（★重要★）:
+         - 機械的な固まり配置の禁止: 同じ日に名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めて並べたり、特定の職員を1週間ずっと同じ施設に張り付ける組み方はやめてください。各日の検討順（"targetWeek.dailyShuffledStaffOrder"）を活用し、人ごと・日ごとに自然なランダム性を持たせてください。
+         - 日替わり勤務地ローテーション: 複数の施設に配置可能な職員（"thisWeekPlan.rotationGuide" がある職員）は、可能な限り前営業日と同じ施設（週初日は "enteringLastFacility"）が連続しないよう、**日ごとに別の勤務地・別のクール区分へバラけてローテーション**させてください（"rotationGuide.dailyFacilityPreferenceHint" の日別推奨施設順を積極的に参考にしてください）。
+         - 月間の施設偏り平準化: "cumulativeStatsSoFar.facilityCountsSoFar" と "rotationGuide.underusedFacilitiesFirst" を確認し、これまでに入った回数が少ない施設へ優先配置して個人ごとの勤務地バランスを整えてください。
+         - ※ただし、配置制限（allowedWorkShifts）・[絶対]カスタム条件（曜日や施設の固定指定など）・必須スキル最低人数・必要人数の充足・連勤上限・週休確保が最優先です。それらを厳守した範囲で最大限バラけさせてください。
 
       【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表の表示名・区分からコードへ変換して適用すること）】
       ${strictConditions ? strictConditions : '特になし'}
@@ -4349,6 +4546,7 @@ ${dailyCheckExampleLines}
           2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、減ったシフトをその日に出勤可能（最大${maxStreak}連勤や3クール連続に違反しない）な他スタッフへ割り当ててください。
           3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、出勤日数に余力のある未ロック空欄スタッフへ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。
           4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
+          5. 勤務地の偏り・連日同一施設への配慮: 空欄への追加配置やシフト入れ替えを行う際は、複数施設に入れる職員（allowedFacilitiesCount >= 2）について前後の営業日と別の施設・これまでに回数が少ない施設（currentStats.priorityFacilitiesToBalance）を優先して選び、同じ施設ばかり連続しないよう配慮してください。
           ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件（※文中のシフト名・施設名は上の対応表からコードへ変換して適用）】\n${strictConditions}\n` : ''}
           【各職員のAI編集可能日リスト（aiEditableDaysByStaff）】
           ${JSON.stringify(aiEditableDaysByStaff)}
@@ -4830,6 +5028,9 @@ ${shiftSystemRefText}
   ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
 - 施設別目標パワースコア: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores と不足一覧 shortages に計算済みです）。
 - 必要人数: targetCounts（キーはシフトコード）を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
+- ランダム分散・日ごとの勤務地ローテーション・施設偏りの平準化（重要）:
+  ・仮組みや複数日のシフト提案を行う際は、名簿の上から機械的に「AAAA, FFFF」のように同じ施設・シフトを固めて並べないでください。
+  ・複数の施設に配置可能な職員（currentStats.allowedFacilitiesCount >= 2）は、[絶対]カスタム条件（曜日・施設の固定指定等）や必須スキル・必要人数に反しない限り、連日同じ施設が続かないよう**日ごとに勤務地・クールをバラけてローテーション**させ、currentStats.facilityCounts / priorityFacilitiesToBalance を参照して月間の勤務地の偏りが少なくなるよう組んでください。
 
 【有効なカスタム条件①：[絶対]（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表からコードへ変換して解釈すること）】
 ${strictConditions ? strictConditions : '特になし'}
@@ -6619,7 +6820,7 @@ ${messageText}`;
                                       </span>
                                     )}
                                   </div>
-                                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
                                     {SHIFT_WORK_SLOTS.map(slot => {
                                       const isSelected = activeWorkSlot === slot.value;
                                       return (
@@ -6639,7 +6840,7 @@ ${messageText}`;
                                     })}
                                   </div>
                                   <p className="text-[10px] text-gray-500 leading-snug">
-                                    ※「3クール」を選ぶと、職員ごとの3クール上限回数および連続3クール禁止（月またぎ含む）として判定されます。また「坂田の1クールに〇〇さん」等の条件指定もこの区分を参照します。
+                                    ※「3クール」を選ぶと、職員ごとの3クール上限回数および連続3クール禁止（月またぎ含む）として判定されます。また「1クール＝日勤」として扱われ、「坂田の日勤（1クール）に〇〇さん」等の条件指定もこの区分を参照します。
                                   </p>
                                 </div>
                               )}
@@ -6855,6 +7056,7 @@ ${messageText}`;
                   <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
                   <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
                   <div>・<strong>必須スキル配置：</strong>各施設の必須スキル（<strong>リーダー等</strong>）を確保し、不足日は分散配置＋ベテラン補完します</div>
+                  <div>・<strong>日替わり分散：</strong>機械的な固まり配置を防ぎ、<strong>日ごとに勤務地をローテーション＆月間の施設偏りを平準化</strong>します</div>
                   <div>・<strong>保護ルール：</strong><strong>個人入力分</strong>・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは条件に反映しつつ変更不可（ME室はAI対象外）</div>
                   <div>・<strong>段階ビルド＆検算：</strong>第1週から<strong>週ごとに順番に作成</strong>し、最後に<strong>1ヶ月通し検算＆自動手直し（最大1回）</strong>を行います</div>
                 </div>
