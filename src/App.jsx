@@ -174,6 +174,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   'facilitySkillTargets': DEFAULT_FACILITY_SKILL_TARGETS, // Step 4: 施設ごとの必須スキル最低人数
   'facilityPowerTargets': DEFAULT_FACILITY_POWER_TARGETS, // 施設ごとの目標パワースコア目安
   'facilitySplitDays': {},      // 施設ごとの必要人数曜日区分モード ('uniform' | 'mwf_tts' | 'daily')
+  'teamAllowedShifts': {},      // 各班管理者(ope/echo/hhd)が入力可能なシフトコード配列
+  'teamAllowedTasks': {},       // 各班管理者(ope/echo/hhd)が入力可能なタスクコード配列
 };
 
 const TIME_OPTIONS = [];
@@ -1392,6 +1394,8 @@ export default function WorkScheduleApp() {
   const [activeSettingsTab, setActiveSettingsTab] = useState('category'); 
 
   const [targetAdminKey, setTargetAdminKey] = useState('all');
+  const [selectedTeamPermTab, setSelectedTeamPermTab] = useState('ope');
+  const isMasterAdmin = Boolean(appUser && appUser.role === 'admin' && appUser.initialView === 'all');
 
   const [editingShift, setEditingShift] = useState(null);
   const [targetStaff, setTargetStaff] = useState(null);
@@ -1983,6 +1987,58 @@ export default function WorkScheduleApp() {
     return null;
   };
 
+  // 各班管理者（ope / echo / hhd）のデフォルト入力可能シフトコード一覧を算出（未設定時の互換用）
+  const getDefaultTeamAllowedShiftCodes = (teamKey, defs = shiftDefs, cats = categoryDefs) => {
+    const allShiftCodes = Object.values(defs)
+      .filter(s => s && getEffectiveShiftType(s, cats) === 'shift')
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+      .map(s => s.code);
+    if (teamKey === 'ope') {
+      return allShiftCodes.filter(c => isMeShiftDef(c, defs, cats));
+    }
+    return allShiftCodes;
+  };
+
+  // 各班管理者（ope / echo / hhd）の実効入力可能シフトコード一覧を解決
+  const resolveTeamAllowedShiftCodes = (teamKey, settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
+    if (!['ope', 'echo', 'hhd'].includes(teamKey)) return [];
+    const savedMap = settingsObj?.teamAllowedShifts;
+    if (savedMap && Array.isArray(savedMap[teamKey])) {
+      return savedMap[teamKey].filter(c => Boolean(defs[c]) && getEffectiveShiftType(defs[c], cats) === 'shift');
+    }
+    return getDefaultTeamAllowedShiftCodes(teamKey, defs, cats);
+  };
+
+  // 各班管理者（ope / echo / hhd）の実効入力可能タスクコード一覧を解決
+  const resolveTeamAllowedTaskCodes = (teamKey, settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
+    if (!['ope', 'echo', 'hhd'].includes(teamKey)) return [];
+    const allTaskCodes = Object.values(defs)
+      .filter(s => s && getEffectiveShiftType(s, cats) === 'task')
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+      .map(s => s.code);
+    const savedMap = settingsObj?.teamAllowedTasks;
+    if (savedMap && Array.isArray(savedMap[teamKey])) {
+      return savedMap[teamKey].filter(c => Boolean(defs[c]) && getEffectiveShiftType(defs[c], cats) === 'task');
+    }
+    return allTaskCodes;
+  };
+
+  // 全体管理者専用: 各班管理者の入力可能シフト・タスク設定を更新＆即時保存
+  const saveTeamAllowedCodes = (teamKey, nextCodes, codeType = 'shift') => {
+    if (!isMasterAdmin || !['ope', 'echo', 'hhd'].includes(teamKey)) return;
+    const fieldName = codeType === 'task' ? 'teamAllowedTasks' : 'teamAllowedShifts';
+    const currentMap = adminSettings?.[fieldName] && typeof adminSettings[fieldName] === 'object' ? adminSettings[fieldName] : {};
+    const nextMap = { ...currentMap };
+    if (nextCodes === null) {
+      delete nextMap[teamKey];
+    } else {
+      nextMap[teamKey] = Array.from(new Set(nextCodes));
+    }
+    const newSettings = { ...adminSettings, [fieldName]: nextMap };
+    setAdminSettings(newSettings);
+    saveMasterData({ adminSettings: newSettings });
+  };
+
   // HHD班・エコー班・オペ班管理者が入力したシフトかどうかを判定（AI変更ロック＆条件考慮用）
   const getTeamLockedShiftSource = (staffId, day, shiftsMap = shiftData, inputsMap = userInputs) => {
     const currentCode = shiftsMap[staffId]?.[day];
@@ -2011,12 +2067,16 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       if (staffId !== appUser.id) return; 
       // 締切チェック
       if (checkIsAfterDeadlineForStaff()) return;
-      
-      if (currentView === 'ope') {
-        if (toolCode && !isMeRoomShiftCode(toolCode)) {
-           alert('オペ班ページではLとGのみ入力可能です。');
-           return;
-        }
+    } else if (appUser.role === 'admin' && !isMasterAdmin && toolCode) {
+      // 各班管理者ログイン時は、全体管理者が許可したシフト・タスク以外の書き込みをブロック
+      const allowedCodes =
+        type === 'task'
+          ? resolveTeamAllowedTaskCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs)
+          : resolveTeamAllowedShiftCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs);
+      if (!allowedCodes.includes(toolCode)) {
+        const teamLabel = adminSettings[appUser.initialView]?.label || TEAM_ADMIN_LABELS[appUser.initialView] || 'この班の管理者';
+        alert(`${teamLabel}では選択・入力できない項目です。`);
+        return;
       }
     }
 
@@ -2198,21 +2258,28 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   }, [activePopup, popupReasonText]);
 
   const handleChangePassword = () => {
-    if (!newPassword.trim()) {
+    const trimmedPassword = newPassword.trim();
+    if (!trimmedPassword) {
       alert('新しいパスワードを入力してください');
       return;
     }
 
     if (appUser.role === 'admin') {
-      const newSettings = { ...adminSettings };
-      if (newSettings[targetAdminKey]) {
-        newSettings[targetAdminKey] = { ...newSettings[targetAdminKey], password: newPassword };
+      // 全体管理者以外は必ず自分自身の班管理者パスワードのみ変更可能（他管理者のパスワード書き換えを防止）
+      const effectiveAdminKey = appUser.initialView === 'all' ? targetAdminKey : appUser.initialView;
+      if (!effectiveAdminKey || !adminSettings[effectiveAdminKey]) {
+        alert('変更対象の管理者情報が見つかりません');
+        return;
       }
+      const newSettings = {
+        ...adminSettings,
+        [effectiveAdminKey]: { ...adminSettings[effectiveAdminKey], password: trimmedPassword },
+      };
       setAdminSettings(newSettings);
       saveMasterData({ adminSettings: newSettings });
-      alert(`${newSettings[targetAdminKey].label}のパスワードを変更しました。`);
+      alert(`${newSettings[effectiveAdminKey].label}のパスワードを変更しました。`);
     } else {
-      const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: newPassword } : s);
+      const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: trimmedPassword } : s);
       setStaffList(newList);
       saveMasterData({ staffList: newList });
       alert('パスワードを変更しました。次回ログイン時から有効です。');
@@ -5501,6 +5568,12 @@ ${messageText}`;
         } else {
           setCurrentView('all'); // 職員の場合は必ず'all'にリセット
         }
+        if (user.role === 'admin') {
+          setTargetAdminKey(user.initialView || 'all');
+          if (user.initialView !== 'all') {
+            setActiveSettingsTab(prev => (prev === 'teamAdmin' ? 'password' : prev));
+          }
+        }
         if (user.role === 'staff') {
           setViewMode('personal'); 
         }
@@ -5511,10 +5584,19 @@ ${messageText}`;
   );
   
   const getPopupOptions = (type) => {
-    if ((currentView === 'ope' || appUser.initialView === 'ope') && type === 'shift') {
-      const meShifts = Object.values(shiftDefs)
-        .filter(s => s && getEffectiveShiftType(s, categoryDefs) === 'shift' && isMeShiftDef(s.code, shiftDefs, categoryDefs))
-        .sort((a, b) => {
+    const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
+    let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && getEffectiveShiftType(s, categoryDefs) === type);
+
+    const activeTeamKey = getActiveTeamAdminKey();
+    if (activeTeamKey) {
+      const allowedSet = new Set(
+        type === 'task'
+          ? resolveTeamAllowedTaskCodes(activeTeamKey, adminSettings, shiftDefs, categoryDefs)
+          : resolveTeamAllowedShiftCodes(activeTeamKey, adminSettings, shiftDefs, categoryDefs)
+      );
+      opts = opts.filter(s => allowedSet.has(s.code));
+      if (activeTeamKey === 'ope' && type === 'shift') {
+        opts = [...opts].sort((a, b) => {
           const getRank = (item) => {
             const lbl = (item.label || '').trim();
             if (item.code === 'L' || lbl === 'L' || lbl === 'Ｌ') return 0;
@@ -5522,15 +5604,12 @@ ${messageText}`;
             return 2;
           };
           const rankDiff = getRank(a) - getRank(b);
-          return rankDiff !== 0 ? rankDiff : (a.order ?? 9999) - (b.order ?? 9999);
+          return rankDiff !== 0 ? rankDiff : 0;
         });
-      if (meShifts.length > 0) {
-        return meShifts;
       }
-      return [shiftDefs['L'] || DEFAULT_SHIFT_TYPES['L'], shiftDefs['G'] || DEFAULT_SHIFT_TYPES['G']];
+      return opts;
     }
-    const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
-    let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && getEffectiveShiftType(s, categoryDefs) === type);
+
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
       // 希望カテゴリ(req) または isRequestable が true のものを表示させる
       opts = opts.filter(s => isReqCategoryId(s.category, categoryDefs) || s.isRequestable);
@@ -5556,7 +5635,9 @@ ${messageText}`;
             <div className="px-2 sm:px-4 font-bold text-sm sm:text-lg text-gray-700 min-w-[70px] sm:min-w-[100px] text-center whitespace-nowrap">{year}/{month}</div>
             <button onClick={() => { let nm = month + 1, ny = year; if(nm > 12){ nm = 1; ny++; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronRight size={18} className="sm:w-5 sm:h-5" /></button>
           </div>
-          <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 truncate max-w-[80px] sm:max-w-none ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{appUser.role === 'admin' ? '管理者' : `${appUser.name}`}</span>
+          <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 truncate max-w-[110px] sm:max-w-none ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+            {appUser.role === 'admin' ? (adminSettings[appUser.initialView]?.label || '管理者') : `${appUser.name}`}
+          </span>
           
           {appUser.role === 'admin' && (
             <div className="flex items-center bg-gray-100 rounded p-1 border shrink-0">
@@ -5603,7 +5684,19 @@ ${messageText}`;
                <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
                  <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
                </button>
-               <button onClick={() => { setEditingShift(null); handleAddNewShift(); setShowSettingsModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0" title="設定">
+               <button
+                 onClick={() => {
+                   setEditingShift(null);
+                   handleAddNewShift();
+                   if (!isMasterAdmin) {
+                     setTargetAdminKey(appUser.initialView);
+                     if (activeSettingsTab === 'teamAdmin') setActiveSettingsTab('password');
+                   }
+                   setShowSettingsModal(true);
+                 }}
+                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
+                 title="設定"
+               >
                  <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
                </button>
                <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
@@ -6130,6 +6223,7 @@ ${messageText}`;
           const popupReqReason = activePopup.type === 'shift'
             ? getUserRequestedReason(activePopup.staffId, activePopup.day)
             : '';
+          const popupOptions = getPopupOptions(activePopup.type);
 
           return (
             <div 
@@ -6154,7 +6248,7 @@ ${messageText}`;
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {popupCurrentCode !== popupReqCode && popupReqDef && (
+                      {popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || popupOptions.some(o => o.code === popupReqCode)) && (
                         <button
                           onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
                           className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
@@ -6163,13 +6257,15 @@ ${messageText}`;
                           希望に戻す
                         </button>
                       )}
-                      <button
-                        onClick={() => { handleClearUserRequest(activePopup.staffId, activePopup.day, activePopup.type); setActivePopup(null); }}
-                        className="px-2 py-1 bg-white hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-[10px] transition"
-                        title="個人の希望履歴自体を消去します"
-                      >
-                        希望取消
-                      </button>
+                      {isMasterAdmin && (
+                        <button
+                          onClick={() => { handleClearUserRequest(activePopup.staffId, activePopup.day, activePopup.type); setActivePopup(null); }}
+                          className="px-2 py-1 bg-white hover:bg-red-100 text-red-600 border border-red-200 rounded font-bold text-[10px] transition"
+                          title="個人の希望履歴自体を消去します"
+                        >
+                          希望取消
+                        </button>
+                      )}
                     </div>
                   </div>
                   {popupReqReason && (
@@ -6234,7 +6330,7 @@ ${messageText}`;
                 >
                   クリア
                 </button>
-                {getPopupOptions(activePopup.type).map(shift => (
+                {popupOptions.map(shift => (
                   <button
                     key={shift.code}
                     onClick={() => {
@@ -6254,6 +6350,11 @@ ${messageText}`;
                   </button>
                 ))}
               </div>
+              {popupOptions.length === 0 && (
+                <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
+                  この班で入力可能な項目は設定されていません
+                </p>
+              )}
             </div>
           );
         })()}
@@ -6272,6 +6373,9 @@ ${messageText}`;
                   <button onClick={() => setActiveSettingsTab('category')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'category' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Palette size={16}/> カテゴリ設定</button>
                   <button onClick={() => setActiveSettingsTab('shift')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'shift' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Clock size={16}/> シフト設定</button>
                   <button onClick={() => setActiveSettingsTab('staff')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'staff' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Users size={16}/> 職員設定</button>
+                  {isMasterAdmin && (
+                    <button onClick={() => setActiveSettingsTab('teamAdmin')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'teamAdmin' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><ShieldCheck size={16}/> 班管理者権限</button>
+                  )}
                   <button onClick={() => setActiveSettingsTab('password')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'password' ? 'bg-white shadow text-blue-600' : 'text-gray-600 hover:bg-gray-200'}`}><Key size={16}/> パスワード</button>
                   <div className="flex-1"></div>
                   <button onClick={() => setActiveSettingsTab('data')} className={`p-3 rounded text-left text-sm font-bold flex items-center gap-2 ${activeSettingsTab === 'data' ? 'bg-red-50 text-red-600 border border-red-200' : 'text-gray-600 hover:bg-gray-200'}`}><Database size={16}/> データ管理</button>
@@ -7108,15 +7212,275 @@ ${messageText}`;
                       <div className="mt-4 flex justify-end"><button onClick={() => saveAllStaffSettings(staffList)} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">全変更を保存</button></div>
                     </div>
                   )}
+                  {activeSettingsTab === 'teamAdmin' && isMasterAdmin && (() => {
+                    const teamKeys = ['ope', 'echo', 'hhd'];
+                    const shiftGroups = dynamicPaletteGroups
+                      .map(g => ({
+                        ...g,
+                        color: categoryDefs[g.id]?.color || 'bg-gray-100 text-gray-700',
+                        items: g.items.filter(code => shiftDefs[code] && getEffectiveShiftType(shiftDefs[code], categoryDefs) === 'shift'),
+                      }))
+                      .filter(g => g.items.length > 0);
+                    const allShiftCodes = shiftGroups.flatMap(g => g.items);
+                    const allTaskCodes = dynamicPaletteGroups
+                      .flatMap(g => g.items)
+                      .filter(code => shiftDefs[code] && getEffectiveShiftType(shiftDefs[code], categoryDefs) === 'task');
+                    const currentAllowedShifts = resolveTeamAllowedShiftCodes(selectedTeamPermTab, adminSettings, shiftDefs, categoryDefs);
+                    const currentAllowedTasks = resolveTeamAllowedTaskCodes(selectedTeamPermTab, adminSettings, shiftDefs, categoryDefs);
+                    const currentShiftSet = new Set(currentAllowedShifts);
+                    const currentTaskSet = new Set(currentAllowedTasks);
+                    const isCustomShiftConfigured = Array.isArray(adminSettings?.teamAllowedShifts?.[selectedTeamPermTab]);
+                    const isCustomTaskConfigured = Array.isArray(adminSettings?.teamAllowedTasks?.[selectedTeamPermTab]);
+                    const activeTeamLabel = adminSettings[selectedTeamPermTab]?.label || TEAM_ADMIN_LABELS[selectedTeamPermTab] || '班管理者';
+
+                    const toggleShiftCodeForTeam = (code) => {
+                      const nextList = currentShiftSet.has(code)
+                        ? currentAllowedShifts.filter(c => c !== code)
+                        : [...currentAllowedShifts, code];
+                      saveTeamAllowedCodes(selectedTeamPermTab, nextList, 'shift');
+                    };
+
+                    const toggleShiftCategoryForTeam = (catCodes) => {
+                      const allChecked = catCodes.every(c => currentShiftSet.has(c));
+                      const nextList = allChecked
+                        ? currentAllowedShifts.filter(c => !catCodes.includes(c))
+                        : Array.from(new Set([...currentAllowedShifts, ...catCodes]));
+                      saveTeamAllowedCodes(selectedTeamPermTab, nextList, 'shift');
+                    };
+
+                    const toggleTaskCodeForTeam = (code) => {
+                      const nextList = currentTaskSet.has(code)
+                        ? currentAllowedTasks.filter(c => c !== code)
+                        : [...currentAllowedTasks, code];
+                      saveTeamAllowedCodes(selectedTeamPermTab, nextList, 'task');
+                    };
+
+                    return (
+                      <div className="max-w-3xl mx-auto mt-4 space-y-6 pb-8">
+                        <div>
+                          <h4 className="font-bold text-gray-800 border-b pb-3 flex items-center gap-2">
+                            <ShieldCheck size={18} className="text-blue-600" />
+                            <span>各班管理者の入力可能シフト・タスク設定</span>
+                          </h4>
+                          <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                            オペ班・エコー班・HHD班の各管理者としてログインした際（およびヘッダーの各班タブ選択時）に、シフト表上で選択・入力できる項目を設定します。<br />
+                            ※チェックを外した項目は選択ポップアップに表示されず、該当する班の管理者からは入力できなくなります（変更は自動で保存されます）。
+                          </p>
+                        </div>
+
+                        {/* 班ごとの切り替えタブ */}
+                        <div className="grid grid-cols-3 gap-2 bg-gray-100 p-1.5 rounded-xl border border-gray-200">
+                          {teamKeys.map(tKey => {
+                            const tLabel = adminSettings[tKey]?.label || TEAM_ADMIN_LABELS[tKey];
+                            const allowedCount = resolveTeamAllowedShiftCodes(tKey, adminSettings, shiftDefs, categoryDefs).length;
+                            const isActive = selectedTeamPermTab === tKey;
+                            return (
+                              <button
+                                key={tKey}
+                                type="button"
+                                onClick={() => setSelectedTeamPermTab(tKey)}
+                                className={`py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 transition ${
+                                  isActive
+                                    ? 'bg-white text-blue-700 shadow border border-blue-200'
+                                    : 'text-gray-600 hover:bg-gray-200/70'
+                                }`}
+                              >
+                                <span className="truncate">{tLabel}</span>
+                                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                  isActive ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-600'
+                                }`}>
+                                  シフト {allowedCount}/{allShiftCodes.length}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* セル上段：入力可能なシフト */}
+                        <div className="border rounded-xl bg-gray-50/70 p-4 space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-800">
+                                {activeTeamLabel}が入力できるシフト（セル上段）
+                              </div>
+                              <div className="text-[11px] text-gray-500 mt-0.5">
+                                現在 {currentAllowedShifts.length} / {allShiftCodes.length} 種類を許可中
+                                {!isCustomShiftConfigured && (
+                                  <span className="ml-1.5 text-gray-400">
+                                    （初期値: {selectedTeamPermTab === 'ope' ? 'ME室シフトのみ' : '全シフト'}）
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, allShiftCodes, 'shift')}
+                                className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 rounded-md transition"
+                              >
+                                全選択
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, [], 'shift')}
+                                className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-gray-100 text-gray-600 border border-gray-300 rounded-md transition"
+                              >
+                                全解除
+                              </button>
+                              {isCustomShiftConfigured && (
+                                <button
+                                  type="button"
+                                  onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, null, 'shift')}
+                                  className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-amber-50 text-amber-700 border border-amber-200 rounded-md transition flex items-center gap-1"
+                                  title="初期設定に戻します"
+                                >
+                                  <RotateCcw size={12} />
+                                  <span>初期値に戻す</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-3">
+                            {shiftGroups.map(group => {
+                              const catAllChecked = group.items.every(c => currentShiftSet.has(c));
+                              return (
+                                <div key={group.id} className="bg-white p-3 rounded-lg border border-gray-200">
+                                  <div className="flex items-center justify-between gap-2 mb-2">
+                                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${group.color}`}>
+                                      {group.name}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleShiftCategoryForTeam(group.items)}
+                                      className="text-[11px] font-bold text-blue-600 hover:underline"
+                                    >
+                                      {catAllChecked ? 'カテゴリ解除' : 'カテゴリ全選択'}
+                                    </button>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {group.items.map(code => {
+                                      const s = shiftDefs[code];
+                                      if (!s) return null;
+                                      const isChecked = currentShiftSet.has(code);
+                                      return (
+                                        <label
+                                          key={code}
+                                          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer transition select-none ${
+                                            isChecked
+                                              ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-400 shadow-sm'
+                                              : 'bg-gray-50/70 border-gray-200 opacity-65 hover:opacity-100 hover:bg-gray-100'
+                                          }`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="w-4 h-4 text-blue-600 rounded"
+                                            checked={isChecked}
+                                            onChange={() => toggleShiftCodeForTeam(code)}
+                                          />
+                                          <span className={`text-xs font-bold ${s.text}`}>{s.label}</span>
+                                          <span className="text-[10px] text-gray-400">({s.code})</span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* セル下段：入力可能な役割・タスク */}
+                        {allTaskCodes.length > 0 && (
+                          <div className="border rounded-xl bg-gray-50/70 p-4 space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-3">
+                              <div>
+                                <div className="text-sm font-bold text-gray-800">
+                                  {activeTeamLabel}が入力できる役割・タスク（セル下段）
+                                </div>
+                                <div className="text-[11px] text-gray-500 mt-0.5">
+                                  現在 {currentAllowedTasks.length} / {allTaskCodes.length} 種類を許可中
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, allTaskCodes, 'task')}
+                                  className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 rounded-md transition"
+                                >
+                                  全選択
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, [], 'task')}
+                                  className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-gray-100 text-gray-600 border border-gray-300 rounded-md transition"
+                                >
+                                  全解除
+                                </button>
+                                {isCustomTaskConfigured && (
+                                  <button
+                                    type="button"
+                                    onClick={() => saveTeamAllowedCodes(selectedTeamPermTab, null, 'task')}
+                                    className="px-2.5 py-1 text-xs font-bold bg-white hover:bg-amber-50 text-amber-700 border border-amber-200 rounded-md transition flex items-center gap-1"
+                                  >
+                                    <RotateCcw size={12} />
+                                    <span>初期値に戻す</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="bg-white p-3 rounded-lg border border-gray-200 flex flex-wrap gap-2">
+                              {allTaskCodes.map(code => {
+                                const t = shiftDefs[code];
+                                if (!t) return null;
+                                const isChecked = currentTaskSet.has(code);
+                                return (
+                                  <label
+                                    key={code}
+                                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer transition select-none ${
+                                      isChecked
+                                        ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-400 shadow-sm'
+                                        : 'bg-gray-50/70 border-gray-200 opacity-65 hover:opacity-100 hover:bg-gray-100'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="w-4 h-4 text-blue-600 rounded"
+                                      checked={isChecked}
+                                      onChange={() => toggleTaskCodeForTeam(code)}
+                                    />
+                                    <span className={`text-xs font-bold ${t.text}`}>{t.label}</span>
+                                    <span className="text-[10px] text-gray-400">({t.code})</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {activeSettingsTab === 'password' && (
                     <div className="max-w-md mx-auto mt-8">
                       <h4 className="font-bold text-gray-700 border-b pb-4 mb-4">パスワード変更</h4>
                       <div className="space-y-4">
                         <div className="mb-4">
                           <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
-                          <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
-                            {Object.keys(adminSettings).filter(key => adminSettings[key]?.label).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
-                          </select>
+                          {isMasterAdmin ? (
+                            <select className="w-full border p-2 rounded-lg" value={targetAdminKey} onChange={e => setTargetAdminKey(e.target.value)}>
+                              {Object.keys(adminSettings).filter(key => adminSettings[key]?.label).map(key => (<option key={key} value={key}>{adminSettings[key].label}</option>))}
+                            </select>
+                          ) : (
+                            <>
+                              <div className="w-full border border-gray-200 bg-gray-50 px-3 py-2 rounded-lg text-sm font-bold text-gray-700 flex items-center gap-2">
+                                <Lock size={14} className="text-gray-400 shrink-0" />
+                                <span>{adminSettings[appUser.initialView]?.label || '管理者'}</span>
+                              </div>
+                              <p className="text-[11px] text-gray-500 mt-1.5">
+                                ※全体管理者以外はご自身のパスワードのみ変更できます（他の管理者のパスワードは変更できません）。
+                              </p>
+                            </>
+                          )}
                         </div>
                         <div><label className="block text-xs font-bold text-gray-500 mb-1">新しいパスワード</label><input type="text" className="w-full border p-2 rounded" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></div>
                         <button onClick={handleChangePassword} className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">変更を保存</button>
@@ -7802,20 +8166,27 @@ ${messageText}`;
                </div>
                <div className="p-6">
                  {appUser.role === 'admin' ? (
-                   <div className="mb-4">
-                     <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
-                     <select 
-                       className="w-full border p-2 rounded-lg"
-                       value={targetAdminKey}
-                       onChange={e => setTargetAdminKey(e.target.value)}
-                     >
-                       {Object.keys(adminSettings)
-                         .filter(key => adminSettings[key]?.label)
-                         .map(key => (
-                           <option key={key} value={key}>{adminSettings[key].label}</option>
-                         ))}
-                     </select>
-                   </div>
+                   isMasterAdmin ? (
+                     <div className="mb-4">
+                       <label className="block text-xs font-bold text-gray-500 mb-1">変更対象</label>
+                       <select 
+                         className="w-full border p-2 rounded-lg"
+                         value={targetAdminKey}
+                         onChange={e => setTargetAdminKey(e.target.value)}
+                       >
+                         {Object.keys(adminSettings)
+                           .filter(key => adminSettings[key]?.label)
+                           .map(key => (
+                             <option key={key} value={key}>{adminSettings[key].label}</option>
+                           ))}
+                       </select>
+                     </div>
+                   ) : (
+                     <p className="mb-4 text-sm text-gray-600 leading-relaxed">
+                       <b>{adminSettings[appUser.initialView]?.label || '管理者'}</b> のログインパスワードを変更します。
+                       <span className="block text-[11px] text-gray-400 mt-1">※他の管理者のパスワードは変更できません。</span>
+                     </p>
+                   )
                  ) : (
                    <p className="mb-4 text-sm text-gray-600">
                      <b>{appUser.name}</b> さんのログインパスワードを変更します。
