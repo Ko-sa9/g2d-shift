@@ -103,9 +103,9 @@ const TEAMS = [
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
-  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (最新高速・相談推奨)' },
+  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (標準高速・推奨)' },
   { value: 'gemini-4-argon', label: 'Gemini 4 Argon (最高性能・推論重視)' },
-  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (高精度推論)' },
+  { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite (最速・軽量)' },
 ];
 
 const CATEGORY_KIND_OPTIONS = [
@@ -563,22 +563,31 @@ const resolveAiOutputCode = (rawVal, shiftDefs = {}, categoryDefs = {}, expected
 };
 
 // 現在のシフト設定・カテゴリ設定をAIへ誤解ゼロで伝えるライブ対応表テキストを生成
-const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminSettings = {}) => {
+const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminSettings = {}, options = {}) => {
+  const { includeTasks = true } = options;
   const sortedCats = Object.values(categoryDefs).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
   const lines = [
     '【現在のシステム設定：シフトコード・表示名・勤務区分 対応表（★初期設定ではなく必ずこの最新設定に従うこと★）】',
     '※重要：画面上の「表示名」とデータ保存用の「シフトコード」が異なる設定に対応しています（例：コード "1" ＝ 表示名「A」など）。',
     '・管理者がカスタム条件やチャットでシフト名・施設名を書くときは、主に「表示名（例: A）」や「施設名＋区分（例: 坂田の3クール、日勤）」で呼びます（※「1クール」＝「日勤」と同一の意味です）。必ず下の対応表で該当する「コード」を確認して解釈してください。',
     '・AIが出勤として新規割り当て・入れ替えできるシフトは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（L・G等）やその他（出勤・公出等）、休み・希望カテゴリのコードはAIから絶対に出力・変更しないでください。',
-    '・JSONの "shift" / "task" に出力する値は、表示名ではなく必ず【コード】の文字列（例: "1"）を指定してください。',
+    includeTasks
+      ? '・JSONの "shift" / "task" に出力する値は、表示名ではなく必ず【コード】の文字列（例: "1"）を指定してください。'
+      : '・JSONの "shift" に出力する値は、表示名ではなく必ず【コード】の文字列（例: "1"）を指定してください。',
   ];
 
   const assignedCodes = new Set();
   sortedCats.forEach(cat => {
     const kind = resolveCategoryKind(cat);
+    if (!includeTasks && kind === 'role') {
+      Object.values(shiftDefs)
+        .filter(s => s && s.category === cat.id)
+        .forEach(s => assignedCodes.add(s.code));
+      return;
+    }
     const kindMeta = CATEGORY_KIND_OPTIONS.find(o => o.value === kind);
     const items = Object.values(shiftDefs)
-      .filter(s => s && s.category === cat.id)
+      .filter(s => s && s.category === cat.id && (includeTasks || getEffectiveShiftType(s, categoryDefs) !== 'task'))
       .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
     if (items.length === 0) return;
 
@@ -630,7 +639,9 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
     });
   });
 
-  const orphanItems = Object.values(shiftDefs).filter(s => s && !assignedCodes.has(s.code));
+  const orphanItems = Object.values(shiftDefs).filter(
+    s => s && !assignedCodes.has(s.code) && (includeTasks || getEffectiveShiftType(s, categoryDefs) !== 'task')
+  );
   if (orphanItems.length > 0) {
     lines.push('- [その他・未分類カテゴリ]:');
     orphanItems.forEach(s => {
@@ -687,7 +698,6 @@ const evaluateScheduleValidation = ({
   const daysInMonth = getDaysInMonth(year, month);
   const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
   const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
-  const monthlyOffSetting = adminSettings?.monthlyRegularOffDays || 'auto';
   const dynamicCool3Codes =
     Array.isArray(prevMonthCarryOver?.cool3ShiftCodes) && prevMonthCarryOver.cool3ShiftCodes.length > 0
       ? prevMonthCarryOver.cool3ShiftCodes
@@ -787,9 +797,8 @@ const evaluateScheduleValidation = ({
   const emptyOperatingDaysCount = operatingDaysCount - filledOperatingDaysCount;
   const isFullMonthCreated = filledOperatingDaysCount >= Math.max(1, operatingDaysCount - 1);
 
-  const parsedFixedOff = monthlyOffSetting !== 'auto' ? parseInt(monthlyOffSetting, 10) : NaN;
-  const baseRegularOffMin = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.floor(operatingDaysCount / 6);
-  const baseRegularOffMax = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.ceil(operatingDaysCount / 6);
+  const baseRegularOffMin = Math.floor(operatingDaysCount / 6);
+  const baseRegularOffMax = Math.ceil(operatingDaysCount / 6);
   const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
   const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
 
@@ -2062,21 +2071,68 @@ export default function WorkScheduleApp() {
     return null;
   };
 
+  // 各班管理者が該当セルを変更・クリア可能か判定（「空欄への新規入力」または「自班が入力したセルの修正・クリア」のみ許可）
+  const canTeamAdminModifyCell = (staffId, day, type = 'shift') => {
+    if (!appUser || appUser.role !== 'admin' || isMasterAdmin) {
+      return { allowed: true, reason: '' };
+    }
+    const myTeam = appUser.initialView;
+    if (type === 'task') {
+      const currentTask = taskData[staffId]?.[day];
+      if (!currentTask) return { allowed: true, reason: '' };
+      const ownerTeam = getTeamLockedTaskSource(staffId, day);
+      if (ownerTeam === myTeam) return { allowed: true, reason: '' };
+      if (ownerTeam) {
+        const ownerLabel = adminSettings[ownerTeam]?.label || TEAM_ADMIN_LABELS[ownerTeam] || '他班の管理者';
+        return { allowed: false, reason: `${ownerLabel}が入力したタスクのため、変更・クリアできません。` };
+      }
+      const reqTask = getUserRequestedTask(staffId, day);
+      if (reqTask && currentTask === reqTask) {
+        return { allowed: false, reason: '職員本人が入力したタスクのため、変更・クリアできません。' };
+      }
+      return { allowed: false, reason: '全体管理者が設定したタスクのため、変更・クリアできません。' };
+    }
+
+    const currentShift = shiftData[staffId]?.[day];
+    if (!currentShift) return { allowed: true, reason: '' };
+    const ownerTeam = getTeamLockedShiftSource(staffId, day);
+    if (ownerTeam === myTeam) return { allowed: true, reason: '' };
+    if (ownerTeam) {
+      const ownerLabel = adminSettings[ownerTeam]?.label || TEAM_ADMIN_LABELS[ownerTeam] || '他班の管理者';
+      return { allowed: false, reason: `${ownerLabel}が入力したシフトのため、変更・クリアできません。` };
+    }
+    const reqShift = getUserRequestedShift(staffId, day);
+    if (reqShift && currentShift === reqShift) {
+      return { allowed: false, reason: '職員本人が入力した希望・シフトのため、変更・クリアできません。' };
+    }
+    return { allowed: false, reason: '全体管理者が設定したシフトのため、変更・クリアできません。' };
+  };
+
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
       // 締切チェック
       if (checkIsAfterDeadlineForStaff()) return;
-    } else if (appUser.role === 'admin' && !isMasterAdmin && toolCode) {
-      // 各班管理者ログイン時は、全体管理者が許可したシフト・タスク以外の書き込みをブロック
-      const allowedCodes =
-        type === 'task'
-          ? resolveTeamAllowedTaskCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs)
-          : resolveTeamAllowedShiftCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs);
-      if (!allowedCodes.includes(toolCode)) {
-        const teamLabel = adminSettings[appUser.initialView]?.label || TEAM_ADMIN_LABELS[appUser.initialView] || 'この班の管理者';
-        alert(`${teamLabel}では選択・入力できない項目です。`);
+    } else if (appUser.role === 'admin' && !isMasterAdmin) {
+      const modPerm = canTeamAdminModifyCell(staffId, day, type);
+      if (!modPerm.allowed) {
+        alert(modPerm.reason);
         return;
+      }
+      if (!toolCode) {
+        const existingVal = type === 'task' ? taskData[staffId]?.[day] : shiftData[staffId]?.[day];
+        if (!existingVal) return;
+      } else {
+        // 各班管理者ログイン時は、全体管理者が許可したシフト・タスク以外の書き込みをブロック
+        const allowedCodes =
+          type === 'task'
+            ? resolveTeamAllowedTaskCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs)
+            : resolveTeamAllowedShiftCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs);
+        if (!allowedCodes.includes(toolCode)) {
+          const teamLabel = adminSettings[appUser.initialView]?.label || TEAM_ADMIN_LABELS[appUser.initialView] || 'この班の管理者';
+          alert(`${teamLabel}では選択・入力できない項目です。`);
+          return;
+        }
       }
     }
 
@@ -2330,6 +2386,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleAddStaff = () => {
+    if (!isMasterAdmin) return;
     setTargetStaff({
       id: null,
       loginId: '',
@@ -2347,6 +2404,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleEditStaff = (staff) => {
+    if (!isMasterAdmin) return;
     const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
     const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
     setTargetStaff({ 
@@ -2362,6 +2420,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const saveStaff = () => {
+    if (!isMasterAdmin) return;
     if (!targetStaff.name.trim()) {
       alert('名前を入力してください');
       return;
@@ -2391,6 +2450,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const saveAllStaffSettings = (updatedStaffList) => {
+    if (!isMasterAdmin) return;
     setStaffList(updatedStaffList);
     saveMasterData({ staffList: updatedStaffList }); // ★修正
     alert('全職員の設定を保存しました。');
@@ -2398,6 +2458,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const removeStaff = (id) => {
+    if (!isMasterAdmin) return;
     setConfirmModal({
       isOpen: true,
       title: '職員削除',
@@ -2411,6 +2472,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleSortStaff = (dragId, dropId) => {
+    if (!isMasterAdmin) return;
     if (dragId === dropId) return;
     const newStaffList = [...staffList];
     const dragIndex = newStaffList.findIndex(s => s.id === dragId);
@@ -2561,15 +2623,21 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const saveShiftConfig = () => {
+    if (!isMasterAdmin) return;
     if (!editingShift || !editingShift.code || !editingShift.label) {
       alert('コードと表示名は必須です');
       return;
     }
-    const newDefs = { ...shiftDefs };
-    if (editingShift.originalCode && editingShift.originalCode !== editingShift.code) {
-      delete newDefs[editingShift.originalCode];
+    // 既存シフトの編集時はデータ孤立防止のため作成時の内部コード(originalCode)を維持し、新規作成時はコード重複をチェックする
+    const fixedCode = editingShift.originalCode ? editingShift.originalCode : editingShift.code.trim();
+    if (!editingShift.originalCode && shiftDefs[fixedCode]) {
+      alert(`コード "${fixedCode}" は既に他のシフトで使用されています。別のコードを指定してください。`);
+      return;
     }
-    const { originalCode, ...cleanShift } = editingShift;
+    const newDefs = { ...shiftDefs };
+    const cleanShift = { ...editingShift };
+    delete cleanShift.originalCode;
+    cleanShift.code = fixedCode;
     const catKind = getCategoryKindById(cleanShift.category, categoryDefs);
     cleanShift.type = catKind === 'role' ? 'task' : (cleanShift.type || 'shift');
     if (cleanShift.type === 'shift') {
@@ -2643,6 +2711,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
 const handleResetSchedule = () => {
+    if (!isMasterAdmin) return;
     setConfirmModal({
       isOpen: true,
       title: '勤務表の消去',
@@ -2954,11 +3023,11 @@ const handleResetSchedule = () => {
     };
   }, [year, month, prevMonthShiftData, staffList, shiftDefs, categoryDefs, adminSettings.maxConsecutiveWorkDays, adminSettings.clinicClosedDays, shiftData]);
 
-const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskData) => {
+const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskData, options = {}) => {
+    const { includeTasks = true } = options;
     const days = getDaysInMonth(year, month);
     const closedRules = Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
     const maxConsecutiveWorkDays = Number(adminSettings.maxConsecutiveWorkDays) || 5;
-    const monthlyOffSetting = adminSettings.monthlyRegularOffDays || 'auto';
 
     const calendarInfo = {};
     let operatingDaysCount = 0;
@@ -3004,10 +3073,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       });
     }
 
-    // Step 2: 週休2日（日曜＋週1日公休＝空欄）に基づく月間の基本公休数・標準出勤日数の算出
-    const parsedFixedOff = monthlyOffSetting !== 'auto' ? parseInt(monthlyOffSetting, 10) : NaN;
-    const baseRegularOffMin = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.floor(operatingDaysCount / 6);
-    const baseRegularOffMax = !isNaN(parsedFixedOff) ? parsedFixedOff : Math.ceil(operatingDaysCount / 6);
+    // Step 2: 週休2日（日曜＋週1日公休＝空欄）に基づく月間の基本公休数・標準出勤日数の算出（自動計算を標準）
+    const baseRegularOffMin = Math.floor(operatingDaysCount / 6);
+    const baseRegularOffMax = Math.ceil(operatingDaysCount / 6);
     const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
     const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
 
@@ -3304,7 +3372,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       const staffTeamLock = {};
       for (let d = 1; d <= days; d++) {
         const reqShift = getUserRequestedShift(s.id, d);
-        const reqTask = getUserRequestedTask(s.id, d);
+        const reqTask = includeTasks ? getUserRequestedTask(s.id, d) : null;
         if (reqShift || reqTask) {
           staffReq[d] = {};
           if (reqShift) staffReq[d].shift = reqShift;
@@ -3312,7 +3380,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         }
 
         const teamShiftSrc = getTeamLockedShiftSource(s.id, d, customShifts);
-        const teamTaskSrc = getTeamLockedTaskSource(s.id, d, customTasks);
+        const teamTaskSrc = includeTasks ? getTeamLockedTaskSource(s.id, d, customTasks) : null;
         if (teamShiftSrc || teamTaskSrc) {
           staffTeamLock[d] = {};
           if (teamShiftSrc) {
@@ -3338,6 +3406,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     const facilityPowerTargetsSummary = {};
     sortedCategories.forEach(cat => {
       const kind = resolveCategoryKind(cat);
+      if (!includeTasks && kind === 'role') return;
       const targetPowerScore = kind === 'facility' ? getFacilityTargetPowerScore(cat, adminSettings) : 0;
       categoriesMeta[cat.id] = {
         id: cat.id,
@@ -3484,11 +3553,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       teamAdminLocks,
       dailySummary,
       shifts: customShifts, 
-      tasks: customTasks,
+      ...(includeTasks ? { tasks: customTasks } : {}),
       targetCounts,
       definitions: Object.keys(shiftDefs).reduce((acc, key) => {
         const def = shiftDefs[key];
         const effType = getEffectiveShiftType(def, categoryDefs);
+        if (!includeTasks && effType === 'task') return acc;
         const catObj = categoryDefs[def.category];
         const catKind = getCategoryKindById(def.category, categoryDefs);
         const isKoushutsu = isKoushutsuShiftDef(def, categoryDefs);
@@ -3927,7 +3997,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     };
 
     try {
-      const initialData = prepareScheduleDataForAi(originalShifts, originalTasks);
+      const initialData = prepareScheduleDataForAi(originalShifts, originalTasks, { includeTasks: false });
       const calendarWeeks = initialData.calendarWeeks || [];
       const cool3Codes = initialData.cool3ShiftCodes || [];
       const cool3DescStr = cool3Codes.length > 0
@@ -3954,7 +4024,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             )
             .join(' ／ ')
         : '設定なし';
-      const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings);
+      const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings, { includeTasks: false });
       const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。名簿の上から機械的にAAAA, FFFFのように同じシフト・施設を固めて並べたり、同じ職員を連日同じ施設に固定することは避け、複数施設に入れる職員は日ごとに勤務地・クールをバラけてローテーションさせ、月間の勤務地の偏りが少なくなるように組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
 
       const strictConditions = autoFillConditions
@@ -4083,8 +4153,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         );
         updateStepItem(weekStepId, { status: 'active', detail: 'AI計算中...' });
 
-        // 直前の週までに配置された出勤・空欄公休・3クール回数をリアルタイム反映した状態で当週データを生成
-        const weekAiData = prepareScheduleDataForAi(workingShifts, workingTasks);
+        // 直前の週までに配置された出勤・空欄公休・3クール回数をリアルタイム反映した状態で当週データを生成（タスク定義・タスクロックは除外）
+        const weekAiData = prepareScheduleDataForAi(workingShifts, workingTasks, { includeTasks: false });
         const firstDay = targetWeek.days[0];
         const lastDay = targetWeek.days[targetWeek.days.length - 1];
         const allowedWeekDaysSet = new Set(targetWeek.days);
@@ -4640,7 +4710,7 @@ ${dailyCheckExampleLines}
         });
 
         try {
-          const pass1AiData = prepareScheduleDataForAi(workingShifts, workingTasks);
+          const pass1AiData = prepareScheduleDataForAi(workingShifts, workingTasks, { includeTasks: false });
           const aiEditableDaysByStaff = {};
           staffList.forEach(s => {
             if (s.excludeFromAi) return;
@@ -5648,7 +5718,7 @@ ${messageText}`;
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
-           {appUser.role === 'admin' && (
+           {appUser.role === 'admin' && isMasterAdmin && (
              <>
                <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
                  {isAiLoading ? <Loader2 className="animate-spin" size={16}/> : <Sparkles size={16} className="sm:w-4 sm:h-4"/>} <span className="hidden md:inline text-sm">AI作成</span>
@@ -5688,16 +5758,29 @@ ${messageText}`;
                  onClick={() => {
                    setEditingShift(null);
                    handleAddNewShift();
-                   if (!isMasterAdmin) {
-                     setTargetAdminKey(appUser.initialView);
-                     if (activeSettingsTab === 'teamAdmin') setActiveSettingsTab('password');
-                   }
                    setShowSettingsModal(true);
                  }}
                  className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
                  title="設定"
                >
                  <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
+               </button>
+               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
+               <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
+             </>
+           )}
+           {appUser.role === 'admin' && !isMasterAdmin && (
+             <>
+               <button
+                 onClick={() => {
+                   setTargetAdminKey(appUser.initialView);
+                   setNewPassword('');
+                   setShowPasswordChangeModal(true);
+                 }}
+                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
+                 title="パスワード変更"
+               >
+                 <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
                </button>
                <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
                <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
@@ -5725,8 +5808,8 @@ ${messageText}`;
         </div>
       </header>
 
-      {/* ★修正：管理者への通知バー（確認ボタン付き） */}
-      {appUser.role === 'admin' && changeLogs.length > 0 && (
+      {/* ★修正：全体管理者への通知バー（確認ボタン付き） */}
+      {isMasterAdmin && changeLogs.length > 0 && (
         <div className="bg-orange-100 border-b border-orange-200 px-4 py-2 text-orange-800 text-xs font-bold flex items-center justify-between animate-pulse">
           <div className="flex items-center gap-2">
             <AlertTriangle size={14}/>
@@ -5875,7 +5958,7 @@ ${messageText}`;
                               <div className="flex items-center gap-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>編集前の希望</div>
                             </div>
                           )}
-                          {appUser.role === 'admin' && <button onClick={(e) => { e.stopPropagation(); handleAddStaff(); }} className="flex items-center gap-1 text-xs bg-white border px-2 py-1 rounded text-blue-600 font-bold"><Plus size={12}/> 職員追加</button>}
+                          {isMasterAdmin && <button onClick={(e) => { e.stopPropagation(); handleAddStaff(); }} className="flex items-center gap-1 text-xs bg-white border px-2 py-1 rounded text-blue-600 font-bold"><Plus size={12}/> 職員追加</button>}
                         </div>
                       </th>
                       {daysArray.map(day => {
@@ -5903,7 +5986,7 @@ ${messageText}`;
                   <tbody className="bg-white">
                     {displayStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
-                      const carry = appUser.role === 'admin' ? prevMonthCarryOver.byStaff[staff.id] : null;
+                      const carry = isMasterAdmin ? prevMonthCarryOver.byStaff[staff.id] : null;
                       const maxStreakLimit = Number(adminSettings.maxConsecutiveWorkDays) || 5;
                       const showCarryBadges = !!(
                         carry &&
@@ -5915,20 +5998,20 @@ ${messageText}`;
                         <tr 
                           key={staff.id} 
                           className="group hover:bg-gray-50"
-                          draggable={appUser.role === 'admin'}
+                          draggable={isMasterAdmin}
                           onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={(e) => { 
                             e.preventDefault(); 
-                            if(appUser.role === 'admin') handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
+                            if(isMasterAdmin) handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
                           }}
                         >
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r p-2 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
-                              <div className="cursor-pointer flex-1" onClick={(e) => { if(appUser.role === 'admin') { e.stopPropagation(); handleEditStaff(staff); } }}>
+                              <div className={isMasterAdmin ? "cursor-pointer flex-1" : "flex-1"} onClick={(e) => { if(isMasterAdmin) { e.stopPropagation(); handleEditStaff(staff); } }}>
                                 <div className="text-sm font-bold text-gray-800 flex items-center gap-1">
                                   {staff.name}
-                                  {appUser.role === 'admin' && <Edit2 size={10} className="text-gray-300 opacity-0 group-hover/cell:opacity-100 transition"/>}
+                                  {isMasterAdmin && <Edit2 size={10} className="text-gray-300 opacity-0 group-hover/cell:opacity-100 transition"/>}
                                 </div>
                                 <div className="text-[10px] text-gray-500 flex items-center gap-2">
                                   {staff.jobTitle}
@@ -5980,7 +6063,7 @@ ${messageText}`;
                                   </div>
                                 )}
                               </div>
-                              {appUser.role === 'admin' && (
+                              {isMasterAdmin && (
                                 <div className="flex items-center">
                                   {/* ドラッグ処理はtrタグに移したため、ここはアイコン表示のみにする */}
                                   <div className="cursor-grab text-gray-400 mr-2 hover:text-gray-600">
@@ -6122,7 +6205,12 @@ ${messageText}`;
                       <>
                         <tr>
                           <td className="p-2 bg-gray-100 border-r border-b font-bold text-gray-600 text-xs text-right sticky left-0 z-10 flex justify-between items-center">
-                            <button onClick={(e) => { e.stopPropagation(); setShowTargetCountModal(true); }} className="text-gray-400 hover:text-blue-600"><Settings size={14}/></button><span>集計</span>
+                            {isMasterAdmin ? (
+                              <button onClick={(e) => { e.stopPropagation(); setShowTargetCountModal(true); }} className="text-gray-400 hover:text-blue-600"><Settings size={14}/></button>
+                            ) : (
+                              <span />
+                            )}
+                            <span>集計</span>
                           </td>
                           <td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td>
                         </tr>
@@ -6224,6 +6312,10 @@ ${messageText}`;
             ? getUserRequestedReason(activePopup.staffId, activePopup.day)
             : '';
           const popupOptions = getPopupOptions(activePopup.type);
+          const teamCellPerm =
+            appUser.role === 'admin' && !isMasterAdmin
+              ? canTeamAdminModifyCell(activePopup.staffId, activePopup.day, activePopup.type)
+              : { allowed: true, reason: '' };
 
           return (
             <div 
@@ -6248,7 +6340,7 @@ ${messageText}`;
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || popupOptions.some(o => o.code === popupReqCode)) && (
+                      {teamCellPerm.allowed && popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || popupOptions.some(o => o.code === popupReqCode)) && (
                         <button
                           onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
                           className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
@@ -6321,46 +6413,57 @@ ${messageText}`;
                   </div>
                 </div>
               )}
-              {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
-              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
-                <button
-                  onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
-                  className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
-                  title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
-                >
-                  クリア
-                </button>
-                {popupOptions.map(shift => (
-                  <button
-                    key={shift.code}
-                    onClick={() => {
-                      handleUpdateCell(
-                        activePopup.staffId,
-                        activePopup.day,
-                        shift.code,
-                        activePopup.type,
-                        appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
-                      );
-                      setActivePopup(null);
-                    }}
-                    className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
-                    title={shift.label}
-                  >
-                    {shift.label}
-                  </button>
-                ))}
-              </div>
-              {popupOptions.length === 0 && (
-                <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
-                  この班で入力可能な項目は設定されていません
-                </p>
+              {!teamCellPerm.allowed ? (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2 leading-relaxed">
+                  <Lock size={15} className="text-amber-600 shrink-0 mt-0.5" />
+                  <span>{teamCellPerm.reason}</span>
+                </div>
+              ) : (
+                <>
+                  {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
+                    {(isMasterAdmin || appUser.role === 'staff' || Boolean(popupCurrentCode)) && (
+                      <button
+                        onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
+                        className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
+                        title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
+                      >
+                        クリア
+                      </button>
+                    )}
+                    {popupOptions.map(shift => (
+                      <button
+                        key={shift.code}
+                        onClick={() => {
+                          handleUpdateCell(
+                            activePopup.staffId,
+                            activePopup.day,
+                            shift.code,
+                            activePopup.type,
+                            appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
+                          );
+                          setActivePopup(null);
+                        }}
+                        className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
+                        title={shift.label}
+                      >
+                        {shift.label}
+                      </button>
+                    ))}
+                  </div>
+                  {popupOptions.length === 0 && (
+                    <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
+                      この班で入力可能な項目は設定されていません
+                    </p>
+                  )}
+                </>
               )}
             </div>
           );
         })()}
 
         {/* 統合設定モーダル */}
-        {showSettingsModal && (
+        {showSettingsModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
@@ -6752,22 +6855,9 @@ ${messageText}`;
                             </div>
                             <div>
                               <label className="block text-xs font-bold text-gray-600 mb-1">月間の公休数（日曜除く指定休・振休枠）</label>
-                              <select
-                                className="w-full border p-2 rounded bg-white text-sm font-medium"
-                                value={adminSettings.monthlyRegularOffDays || 'auto'}
-                                onChange={(e) => {
-                                  const newSettings = { ...adminSettings, monthlyRegularOffDays: e.target.value };
-                                  setAdminSettings(newSettings);
-                                  saveMasterData({ adminSettings: newSettings });
-                                }}
-                              >
-                                <option value="auto">自動計算（週1日休みペース: 月4〜5日）</option>
-                                <option value="3">月3日で固定</option>
-                                <option value="4">月4日で固定</option>
-                                <option value="5">月5日で固定</option>
-                                <option value="6">月6日で固定</option>
-                                <option value="7">月7日で固定</option>
-                              </select>
+                              <div className="w-full border border-gray-200 p-2 rounded bg-gray-100 text-sm font-bold text-gray-700">
+                                自動計算（週1日休みペース: 月4〜5日）
+                              </div>
                             </div>
                           </div>
                           <div className="text-[11px] text-gray-600 bg-white border border-gray-200 rounded-md p-3 space-y-1 leading-relaxed">
@@ -6968,11 +7058,15 @@ ${messageText}`;
                                   <label className="text-xs font-bold text-gray-500">コード（内部キー・英数字可）</label>
                                   <input
                                     type="text"
-                                    className="w-full border p-2 rounded text-sm"
+                                    className="w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                                     value={editingShift.code || ''}
+                                    disabled={Boolean(editingShift.originalCode)}
                                     onChange={e => setEditingShift({ ...editingShift, code: e.target.value.trim() })}
                                     placeholder="例: 1, A, S1 など"
                                   />
+                                  {editingShift.originalCode && (
+                                    <p className="text-[10px] text-gray-400 mt-1">※作成後は過去データ保護のためコード変更不可（表示名は変更可能）</p>
+                                  )}
                                 </div>
                                 <div>
                                   <label className="text-xs font-bold text-gray-500">表示名（勤務表・チャット上の表記）</label>
@@ -7504,7 +7598,7 @@ ${messageText}`;
         )}
 
 {/* AI自動作成確認モーダル */}
-        {showAutoFillModal && (
+        {showAutoFillModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAutoFillModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-yellow-50 to-orange-50">
@@ -7643,7 +7737,7 @@ ${messageText}`;
         )}
 
         {/* AI アシスタントモーダル */}
-        {showAiModal && (
+        {showAiModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col h-[85vh]" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between p-4 border-b bg-gradient-to-r from-indigo-50 to-purple-50 gap-2">
@@ -7996,7 +8090,7 @@ ${messageText}`;
         )}
 
         {/* スタッフ詳細（サブモーダル） (z-index 110) */}
-        {showStaffModal && (
+        {showStaffModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
@@ -8203,7 +8297,7 @@ ${messageText}`;
         )}
 
         {/* 必要人数設定モーダル (z-index 100) */}
-        {showTargetCountModal && (
+        {showTargetCountModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
@@ -8465,7 +8559,7 @@ ${messageText}`;
         )}
 
         {/* Step 6: 検算チェック結果モーダル */}
-        {showValidationModal && (
+        {showValidationModal && isMasterAdmin && (
           <div
             className="absolute inset-0 bg-black/50 z-[115] flex items-center justify-center p-4"
             onClick={() => {

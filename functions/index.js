@@ -12,8 +12,16 @@ exports.callGeminiAPI = functions.https.onCall(
     const systemInstruction = String(requestData.systemInstruction || "").trim();
     const responseMimeType = requestData.responseMimeType || null;
 
-    // デフォルトは最新の高速・高精度モデル（gemini-3.8-flash）を使用します
-    const model = requestData.model || "gemini-3.8-flash";
+    // デフォルトは最新の高速・高精度GAモデル（gemini-3.8-flash）を使用します
+    const ALLOWED_MODELS = new Set([
+      "gemini-3.8-flash",
+      "gemini-4-argon",
+      "gemini-3.5-flash-lite",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+    ]);
+    const requestedModel = String(requestData.model || "").trim();
+    const primaryModel = ALLOWED_MODELS.has(requestedModel) ? requestedModel : "gemini-3.8-flash";
 
     const apiKey = process.env.GEMINI_API_KEY;
 
@@ -55,15 +63,26 @@ exports.callGeminiAPI = functions.https.onCall(
         };
       }
 
-      // APIへ通信を行います
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        }
+      // APIへ通信を行います（万一指定モデルがAPI側で未提供(404)の場合は安定版Flashへ自動フォールバック）
+      const fallbackCandidates = Array.from(
+        new Set([primaryModel, "gemini-3.8-flash", "gemini-2.5-flash"])
       );
+      let response = null;
+      for (let i = 0; i < fallbackCandidates.length; i++) {
+        const candidateModel = fallbackCandidates[i];
+        response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody),
+          }
+        );
+        if (response.status !== 404 || i === fallbackCandidates.length - 1) {
+          break;
+        }
+        console.warn(`Model ${candidateModel} returned 404, falling back to next GA model.`);
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
