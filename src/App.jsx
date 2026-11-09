@@ -2071,41 +2071,41 @@ export default function WorkScheduleApp() {
     return null;
   };
 
-  // 各班管理者が該当セルを変更・クリア可能か判定（「空欄への新規入力」または「自班が入力したセルの修正・クリア」のみ許可）
-  const canTeamAdminModifyCell = (staffId, day, type = 'shift') => {
+  // 各班管理者が該当セルを「クリア（空欄化）」可能か判定（自班が入力したセルのみクリア許可。上書き入力自体は許可されたシフト・タスクであれば可能）
+  const canTeamAdminClearCell = (staffId, day, type = 'shift') => {
     if (!appUser || appUser.role !== 'admin' || isMasterAdmin) {
       return { allowed: true, reason: '' };
     }
     const myTeam = appUser.initialView;
     if (type === 'task') {
       const currentTask = taskData[staffId]?.[day];
-      if (!currentTask) return { allowed: true, reason: '' };
+      if (!currentTask) return { allowed: false, reason: '' };
       const ownerTeam = getTeamLockedTaskSource(staffId, day);
       if (ownerTeam === myTeam) return { allowed: true, reason: '' };
       if (ownerTeam) {
         const ownerLabel = adminSettings[ownerTeam]?.label || TEAM_ADMIN_LABELS[ownerTeam] || '他班の管理者';
-        return { allowed: false, reason: `${ownerLabel}が入力したタスクのため、変更・クリアできません。` };
+        return { allowed: false, reason: `${ownerLabel}が入力したタスクのため、クリアできません。` };
       }
       const reqTask = getUserRequestedTask(staffId, day);
       if (reqTask && currentTask === reqTask) {
-        return { allowed: false, reason: '職員本人が入力したタスクのため、変更・クリアできません。' };
+        return { allowed: false, reason: '職員本人が入力したタスクのため、クリアできません。' };
       }
-      return { allowed: false, reason: '全体管理者が設定したタスクのため、変更・クリアできません。' };
+      return { allowed: false, reason: '全体管理者が設定したタスクのため、クリアできません。' };
     }
 
     const currentShift = shiftData[staffId]?.[day];
-    if (!currentShift) return { allowed: true, reason: '' };
+    if (!currentShift) return { allowed: false, reason: '' };
     const ownerTeam = getTeamLockedShiftSource(staffId, day);
     if (ownerTeam === myTeam) return { allowed: true, reason: '' };
     if (ownerTeam) {
       const ownerLabel = adminSettings[ownerTeam]?.label || TEAM_ADMIN_LABELS[ownerTeam] || '他班の管理者';
-      return { allowed: false, reason: `${ownerLabel}が入力したシフトのため、変更・クリアできません。` };
+      return { allowed: false, reason: `${ownerLabel}が入力したシフトのため、クリアできません。` };
     }
     const reqShift = getUserRequestedShift(staffId, day);
     if (reqShift && currentShift === reqShift) {
-      return { allowed: false, reason: '職員本人が入力した希望・シフトのため、変更・クリアできません。' };
+      return { allowed: false, reason: '職員本人が入力した希望・シフトのため、クリアできません。' };
     }
-    return { allowed: false, reason: '全体管理者が設定したシフトのため、変更・クリアできません。' };
+    return { allowed: false, reason: '全体管理者が設定したシフトのため、クリアできません。' };
   };
 
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
@@ -2114,16 +2114,16 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       // 締切チェック
       if (checkIsAfterDeadlineForStaff()) return;
     } else if (appUser.role === 'admin' && !isMasterAdmin) {
-      const modPerm = canTeamAdminModifyCell(staffId, day, type);
-      if (!modPerm.allowed) {
-        alert(modPerm.reason);
-        return;
-      }
       if (!toolCode) {
         const existingVal = type === 'task' ? taskData[staffId]?.[day] : shiftData[staffId]?.[day];
         if (!existingVal) return;
+        const clearPerm = canTeamAdminClearCell(staffId, day, type);
+        if (!clearPerm.allowed) {
+          if (clearPerm.reason) alert(clearPerm.reason);
+          return;
+        }
       } else {
-        // 各班管理者ログイン時は、全体管理者が許可したシフト・タスク以外の書き込みをブロック
+        // 各班管理者ログイン時は、全体管理者が許可したシフト・タスクであれば上書き入力も可能（許可外の項目のみブロック）
         const allowedCodes =
           type === 'task'
             ? resolveTeamAllowedTaskCodes(appUser.initialView, adminSettings, shiftDefs, categoryDefs)
@@ -6312,9 +6312,9 @@ ${messageText}`;
             ? getUserRequestedReason(activePopup.staffId, activePopup.day)
             : '';
           const popupOptions = getPopupOptions(activePopup.type);
-          const teamCellPerm =
+          const teamClearPerm =
             appUser.role === 'admin' && !isMasterAdmin
-              ? canTeamAdminModifyCell(activePopup.staffId, activePopup.day, activePopup.type)
+              ? canTeamAdminClearCell(activePopup.staffId, activePopup.day, activePopup.type)
               : { allowed: true, reason: '' };
 
           return (
@@ -6340,9 +6340,23 @@ ${messageText}`;
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {teamCellPerm.allowed && popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || popupOptions.some(o => o.code === popupReqCode)) && (
+                      {popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || teamClearPerm.allowed || popupOptions.some(o => o.code === popupReqCode)) && (
                         <button
-                          onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type); setActivePopup(null); }}
+                          onClick={() => {
+                            if (!isMasterAdmin && teamClearPerm.allowed && !popupOptions.some(o => o.code === popupReqCode)) {
+                              // 班管理者が自班の入力を取り消して元の個人希望に戻す場合
+                              const nextShifts = { ...shiftData, [activePopup.staffId]: { ...(shiftData[activePopup.staffId] || {}), [activePopup.day]: popupReqCode } };
+                              const entry = normalizeUserInputEntry(userInputs[activePopup.staffId]?.[activePopup.day], shiftData[activePopup.staffId]?.[activePopup.day], taskData[activePopup.staffId]?.[activePopup.day]);
+                              delete entry.teamShiftBy;
+                              const nextInputs = { ...userInputs, [activePopup.staffId]: { ...(userInputs[activePopup.staffId] || {}), [activePopup.day]: entry } };
+                              setShiftData(nextShifts);
+                              setUserInputs(nextInputs);
+                              saveSchedule(nextShifts, taskData, nextInputs);
+                            } else {
+                              handleUpdateCell(activePopup.staffId, activePopup.day, popupReqCode, activePopup.type);
+                            }
+                            setActivePopup(null);
+                          }}
                           className="px-2 py-1 bg-white hover:bg-pink-100 text-pink-700 border border-pink-300 rounded font-bold text-[10px] transition"
                           title="本人が入力した希望内容に戻します"
                         >
@@ -6413,50 +6427,41 @@ ${messageText}`;
                   </div>
                 </div>
               )}
-              {!teamCellPerm.allowed ? (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2 leading-relaxed">
-                  <Lock size={15} className="text-amber-600 shrink-0 mt-0.5" />
-                  <span>{teamCellPerm.reason}</span>
-                </div>
-              ) : (
-                <>
-                  {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンのサイズを他と統一。 */}
-                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
-                    {(isMasterAdmin || appUser.role === 'staff' || Boolean(popupCurrentCode)) && (
-                      <button
-                        onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
-                        className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
-                        title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
-                      >
-                        クリア
-                      </button>
-                    )}
-                    {popupOptions.map(shift => (
-                      <button
-                        key={shift.code}
-                        onClick={() => {
-                          handleUpdateCell(
-                            activePopup.staffId,
-                            activePopup.day,
-                            shift.code,
-                            activePopup.type,
-                            appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
-                          );
-                          setActivePopup(null);
-                        }}
-                        className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
-                        title={shift.label}
-                      >
-                        {shift.label}
-                      </button>
-                    ))}
-                  </div>
-                  {popupOptions.length === 0 && (
-                    <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
-                      この班で入力可能な項目は設定されていません
-                    </p>
-                  )}
-                </>
+              {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンは全体管理者・個人・または自班が入力したセルのみ表示。 */}
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
+                {teamClearPerm.allowed && (
+                  <button
+                    onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
+                    className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
+                    title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
+                  >
+                    クリア
+                  </button>
+                )}
+                {popupOptions.map(shift => (
+                  <button
+                    key={shift.code}
+                    onClick={() => {
+                      handleUpdateCell(
+                        activePopup.staffId,
+                        activePopup.day,
+                        shift.code,
+                        activePopup.type,
+                        appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
+                      );
+                      setActivePopup(null);
+                    }}
+                    className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
+                    title={shift.label}
+                  >
+                    {shift.label}
+                  </button>
+                ))}
+              </div>
+              {popupOptions.length === 0 && (
+                <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
+                  この班で入力可能な項目は設定されていません
+                </p>
               )}
             </div>
           );
