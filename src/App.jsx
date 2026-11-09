@@ -1876,14 +1876,21 @@ export default function WorkScheduleApp() {
   // 現在のシフト設定に整合した休み希望カウント対象コード一覧を解決
   const resolveEffectiveCountedOffShifts = (settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
     const rawList = Array.isArray(settingsObj?.countedOffShifts) ? settingsObj.countedOffShifts : ['HOPE'];
+    const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
+    if (isUntouchedDefault) {
+      // 初期値['HOPE']のままの場合は、希望(req)・休み(off)カテゴリおよび公出を自動対象にする
+      const autoCodes = Object.values(defs)
+        .filter(
+          s =>
+            s &&
+            getEffectiveShiftType(s, cats) === 'shift' &&
+            (isOffOrReqCategoryId(s.category, cats) || isKoushutsuShiftDef(s, cats))
+        )
+        .map(s => s.code);
+      if (autoCodes.length > 0) return autoCodes;
+    }
     const existingMatched = rawList.filter(c => Boolean(defs[c]));
     if (existingMatched.length > 0) return existingMatched;
-    // 初期値['HOPE']のままコードが変更されている場合は、希望(req)カテゴリのシフトを自動フォールバック対象にする
-    if (rawList.length === 1 && rawList[0] === 'HOPE' && !defs['HOPE']) {
-      return Object.values(defs)
-        .filter(s => s && getEffectiveShiftType(s, cats) === 'shift' && isReqCategoryId(s.category, cats))
-        .map(s => s.code);
-    }
     return rawList;
   };
 
@@ -2109,6 +2116,13 @@ export default function WorkScheduleApp() {
   };
 
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
+    if (isSunday(year, month, day)) {
+      if (type !== 'shift') return;
+      if (toolCode && (!shiftDefs[toolCode] || !isKoushutsuShiftDef(shiftDefs[toolCode], categoryDefs))) {
+        alert('日曜日は「公出」のみ入力可能です。');
+        return;
+      }
+    }
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
       // 締切チェック
@@ -2243,7 +2257,10 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   const handleCellClick = (e, staffId, day, type) => {
     // AI自動作成のライブ仮反映中は誤編集防止のためセル操作をロック（スクロール閲覧のみ可能）
     if (isAutoFillRunningRef.current) return;
-    if (isSunday(year, month, day)) return;
+    if (isSunday(year, month, day)) {
+      const hasKoushutsu = Object.values(shiftDefs).some(s => isKoushutsuShiftDef(s, categoryDefs));
+      if (type !== 'shift' || !hasKoushutsu) return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     if (type === 'shift') {
       setPopupReasonText(getUserRequestedReason(staffId, day));
@@ -2658,9 +2675,29 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     } else {
       cleanShift.order = newDefs[cleanShift.code].order;
     }
+    const isNewShiftCreation = !editingShift.originalCode;
     newDefs[cleanShift.code] = cleanShift;
     setShiftDefs(newDefs);
-    saveMasterData({ shiftDefs: newDefs }); // ★修正
+    // 新規シフト作成時に「休み」「希望」カテゴリまたは「公出」であれば、休み希望カウント対象(countedOffShifts)にも自動追加
+    if (
+      isNewShiftCreation &&
+      cleanShift.type === 'shift' &&
+      (catKind === 'off' || catKind === 'req' || isKoushutsuShiftDef(cleanShift, categoryDefs))
+    ) {
+      const currentCounted = resolveEffectiveCountedOffShifts(adminSettings, shiftDefs, categoryDefs);
+      if (!currentCounted.includes(cleanShift.code)) {
+        const nextAdminSettings = {
+          ...adminSettings,
+          countedOffShifts: [...currentCounted, cleanShift.code],
+        };
+        setAdminSettings(nextAdminSettings);
+        saveMasterData({ shiftDefs: newDefs, adminSettings: nextAdminSettings });
+      } else {
+        saveMasterData({ shiftDefs: newDefs });
+      }
+    } else {
+      saveMasterData({ shiftDefs: newDefs }); // ★修正
+    }
     alert('保存しました');
     setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
   };
@@ -5448,6 +5485,8 @@ ${messageText}`;
     daysArray.forEach(day => {
       stats[day] = { total: 0 };
       Object.keys(shiftDefs).forEach(code => stats[day][code] = 0);
+      // 日曜日の入力分（公出など）は集計カウントには含めない
+      if (isSunday(year, month, day)) return;
       staffList.forEach(staff => {
         const sCode = shiftData[staff.id]?.[day];
         if (sCode && shiftDefs[sCode]) {
@@ -5464,7 +5503,7 @@ ${messageText}`;
       });
     });
     return stats;
-  }, [shiftData, taskData, staffList, daysArray, shiftDefs, categoryDefs]);
+  }, [shiftData, taskData, staffList, daysArray, shiftDefs, categoryDefs, year, month]);
 
   // Step 4: 各日・各施設のスキル保持者数と必須スキル不足（オレンジ警告表示用）をメモ化
   const dailyFacilitySkillSummary = useMemo(() => {
@@ -5554,13 +5593,20 @@ ${messageText}`;
 
   const countedOffShifts = useMemo(() => {
     const rawList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
+    const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
+    if (isUntouchedDefault) {
+      const autoCodes = Object.values(shiftDefs)
+        .filter(
+          s =>
+            s &&
+            getEffectiveShiftType(s, categoryDefs) === 'shift' &&
+            (isOffOrReqCategoryId(s.category, categoryDefs) || isKoushutsuShiftDef(s, categoryDefs))
+        )
+        .map(s => s.code);
+      if (autoCodes.length > 0) return autoCodes;
+    }
     const existingMatched = rawList.filter(c => Boolean(shiftDefs[c]));
     if (existingMatched.length > 0) return existingMatched;
-    if (rawList.length === 1 && rawList[0] === 'HOPE' && !shiftDefs['HOPE']) {
-      return Object.values(shiftDefs)
-        .filter(s => s && getEffectiveShiftType(s, categoryDefs) === 'shift' && isReqCategoryId(s.category, categoryDefs))
-        .map(s => s.code);
-    }
     return rawList;
   }, [adminSettings.countedOffShifts, shiftDefs, categoryDefs]);
 
@@ -5568,11 +5614,20 @@ ${messageText}`;
     return Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
   }, [adminSettings.clinicClosedDays]);
 
-  // 各日付の休み希望人数をカウント（パートは対象外、管理者が空欄や休みシフトへ変更しても元の希望履歴があれば維持）
+  const hasKoushutsuShiftDef = useMemo(() => {
+    return Object.values(shiftDefs).some(s => isKoushutsuShiftDef(s, categoryDefs));
+  }, [shiftDefs, categoryDefs]);
+
+  // 各日付の休み希望人数をカウント（平日・平日の祝日・土曜すべて対象、日曜およびパートは対象外）
+  // 基本設定の「休み希望人数としてカウントするシフト」で設定したシフトのうち、個人（スタッフ本人）から入力されたもののみをカウント
   const dailyOffRequestCounts = useMemo(() => {
     const counts = {};
     const countedSet = new Set(countedOffShifts);
     daysArray.forEach(day => {
+      if (isSunday(year, month, day)) {
+        counts[day] = 0;
+        return;
+      }
       let count = 0;
       staffList.forEach(staff => {
         if (staff.jobTitle === 'パート') return;
@@ -5584,27 +5639,35 @@ ${messageText}`;
           : typeof rawUserEntry === 'string' ? rawUserEntry
           : rawUserEntry.shift || null;
 
-        const isCurrentCounted = !!(currentCode && countedSet.has(currentCode));
-        const isCurrentBlankOrOff = !currentCode || isOffOrReqCategoryId(shiftDefs[currentCode]?.category, categoryDefs);
-        const isOriginalRequestMaintained = !!(reqCode && countedSet.has(reqCode) && isCurrentBlankOrOff);
-
-        if (isCurrentCounted || isOriginalRequestMaintained) {
+        if (reqCode && countedSet.has(reqCode)) {
           count++;
         }
       });
       counts[day] = count;
     });
     return counts;
-  }, [daysArray, staffList, shiftData, userInputs, shiftDefs, categoryDefs, countedOffShifts]);
+  }, [daysArray, year, month, staffList, shiftData, userInputs, countedOffShifts]);
 
-  // 基本設定タブ用: シフトのみ(type === 'shift')をカテゴリごとに整理し、「希望」「休み」カテゴリを先頭に並べる
+  // 基本設定タブ用: 個人カレンダーで選択可能なシフト（希望・休み・その他[公出等]・シフト希望表示ON）のみに絞り込み、設定画面が雑多にならないよう整理
   const basicSettingsShiftGroups = useMemo(() => {
-    const priorityByKind = { req: 0, off: 1 };
+    const priorityByKind = { req: 0, off: 1, basic: 2 };
+    const countedSet = new Set(countedOffShifts);
     return dynamicPaletteGroups
       .map(g => ({
         ...g,
         color: categoryDefs[g.id]?.color || 'bg-gray-50 text-gray-800',
-        items: g.items.filter(code => getEffectiveShiftType(shiftDefs[code], categoryDefs) === 'shift')
+        items: g.items.filter(code => {
+          const s = shiftDefs[code];
+          if (!s || getEffectiveShiftType(s, categoryDefs) !== 'shift') return false;
+          const catKind = getCategoryKindById(s.category, categoryDefs);
+          return (
+            catKind === 'req' ||
+            catKind === 'off' ||
+            catKind === 'basic' ||
+            Boolean(s.isRequestable) ||
+            countedSet.has(code)
+          );
+        })
       }))
       .filter(g => g.items.length > 0)
       .sort((a, b) => {
@@ -5615,7 +5678,7 @@ ${messageText}`;
         if (pa !== pb) return pa - pb;
         return (categoryDefs[a.id]?.order ?? 99) - (categoryDefs[b.id]?.order ?? 99);
       });
-  }, [dynamicPaletteGroups, categoryDefs, shiftDefs]);
+  }, [dynamicPaletteGroups, categoryDefs, shiftDefs, countedOffShifts]);
 
   const displayStaffList = useMemo(() => {
     if (!appUser) return [];
@@ -5653,9 +5716,21 @@ ${messageText}`;
     />
   );
   
-  const getPopupOptions = (type) => {
+  const getPopupOptions = (type, day = activePopup?.day) => {
     const orderedCodes = dynamicPaletteGroups.flatMap(g => g.items);
     let opts = orderedCodes.map(code => shiftDefs[code]).filter(s => s && getEffectiveShiftType(s, categoryDefs) === type);
+
+    // 日曜日は「公出」のみ入力可能（タスクは対象外）
+    if (day && isSunday(year, month, day)) {
+      if (type !== 'shift') return [];
+      opts = opts.filter(s => isKoushutsuShiftDef(s, categoryDefs));
+      const activeTeamOnSun = getActiveTeamAdminKey();
+      if (activeTeamOnSun) {
+        const allowedSunSet = new Set(resolveTeamAllowedShiftCodes(activeTeamOnSun, adminSettings, shiftDefs, categoryDefs));
+        opts = opts.filter(s => allowedSunSet.has(s.code));
+      }
+      return opts;
+    }
 
     const activeTeamKey = getActiveTeamAdminKey();
     if (activeTeamKey) {
@@ -5681,8 +5756,8 @@ ${messageText}`;
     }
 
     if (appUser.role === 'staff' && currentView === 'all' && currentView !== 'ope') {
-      // 希望カテゴリ(req) または isRequestable が true のものを表示させる
-      opts = opts.filter(s => isReqCategoryId(s.category, categoryDefs) || s.isRequestable);
+      // 希望カテゴリ(req)、isRequestable が true のもの、または「公出」を表示させる
+      opts = opts.filter(s => isReqCategoryId(s.category, categoryDefs) || s.isRequestable || isKoushutsuShiftDef(s, categoryDefs));
       
       // ★追加: 「希望」カテゴリが必ず一番上(配列の先頭)になるように並び替え
       opts.sort((a, b) => {
@@ -5865,19 +5940,19 @@ ${messageText}`;
                     const isSat = cell.date.getDay() === 6;
                     const isHol = isHoliday(cellYear, cellMonth, cellDay, clinicClosedDays);
                     const closedRule = getClinicClosedRuleMatch(cellYear, cellMonth, cellDay, clinicClosedDays);
-                    const isEditable = cell.currentMonth && !isSun; 
+                    const isEditable = cell.currentMonth && (!isSun || hasKoushutsuShiftDef);
                     const offCount = day && !isSun ? (dailyOffRequestCounts[day] || 0) : 0;
                     const alertThreshold = parseInt(adminSettings.offRequestAlertCount, 10);
                     const hasAlertThreshold = !isNaN(alertThreshold) && alertThreshold > 0;
                     const isOffAlert = hasAlertThreshold && offCount >= alertThreshold;
                     let bg = 'bg-white';
-                    if(!cell.currentMonth) bg = 'bg-gray-50';
-                    else if(isSun || isHol) bg = 'bg-red-50';
-                    else if(isSat) bg = 'bg-blue-50';
+                    if (!cell.currentMonth) bg = 'bg-gray-50';
+                    else if (isSun) bg = 'bg-red-50';
+                    else if (isSat) bg = 'bg-blue-50';
 
                     return (
                       <div key={idx} className={`${bg} min-h-[5rem] p-1 flex flex-col relative`}>
-                        <div className="flex items-center justify-between mb-1 gap-0.5 min-h-[14px]">
+                        <div className={`flex items-center justify-between mb-1 gap-0.5 min-h-[14px] ${!isSun && isHol && cell.currentMonth ? 'bg-red-50 -mx-1 -mt-1 px-1 py-0.5 border-b border-red-100' : ''}`}>
                           <div
                             title={closedRule ? (closedRule.label || '外来休診日') : undefined}
                             className={`text-[10px] font-bold leading-none ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}
@@ -5903,7 +5978,7 @@ ${messageText}`;
                           <div className="flex-1 flex flex-col gap-1">
                             <div 
                               onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, appUser.id, day, 'shift'); }}}
-                              title={reqReason ? `希望理由: ${reqReason}` : ''}
+                              title={reqReason ? `希望理由: ${reqReason}` : isSun && isEditable ? '日曜日は「公出」のみ入力可能です' : ''}
                               className={`flex-1 relative rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
                                 ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
                                   shift ? 'bg-white border-blue-200 shadow-sm' :
@@ -5929,7 +6004,7 @@ ${messageText}`;
                                     : `${reqShift?.label || reqShiftCode}(希)`}
                                 </span>
                               ) : (
-                                <span className="text-[8px] text-gray-300">選択</span>
+                                <span className="text-[8px] text-gray-300">{isSun ? '' : '選択'}</span>
                               )}
                             </div>
                             {task && <div className="text-[8px] text-center border rounded bg-white text-gray-600">{task.label}</div>}
@@ -6087,17 +6162,16 @@ ${messageText}`;
                             const teamShiftLock = appUser.role === 'admin' ? getTeamLockedShiftSource(staff.id, day) : null;
                             const teamTaskLock = appUser.role === 'admin' ? getTeamLockedTaskSource(staff.id, day) : null;
                             const isSun = isSunday(year, month, day);
-                            const isHol = isHoliday(year, month, day, clinicClosedDays);
-                            const isEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
+                            const isTaskEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
+                            const isShiftEditable = (!isSun || hasKoushutsuShiftDef) && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
                             
                             // 該当するログを探す
                             const targetLog = changeLogs.find(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
                             const hasLog = !!targetLog;
 
                             let cellBg = '';
-                            if (isSun) cellBg = 'bg-red-50';
-                            else if (isHol) cellBg = isEditable ? 'bg-red-50 cursor-pointer hover:bg-red-100/60' : 'bg-red-50 opacity-80';
-                            else if (!isEditable) cellBg = 'bg-gray-50 opacity-80';
+                            if (isSun) cellBg = isShiftEditable ? 'bg-red-50 cursor-pointer hover:bg-red-100/60' : 'bg-red-50';
+                            else if (!isShiftEditable) cellBg = 'bg-gray-50 opacity-80';
                             else cellBg = 'cursor-pointer hover:bg-blue-50 bg-white';
 
                             // ツールチップ用のテキスト生成（希望履歴・理由は管理者のみ表示。スタッフ自身は自分のセルのみ理由を確認可能）
@@ -6149,7 +6223,7 @@ ${messageText}`;
                                       ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
                                     `}
                                     title={tooltipText} 
-                                    onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
+                                    onClick={(e) => { if(isShiftEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
                                   >
                                     {teamShiftLock && (
                                       <span className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
@@ -6175,7 +6249,7 @@ ${messageText}`;
                                       ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
                                     `}
                                     title={taskTooltip}
-                                    onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
+                                    onClick={(e) => { if(isTaskEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
                                   >
                                     {teamTaskLock && (
                                       <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
@@ -6770,8 +6844,7 @@ ${messageText}`;
                       <div className="border-t pt-6">
                         <label className="block text-sm font-bold text-gray-700 mb-1">休み希望人数としてカウントするシフト</label>
                         <p className="text-xs text-gray-500 mb-3">
-                          個人カレンダーの各日付横に表示される「休○」バッジおよび集計の「休み希望数」にカウントするシフトを選択してください。<br/>
-                          ※パート職員の入力分はカウント対象外となります（バッジ自体はパート職員の画面にも表示されます）。
+                          ここで選択したシフトのうち、<strong>個人（スタッフ本人）から入力されたもののみ</strong>を個人カレンダーの「休○」バッジおよび集計の「休み希望数」にカウントします（平日・平日の祝日・土曜すべて対象／日曜およびパート職員の入力分はカウント対象外）。
                         </p>
                         <div className="space-y-3 bg-gray-50 p-4 rounded-lg border">
                           {basicSettingsShiftGroups.map(group => (
