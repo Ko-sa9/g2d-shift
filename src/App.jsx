@@ -833,6 +833,9 @@ const evaluateScheduleValidation = ({
           paidLeaveDays++;
         } else if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) {
           regOffDaySet.add(d);
+        } else if (isHoliday(year, month, d, closedRules)) {
+          // 祝日の空欄は「その週の週休枠（祝日休み）」としてカウントし、同週に休み希望等があれば週4日以下の出勤も許容する
+          regOffDaySet.add(d);
         } else if (!reqShift && isCellAiEditable(s, d)) {
           editableBlankDays.push(d);
         }
@@ -3102,6 +3105,17 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     };
 
     const staffPowerMap = {};
+    const filledDaySet = new Set();
+    for (let d = 1; d <= days; d++) {
+      if (calendarInfo[d].isSunday) continue;
+      const hasAnyWork = staffList.some(st => {
+        const c = customShifts?.[st.id]?.[d];
+        const def = c ? shiftDefs[c] : null;
+        return !!(def && getEffectiveShiftType(def, categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(def, categoryDefs));
+      });
+      if (hasAnyWork) filledDaySet.add(d);
+    }
+
     const enrichedStaff = staffList.map(s => {
       let powerScore = 0;
       if (s.skills) {
@@ -3202,14 +3216,31 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
 
       // 週単位で「まだ週1日の通常公休が入っておらず、AIが空欄を残すべき週」を特定（第1週は前月末からの月またぎ週も考慮）
+      // ※祝日の空欄は週休枠としてカウントし、同週に休み希望等がある場合は週4日以下の出勤も許容する
       const weeksNeedingBlankOff = [];
       let excessSameWeekRegOffDays = 0;
+      let potentialHolidayExtraOffDays = 0;
       calendarWeeks.forEach((w, wIdx) => {
-        const weekRegOff = w.days.filter(d => dayStateMap[d] === 'regular_off').length;
-        const weekAnyOff = w.days.filter(d => dayStateMap[d] === 'regular_off' || dayStateMap[d] === 'paid_off').length;
+        const weekEnteredRegOff = w.days.filter(d => dayStateMap[d] === 'regular_off').length;
+        const weekPaidOff = w.days.filter(d => dayStateMap[d] === 'paid_off').length;
+        const weekCreatedHolidayBlanks = w.days.filter(
+          d => calendarInfo[d]?.isHoliday && dayStateMap[d] === 'assignable_blank' && filledDaySet.has(d)
+        ).length;
+        const weekUncreatedHolidayBlanks = w.days.filter(
+          d => calendarInfo[d]?.isHoliday && dayStateMap[d] === 'assignable_blank' && !filledDaySet.has(d)
+        ).length;
+        const weekRegOff = weekEnteredRegOff + weekCreatedHolidayBlanks;
+        const weekAnyOff = weekRegOff + weekPaidOff;
         const weekAssignable = w.days.filter(d => dayStateMap[d] === 'assignable_blank');
         if (weekRegOff > 1) {
           excessSameWeekRegOffDays += weekRegOff - 1;
+        }
+        if (weekUncreatedHolidayBlanks > 0) {
+          if (weekEnteredRegOff + weekPaidOff >= 1) {
+            potentialHolidayExtraOffDays += weekUncreatedHolidayBlanks;
+          } else if (weekUncreatedHolidayBlanks > 1) {
+            potentialHolidayExtraOffDays += weekUncreatedHolidayBlanks - 1;
+          }
         }
 
         if (w.isFullWeek && weekRegOff === 0 && weekAssignable.length > 0) {
@@ -3244,8 +3275,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         }
       });
 
-      // 有休分および同一週に複数日入った公休・公出分を基本目標出勤日数から差し引きつつ、週単位で必須となる空欄公休数と矛盾しないよう整合させる
-      const targetWorkDaysMin = Math.max(workDays, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
+      // 公出分および同一週に複数日入った休み（祝日の空欄＋休み希望等を含む）を基本目標出勤日数から差し引きつつ、週単位で必須となる空欄公休数と矛盾しないよう整合させる
+      const targetWorkDaysMin = Math.max(
+        workDays,
+        standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays - potentialHolidayExtraOffDays
+      );
       const targetWorkDaysMax = Math.max(workDays, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
       const rawBlankKeepMin = Math.max(0, assignableBlankDays - Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMax - workDays)));
       const rawBlankKeepMax = Math.max(0, assignableBlankDays - Math.min(assignableBlankDays, Math.max(0, targetWorkDaysMin - workDays)));
@@ -4292,6 +4326,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             }
           });
 
+          const holidayAssignableDaysInThisWeek = assignableDaysInThisWeek.filter(d => weekCalendar[d]?.isHoliday);
           let mustKeepBlankDaysMinInThisWeek = 0;
           let recommendedNewWorkDaysInThisWeek = '0日';
 
@@ -4305,10 +4340,25 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = `0〜${maxNew}日（パート条件・必要人数に応じて配置）`;
           } else if (targetWeek.isFullWeek) {
-            // 月〜土のフル6日週: 週休枠の公休・希望休が未入力なら必ず1日を空欄公休として残す（別枠の有休がある週も週休1日は別枠で確保）
+            // 月〜土のフル6日週: 週休枠の休み（休・年休・振休等）が未入力なら必ず1日を空欄公休（祝日の空欄休みを含む）として残し基本5日出勤とする。
+            // 既に休み希望・振休等が入っている週に祝日がある場合は、祝日が空欄休みなら週4日以下出勤、祝日出勤なら5日出勤を許容する。
             mustKeepBlankDaysMinInThisWeek = regOffInThisWeek === 0 ? 1 : 0;
             const recWork = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
-            recommendedNewWorkDaysInThisWeek = `${recWork}日`;
+            if (holidayAssignableDaysInThisWeek.length > 0 && regOffInThisWeek + paidOffInThisWeek >= 1) {
+              const minWorkWithHolidayOff = Math.max(0, recWork - holidayAssignableDaysInThisWeek.length);
+              recommendedNewWorkDaysInThisWeek =
+                minWorkWithHolidayOff === recWork
+                  ? `${recWork}日`
+                  : `${minWorkWithHolidayOff}〜${recWork}日（祝日が空欄休みの場合は${minWorkWithHolidayOff}日出勤、祝日出勤の場合は${recWork}日出勤）`;
+            } else if (holidayAssignableDaysInThisWeek.length > 1 && regOffInThisWeek === 0) {
+              const minWorkWithMultiHolOff = Math.max(0, assignableDaysInThisWeek.length - holidayAssignableDaysInThisWeek.length);
+              recommendedNewWorkDaysInThisWeek =
+                minWorkWithMultiHolOff === recWork
+                  ? `${recWork}日`
+                  : `${minWorkWithMultiHolOff}〜${recWork}日（祝日の空欄は週休枠としてカウント）`;
+            } else {
+              recommendedNewWorkDaysInThisWeek = `${recWork}日`;
+            }
           } else if (targetWeek.weekIndex === 1) {
             // 月初の端数週（第1週）: 前月末からの連勤と月またぎ週の公休消化状況を反映
             const prevCarry = st.prevMonthCarryOver || {};
@@ -4510,9 +4560,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 各職員の "thisWeekPlan.assignableDaysInThisWeek" に含まれる日付のみ、AIから出勤シフトを新規割り当てできます。
          - 既にシフトが入っている箇所（thisWeekPlan.existingShiftsInThisWeek）、希望休をクリアした確定空欄日（lockedBlankOffDaysInThisWeek）、"teamAdminLocksInWeek"・"staffRequestsInWeek" にある箇所は絶対に変更しないでください。
          - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は必ず別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください（thisWeekPlan と currentDailySummary に事前反映済みです）。
-      2. AI除外・配置可能シフト制限・対象カテゴリ限定（★絶対厳守★）:
+      2. AI除外・配置可能シフト制限・対象カテゴリ限定・祝日と振休の扱い（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のため対象外。
-         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
+         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜日以外は透析を実施するため、各施設の必要人数（exactTargetCountsByDay）を満たすよう出勤シフトを割り当て、残りの職員は「空欄（祝日休み）」のまま残してください。
+         - 祝日が「空欄（休み）」になった職員は、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントし、基本は残り5日間を出勤にします（ただし同じ週に休・年休・振休・公出等の休み希望がある場合は、祝日の空欄と合わせて週4日以下の出勤になっても構いません）。祝日に出勤した職員は、同じ週に休・振休等がなければ他の平日に1日「空欄の公休」を残して5日出勤とし、別週に「振休」が入っている場合はその振休を該当週の休み1日分として扱います（同週に他の休み希望があれば週4日以下の出勤で可）。
          - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）は管理者・個人・OPE班入力用のためAI配置対象外です（新規出力禁止・既存変更禁止）。
          - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
       3. 今週の週休確保（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
@@ -5238,11 +5289,12 @@ ${shiftSystemRefText}
   ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、ME室（${meShiftDescStr}）、およびその他（出勤・公出等）は、AIから新規に入れたり、変更・移動・削除することは絶対禁止です。
   ・既に入力済みのME室・出勤はその職員の連勤数・出勤日数に含めて考慮してください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休・年休等の休みが入っていない週）は必ずもう1日「空欄の公休」を残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを入れてください。
 - 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
-- 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
-  ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
+- 前月末引き継ぎ・週休2日・祝日空欄と振休・最大連勤制限・休みの「空欄」表現（重要）:
+  ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください。
+  ・祝日の休みは「空欄」で表し、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントします（基本は残り5日間が出勤ですが、同じ週に休み希望等がある場合は週4日以下の出勤でも構いません）。また、祝日に出勤した職員に月の別日で「振休」が入っている場合も、その「振休」を該当週の休み1日分としてカウントします（基本は5日出勤、同じ週に休み希望等がある場合は週4日以下の出勤でも可）。
   ・各職員の "prevMonthCarryOver" に前月末最終週からの連勤数（trailingWorkStreak）、1日からの最大許容連勤数（maxAllowedConsecutiveWorkFromDay1）、前月側での公休取得有無（alreadyTookWeeklyOffInPrevMonthPart）が入っていますので必ず考慮してください。
-  ・AIが休ませる日（週休枠の公休・祝日の振替休枠）には、休みコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
-  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange（別枠の有休分は差し引き済み）、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週 ※月またぎ第1週も含む）を守ってください。
+  ・AIが休ませる日（週休枠の公休・祝日の空欄休み）には、休みコードは入れず「空欄」のまま残します（既にシフトが入っている箇所を休みに戻す場合のみ null を指定）。
+  ・仮組み・空欄埋めを行う際は全ての空欄を出勤で埋め尽くさず、各職員の currentStats にある targetWorkDaysRange、remainingWorkDaysRange、blankOffDaysToKeepRange、weeksNeedingBlankOff（週1日の公休として空欄を残すべき週 ※月またぎ第1週も含む）を守ってください。
 - 3クール制限・連続3クール禁止（月またぎ含む・重要）:
   ・各職員の maxCool3 は現在のシステム設定における3クールシフト（${cool3DescStr}）の月間上限回数です（currentStats.remainingCool3 を参照）。
   ・同じ職員に3クールシフトを2日連続で割り当てないでください（日曜休診を挟む場合を除く）。特に "prevMonthCarryOver.forbidCool3OnDay1": true（前月最終日に3クール勤務だった職員）には、当月1日に3クールシフトを入れず "day1AllowedWorkShifts" から選んでください。
@@ -6917,9 +6969,9 @@ ${messageText}`;
                             </div>
                           </div>
                           <div className="text-[11px] text-gray-600 bg-white border border-gray-200 rounded-md p-3 space-y-1 leading-relaxed">
-                            <div>・<strong>休みの表現：</strong>AIは公休（週1日の休み枠）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
-                            <div>・<strong>休み・年休・公出の扱い：</strong>「休み」「希望」カテゴリのシフト（休・年休・特別・永年・子看・指定・振休など）はその週の週休1日分として扱い、残り5日間は出勤配置します。一方、平日の<strong>「公出」</strong>は業務出張扱いのため現場出勤人数・出勤日数には含めず、公出しか入っていない週は別日に必ずもう1日<strong>「空欄の公休」</strong>を残します（その週の現場出勤は4日間）。</div>
-                            <div>・<strong>祝日・ME室の扱い：</strong>祝日・外来休診日も日曜以外は透析出勤日として組みます。ME室カテゴリのシフトはOPE班管理のためAIでの自動入力・既存変更は行いません。</div>
+                            <div>・<strong>休みの表現と祝日・振休：</strong>AIは公休や祝日の休みにコードを入れず<strong>「空欄」</strong>のまま残します。祝日の空欄休みや、祝日出勤者の別日の<strong>「振休」</strong>はその週の週休1日分としてカウントし、基本は週5日出勤（同じ週に休み希望等がある場合は週4日以下の出勤も可）として扱います。</div>
+                            <div>・<strong>休み・年休・公出の扱い：</strong>「休み」「希望」カテゴリのシフト（休・年休・特別・永年・子看・指定・振休など）はその週の週休1日分として扱い、基本は残り5日間を出勤配置します（複数日希望がある週は週4日以下も可）。一方、平日の<strong>「公出」</strong>は業務出張扱いのため現場出勤人数・出勤日数には含めず、公出しか入っていない週は別日に必ずもう1日<strong>「空欄の公休」</strong>を残します（その週の現場出勤は4日間）。</div>
+                            <div>・<strong>ME室の扱い：</strong>ME室カテゴリのシフトはOPE班管理のためAIでの自動入力・既存変更は行いません（既に入力済みの日は連勤・出勤日数にカウント、祝日のME室必要人数は0人扱い）。</div>
                           </div>
                         </div>
                       </div>
