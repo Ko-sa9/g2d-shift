@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
-import { signInWithCustomToken, signInAnonymously, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot, updateDoc, addDoc, deleteDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
+import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // ------------------------------------------------------------------
@@ -123,11 +123,6 @@ const SHIFT_WORK_SLOTS = [
   { value: 'day',   label: '日勤',    badgeClass: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   { value: 'half',  label: '半日',    badgeClass: 'bg-purple-100 text-purple-700 border-purple-200' },
   { value: 'other', label: 'その他',  badgeClass: 'bg-gray-100 text-gray-600 border-gray-200' },
-];
-
-const SHIFT_OFF_SUBTYPES = [
-  { value: 'regular_off', label: '週休枠の公休（指定休・振休など）', shortLabel: '公休枠', badgeClass: 'bg-pink-50 text-pink-700 border-pink-200' },
-  { value: 'paid_leave',  label: '別枠の有休（年休・リフレなど）',   shortLabel: '有休枠', badgeClass: 'bg-rose-100 text-rose-700 border-rose-200' },
 ];
 
 const INITIAL_STAFF = [
@@ -396,40 +391,14 @@ const isCool3ShiftDef = (def, categoryDefs = {}) => {
 
 const resolveOffSubType = (def, categoryDefs = {}) => {
   if (!def) return null;
+  if (isKoushutsuShiftDef(def, categoryDefs)) return 'paid_leave';
   const catKind = getCategoryKindById(def.category, categoryDefs);
-  if (catKind === 'req') return 'regular_off';
-  if (catKind !== 'off') return null;
-
-  if (def.offSubType === 'regular_off' || def.offSubType === 'paid_leave') {
-    return def.offSubType;
-  }
-
-  const lbl = String(def.label || '').trim();
-  if (
-    lbl.includes('年') ||
-    lbl.includes('有') ||
-    lbl.includes('リフ') ||
-    lbl.includes('夏') ||
-    lbl.includes('特') ||
-    lbl.includes('慶') ||
-    lbl.includes('忌') ||
-    lbl.includes('産') ||
-    lbl.includes('育') ||
-    lbl.includes('病')
-  ) {
-    return 'paid_leave';
-  }
-  if (lbl.includes('指') || lbl.includes('振') || lbl.includes('公') || lbl.includes('希') || lbl.includes('代')) {
-    return 'regular_off';
-  }
-  if ((def.code === 'S' && lbl === '指定') || (def.code === 'H' && lbl === '振休')) {
-    return 'regular_off';
-  }
-  return 'paid_leave';
+  if (catKind === 'off' || catKind === 'req') return 'regular_off';
+  return null;
 };
 
 const isPaidLeaveShiftDef = (def, categoryDefs = {}) => {
-  return resolveOffSubType(def, categoryDefs) === 'paid_leave';
+  return isKoushutsuShiftDef(def, categoryDefs);
 };
 
 const isMeShiftDef = (code, shiftDefs = {}, categoryDefs = {}) => {
@@ -620,12 +589,10 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
       if (effType === 'task') {
         lines.push(`  ・タスク コード "${s.code}" ＝ 表示名「${s.label}」`);
       } else if (kind === 'off' || kind === 'req') {
-        const sub = resolveOffSubType(s, categoryDefs);
-        const subLbl = sub === 'paid_leave' ? '別枠の有休' : '週休枠の公休';
-        lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:${subLbl}]`);
+        lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:週休枠の休み（その週の休み1日分として扱い、残り5日は出勤配置）]`);
       } else if (kind === 'basic') {
         if (isKoushutsuShiftDef(s, categoryDefs)) {
-          lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:公出（AI出力・変更禁止 / 公休と同枠扱いのため出勤日数・連勤・出勤人数にはカウントしない）${otPart}]`);
+          lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:公出（AI出力・変更禁止 / 業務出張扱いのため出勤人数・現場出勤日数・連勤には含めず、公出のみの週は別日に空欄の公休を1日残して現場出勤4日にする）${otPart}]`);
         } else {
           lines.push(`  ・コード "${s.code}" ＝ 表示名「${s.label}」 [区分:その他出勤（AI出力・変更禁止 / 既に入力済みの日は連勤・出勤日数にカウント）${timePart}${otPart}]`);
         }
@@ -862,7 +829,7 @@ const evaluateScheduleValidation = ({
 
       if (!code || !def) {
         flushStreakRun(d - 1);
-        if (reqShift && shiftDefs[reqShift] && !isKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs) && isPaidLeaveCode(reqShift)) {
+        if (reqShift && shiftDefs[reqShift] && isPaidLeaveCode(reqShift)) {
           paidLeaveDays++;
         } else if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) {
           regOffDaySet.add(d);
@@ -874,7 +841,7 @@ const evaluateScheduleValidation = ({
 
       if (isNonWorkOrKoushutsuShiftDef(def, categoryDefs)) {
         flushStreakRun(d - 1);
-        if (!isKoushutsuShiftDef(def, categoryDefs) && isPaidLeaveCode(code)) {
+        if (isPaidLeaveCode(code)) {
           paidLeaveDays++;
         } else {
           regOffDaySet.add(d);
@@ -1387,11 +1354,8 @@ export default function WorkScheduleApp() {
   const [popupReasonText, setPopupReasonText] = useState('');
   const popupRef = useRef(null);
   const [showAiModal, setShowAiModal] = useState(false);
-  const [showShiftEditModal, setShowShiftEditModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
-  const [showStaffSettingsModal, setShowStaffSettingsModal] = useState(false);
-  const [showCategoryModal, setShowCategoryModal] = useState(false); 
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
   
@@ -1497,8 +1461,8 @@ export default function WorkScheduleApp() {
 
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
+      if (typeof window !== 'undefined' && window.__initial_auth_token) {
+        await signInWithCustomToken(auth, window.__initial_auth_token);
       } else {
         await signInAnonymously(auth);
       }
@@ -2471,7 +2435,6 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     setStaffList(updatedStaffList);
     saveMasterData({ staffList: updatedStaffList }); // ★修正
     alert('全職員の設定を保存しました。');
-    setShowStaffSettingsModal(false);
   };
 
   const removeStaff = (id) => {
@@ -2603,7 +2566,6 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       originalCode: null,
       isRequestable: false,
     });
-    setShowShiftEditModal(true);
   };
 
   const handleEditShift = (code) => {
@@ -2624,7 +2586,6 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           : target.offSubType,
       originalCode: code,
     });
-    setShowShiftEditModal(true);
   };
 
   // シフト一覧から勤務区分・休み区分をワンタップ即時変更＆自動保存するハンドラ
@@ -2712,7 +2673,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         delete newDefs[code];
         setShiftDefs(newDefs);
         saveMasterData({ shiftDefs: newDefs }); // ★修正
-        if (editingShift?.originalCode === code) setShowShiftEditModal(false);
+        if (editingShift?.originalCode === code) setEditingShift(null);
       }
     });
   };
@@ -2941,7 +2902,7 @@ const handleResetSchedule = () => {
             const def = shiftDefs[c];
             if (isNonWorkOrKoushutsuShiftDef(def, categoryDefs)) {
               trailingWorkStreak = 0;
-              if (!isKoushutsuShiftDef(def, categoryDefs) && isPaidLeaveShiftDef(def, categoryDefs)) {
+              if (isPaidLeaveShiftDef(def, categoryDefs)) {
                 prevWeekPaidOffCount++;
               } else {
                 prevWeekRegOffCount++;
@@ -3197,7 +3158,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           // 管理者が希望休等をクリアして空欄にした（希望履歴が残っている）セルは、既に休み確定の空欄として扱う
           if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) {
             lockedBlankOffDays++;
-            if (!isKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs) && isPaidLeaveShiftCode(reqShift)) {
+            if (isPaidLeaveShiftCode(reqShift)) {
               paidLeaveDays++;
               dayStateMap[d] = 'paid_off';
             } else {
@@ -3215,7 +3176,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           if (isNonWorkOrKoushutsuShiftDef(def, categoryDefs)) {
             offDays++;
             currentStreak = 0;
-            if (!isKoushutsuShiftDef(def, categoryDefs) && isPaidLeaveShiftCode(code)) {
+            if (isPaidLeaveShiftCode(code)) {
               paidLeaveDays++;
               dayStateMap[d] = 'paid_off';
             } else {
@@ -3401,13 +3362,24 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     });
 
     // スタッフ本人が希望を出した箇所（プライバシー保護のため理由テキストは除外し、希望コードのみ渡す）
-    // およびHHD班・エコー班・オペ班管理者が入力したAI変更不可ロック箇所を抽出
+    // およびHHD班・エコー班・オペ班管理者が入力したAI変更不可ロック箇所を抽出（※日曜の公出等がAIデータへ混入しないよう日曜は除外）
     const staffRequests = {};
     const teamAdminLocks = {};
+    const aiFilteredShifts = {};
+    const aiFilteredTasks = {};
     staffList.forEach(s => {
       const staffReq = {};
       const staffTeamLock = {};
+      const sShifts = {};
+      const sTasks = {};
       for (let d = 1; d <= days; d++) {
+        if (calendarInfo[d]?.isSunday) continue;
+        if (customShifts?.[s.id]?.[d]) {
+          sShifts[d] = customShifts[s.id][d];
+        }
+        if (includeTasks && customTasks?.[s.id]?.[d]) {
+          sTasks[d] = customTasks[s.id][d];
+        }
         const reqShift = getUserRequestedShift(s.id, d);
         const reqTask = includeTasks ? getUserRequestedTask(s.id, d) : null;
         if (reqShift || reqTask) {
@@ -3429,6 +3401,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             staffTeamLock[d].taskLockedBy = TEAM_ADMIN_LABELS[teamTaskSrc] || teamTaskSrc;
           }
         }
+      }
+      if (Object.keys(sShifts).length > 0) {
+        aiFilteredShifts[s.id] = sShifts;
+      }
+      if (includeTasks && Object.keys(sTasks).length > 0) {
+        aiFilteredTasks[s.id] = sTasks;
       }
       if (Object.keys(staffReq).length > 0) {
         staffRequests[s.id] = staffReq;
@@ -3573,7 +3551,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           ? `${baseRegularOffMin}日`
           : `${baseRegularOffMin}〜${baseRegularOffMax}日`,
         offDayRepresentation: '空欄（休みカテゴリのコードは入れず未入力のまま残す）',
-        meRoomRule: 'AIが新規入力・入れ替えできるシフトは勤務施設カテゴリ（坂田・君津・木クリ・じんクリ等）のみです。ME室（L・G等）、その他（出勤・公出等）、個人(スタッフ本人)が入力したシフト・希望、および各班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止です（既に入力済みのME室・出勤は連勤・出勤日数に含め、公出は公休と同枠扱いのため出勤日数・連勤・出勤人数にはカウントせず残りの曜日に出勤配置可）'
+        meRoomRule: 'AIが新規入力・入れ替えできるシフトは勤務施設カテゴリ（坂田・君津・木クリ・じんクリ等）のみです。ME室（L・G等）、その他（出勤・公出等）、個人(スタッフ本人)が入力したシフト・希望、および各班管理者が入力済みのシフト・タスクはAIでの自動入力・既存変更は禁止です（既に入力済みのME室・出勤は連勤・出勤日数に含め、公出は業務出張扱いのため出勤人数・現場出勤日数・連勤には含めず、公出しか入っていない週は必ずもう1日空欄の公休を残して現場出勤4日にする）'
       },
       customConditions: {
         strict: strictConditionsList,
@@ -3589,8 +3567,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       staffRequests,
       teamAdminLocks,
       dailySummary,
-      shifts: customShifts, 
-      ...(includeTasks ? { tasks: customTasks } : {}),
+      shifts: aiFilteredShifts, 
+      ...(includeTasks ? { tasks: aiFilteredTasks } : {}),
       targetCounts,
       definitions: Object.keys(shiftDefs).reduce((acc, key) => {
         const def = shiftDefs[key];
@@ -3600,7 +3578,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         const catKind = getCategoryKindById(def.category, categoryDefs);
         const isKoushutsu = isKoushutsuShiftDef(def, categoryDefs);
         const workSlot = catKind === 'facility' ? resolveShiftWorkSlot(def, categoryDefs) : null;
-        const offSubType = isKoushutsu ? 'regular_off' : resolveOffSubType(def, categoryDefs);
+        const offSubType = resolveOffSubType(def, categoryDefs);
         acc[key] = {
           code: key,
           displayLabel: def.label,
@@ -4300,13 +4278,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             if (code && shiftDefs[code]) {
               existingShiftsInThisWeek[d] = code;
               if (isNonWorkOrKoushutsuShiftDef(shiftDefs[code], categoryDefs)) {
-                if (!isKoushutsuShiftDef(shiftDefs[code], categoryDefs) && isPaidLeaveCode(code)) paidOffInThisWeek++;
+                if (isPaidLeaveCode(code)) paidOffInThisWeek++;
                 else regOffInThisWeek++;
               }
             } else if (reqShift || teamLock) {
               lockedBlankOffDaysInThisWeek.push(d);
               if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) {
-                if (!isKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs) && isPaidLeaveCode(reqShift)) paidOffInThisWeek++;
+                if (isPaidLeaveCode(reqShift)) paidOffInThisWeek++;
                 else regOffInThisWeek++;
               }
             } else if (!st.excludeFromAi) {
@@ -4531,7 +4509,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       1. 既存データ・各班管理者入力・個人希望の維持と活用（★絶対厳守★）:
          - 各職員の "thisWeekPlan.assignableDaysInThisWeek" に含まれる日付のみ、AIから出勤シフトを新規割り当てできます。
          - 既にシフトが入っている箇所（thisWeekPlan.existingShiftsInThisWeek）、希望休をクリアした確定空欄日（lockedBlankOffDaysInThisWeek）、"teamAdminLocksInWeek"・"staffRequestsInWeek" にある箇所は絶対に変更しないでください。
-         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は公休・休みと同枠扱いのため、出勤日数・連勤数・日別出勤人数には一切カウントせず、公出がある週の残り営業日（最大5日間）には通常通り出勤シフトを割り当てて構いません（thisWeekPlan と currentDailySummary に事前反映済みです）。
+         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は必ず別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください（thisWeekPlan と currentDailySummary に事前反映済みです）。
       2. AI除外・配置可能シフト制限・対象カテゴリ限定（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のため対象外。
          - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも、日曜日以外は通常通り透析を実施するため出勤シフトを組んでください。
@@ -5258,7 +5236,7 @@ ${shiftSystemRefText}
 - 個人（スタッフ本人）入力箇所・各班管理者（HHD班・エコー班・オペ班管理者）入力箇所・ME室・その他（出勤・公出）の扱い（★絶対厳守★）:
   ・AIが新規入力・入れ替え提案できるシフトは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。
   ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、ME室（${meShiftDescStr}）、およびその他（出勤・公出等）は、AIから新規に入れたり、変更・移動・削除することは絶対禁止です。
-  ・既に入力済みのME室・出勤はその職員の連勤数・出勤日数に含めて考慮してください。一方、「公出」は公休・休みと同枠扱いのため、出勤日数・連勤数・日別出勤人数にはカウントせず、公出がある週の残り営業日（最大5日間）にはすべて出勤シフトを入れて構いません。
+  ・既に入力済みのME室・出勤はその職員の連勤数・出勤日数に含めて考慮してください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休・年休等の休みが入っていない週）は必ずもう1日「空欄の公休」を残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを入れてください。
 - 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 前月末引き継ぎ・週休2日・最大連勤制限・休みの「空欄」表現（重要）:
   ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください（祝日がある週も休み数は増えず週1日休みペースです）。
@@ -6939,8 +6917,8 @@ ${messageText}`;
                             </div>
                           </div>
                           <div className="text-[11px] text-gray-600 bg-white border border-gray-200 rounded-md p-3 space-y-1 leading-relaxed">
-                            <div>・<strong>休みの表現：</strong>AIは公休（週休枠の指定休・振替休）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
-                            <div>・<strong>有休の扱い：</strong>「シフト設定」で<strong>週休枠の公休</strong>に設定された休みや希望休は週1日の公休枠として数え、<strong>別枠の有休</strong>（年休・リフレ等）は公休とは別枠（目標出勤日数から差し引き）として計算します。</div>
+                            <div>・<strong>休みの表現：</strong>AIは公休（週1日の休み枠）にコードを入れず<strong>「空欄」</strong>のまま残します。</div>
+                            <div>・<strong>休み・年休・公出の扱い：</strong>「休み」「希望」カテゴリのシフト（休・年休・特別・永年・子看・指定・振休など）はその週の週休1日分として扱い、残り5日間は出勤配置します。一方、平日の<strong>「公出」</strong>は業務出張扱いのため現場出勤人数・出勤日数には含めず、公出しか入っていない週は別日に必ずもう1日<strong>「空欄の公休」</strong>を残します（その週の現場出勤は4日間）。</div>
                             <div>・<strong>祝日・ME室の扱い：</strong>祝日・外来休診日も日曜以外は透析出勤日として組みます。ME室カテゴリのシフトはOPE班管理のためAIでの自動入力・既存変更は行いません。</div>
                           </div>
                         </div>
@@ -7035,7 +7013,6 @@ ${messageText}`;
                                   const catKind = getCategoryKindById(sItem.category, categoryDefs);
                                   const workSlot = resolveShiftWorkSlot(sItem, categoryDefs);
                                   const slotMeta = workSlot ? getShiftWorkSlotMeta(workSlot) : null;
-                                  const offSub = resolveOffSubType(sItem, categoryDefs);
                                   return (
                                     <div
                                       key={code}
@@ -7061,19 +7038,12 @@ ${messageText}`;
                                             希望枠
                                           </span>
                                         ) : catKind === 'off' ? (
-                                          <select
-                                            value={offSub || 'regular_off'}
-                                            onChange={e => handleQuickShiftMetaChange(code, { offSubType: e.target.value })}
-                                            className={`text-[10px] font-bold rounded border px-1.5 py-0.5 cursor-pointer focus:outline-none ${
-                                              offSub === 'paid_leave'
-                                                ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
-                                                : 'bg-slate-100 text-slate-700 border-slate-300'
-                                            }`}
-                                            title="AIでの休みカウント区分を切り替え（即時保存）"
+                                          <span
+                                            className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300 text-[10px] font-bold"
+                                            title="その週の休み1日分として扱い、残り5日間はAIが出勤配置します"
                                           >
-                                            <option value="regular_off">公休枠</option>
-                                            <option value="paid_leave">有休枠</option>
-                                          </select>
+                                            週休枠
+                                          </span>
                                         ) : catKind === 'me' ? (
                                           <span
                                             className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 text-[10px] font-bold"
@@ -7090,11 +7060,11 @@ ${messageText}`;
                                             }`}
                                             title={
                                               isKoushutsuShiftDef(sItem, categoryDefs)
-                                                ? '管理者・個人入力用（AI配置対象外 / 公休枠扱いのため出勤人数・出勤日数・連勤にカウントしない）'
+                                                ? '管理者・個人入力用（AI配置対象外 / 出勤人数・現場出勤日数には含めず、公出のみの週は別日に空欄の公休を1日残します）'
                                                 : '管理者・個人入力用（AI配置対象外 / 既に入力済みの日は連勤・出勤日数にカウント）'
                                             }
                                           >
-                                            {isKoushutsuShiftDef(sItem, categoryDefs) ? 'AI対象外(公休枠)' : 'AI対象外'}
+                                            {isKoushutsuShiftDef(sItem, categoryDefs) ? 'AI対象外(公出)' : 'AI対象外'}
                                           </span>
                                         ) : (
                                           <select
@@ -7124,7 +7094,6 @@ ${messageText}`;
                           const editCatKind = getCategoryKindById(editingShift.category, categoryDefs);
                           const editEffType = editCatKind === 'role' ? 'task' : (editingShift.type || 'shift');
                           const activeWorkSlot = resolveShiftWorkSlot({ ...editingShift, type: editEffType }, categoryDefs) || 'other';
-                          const activeOffSubType = resolveOffSubType({ ...editingShift, type: editEffType }, categoryDefs) || 'regular_off';
                           return (
                             <div className="space-y-4 max-w-lg pb-4">
                               <h4 className="font-bold text-gray-700 border-b pb-2">シフト編集</h4>
@@ -7222,7 +7191,7 @@ ${messageText}`;
                                     </span>
                                   ) : isKoushutsuShiftDef({ ...editingShift, type: editEffType }, categoryDefs) ? (
                                     <span>
-                                      <strong>※公出（AI自動配置対象外・公休枠扱い）：</strong>管理者・個人が入力するシフトのためAI作成では使用・変更しません。公休と同枠として扱い、<strong>出勤人数・出勤日数・連勤にはカウントしません</strong>（公出がある週の残り5日間は通常通りAIが出勤配置できます）。
+                                      <strong>※公出（AI自動配置対象外・業務出張扱い）：</strong>管理者・個人が入力するシフトのためAI作成では使用・変更しません。<strong>出勤人数・現場出勤日数・連勤にはカウントせず</strong>、公出しか入っていない週は別日に必ずもう1日「空欄の公休」を残します（その週の現場出勤は4日間）。
                                     </span>
                                   ) : (
                                     <span>
@@ -7232,29 +7201,9 @@ ${messageText}`;
                                 </div>
                               )}
 
-                              {editEffType === 'shift' && editCatKind === 'off' && (
-                                <div className="p-3 rounded-lg border border-emerald-200 bg-emerald-50/40 space-y-2">
-                                  <label className="text-xs font-bold text-emerald-900 block">休みの種類（AIの週休・目標出勤日数カウント）</label>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                    {SHIFT_OFF_SUBTYPES.map(opt => {
-                                      const isSelected = activeOffSubType === opt.value;
-                                      return (
-                                        <button
-                                          key={opt.value}
-                                          type="button"
-                                          onClick={() => setEditingShift({ ...editingShift, offSubType: opt.value })}
-                                          className={`text-left p-2 rounded-lg border transition ${
-                                            isSelected
-                                              ? 'bg-white border-emerald-500 ring-2 ring-emerald-400'
-                                              : 'bg-white/70 border-gray-200 hover:bg-white'
-                                          }`}
-                                        >
-                                          <div className="text-xs font-bold text-gray-800">{opt.label}</div>
-                                          <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">{opt.desc}</div>
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
+                              {editEffType === 'shift' && (editCatKind === 'off' || editCatKind === 'req') && (
+                                <div className="p-3 rounded-lg border border-emerald-200 bg-emerald-50/40 text-[11px] text-emerald-900 leading-relaxed">
+                                  <strong>※休み・希望カテゴリ（週休1日分として充当）：</strong>このシフトが1日入っている週は、その週の休み1日分として扱われ、残り5日間はAIが出勤シフトを割り当てます。
                                 </div>
                               )}
 
@@ -7706,7 +7655,7 @@ ${messageText}`;
                   <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
                   <div>・<strong>必須スキル配置：</strong>各施設の必須スキル（<strong>リーダー等</strong>）を確保し、不足日は分散配置＋ベテラン補完します</div>
                   <div>・<strong>日替わり分散：</strong>機械的な固まり配置を防ぎ、<strong>日ごとに勤務地をローテーション＆月間の施設偏りを平準化</strong>します</div>
-                  <div>・<strong>保護ルール：</strong><strong>個人入力分</strong>・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは変更不可（ME室・その他[出勤/公出]はAI対象外、公出は公休扱い）</div>
+                  <div>・<strong>保護ルール：</strong><strong>個人入力分</strong>・<strong>各班管理者(HHD/エコー/オペ)入力分</strong>・既存シフトは変更不可（ME室・その他[出勤/公出]はAI対象外、公出のみの週は空欄公休を1日確保）</div>
                   <div>・<strong>段階ビルド＆検算：</strong>第1週から<strong>週ごとに順番に作成</strong>し、最後に<strong>1ヶ月通し検算＆自動手直し（最大1回）</strong>を行います</div>
                 </div>
 
