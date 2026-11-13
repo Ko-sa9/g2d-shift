@@ -6696,7 +6696,7 @@ ${messageText}`;
                       ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
                       : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
                   }`}
-                  title="締切後の勤務交換・休み変更申請の確認と承認"
+                  title="締切後の勤務変更申請の確認と承認"
                 >
                   <RefreshCw size={16} className="sm:w-4 sm:h-4" />
                   <span className="hidden md:inline text-sm">変更申請</span>
@@ -6763,13 +6763,13 @@ ${messageText}`;
         </div>
       </header>
 
-      {/* ★追加：勤務交換・休み変更申請の未承認通知バー（管理者向け） */}
+      {/* ★追加：勤務変更申請の未承認通知バー（管理者向け） */}
       {appUser.role === 'admin' && pendingChangeRequests.length > 0 && (
         <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-6 py-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm shrink-0 z-10">
           <div className="flex items-center gap-2 text-amber-900 text-xs sm:text-sm font-bold">
             <RefreshCw size={16} className="text-amber-600 shrink-0" />
             <span>
-              スタッフから勤務交換・休み変更の申請が <strong className="text-amber-700 underline">{pendingChangeRequests.length}件</strong> 届いています。
+              スタッフから勤務変更の申請が <strong className="text-amber-700 underline">{pendingChangeRequests.length}件</strong> 届いています。
             </span>
           </div>
           <button
@@ -6867,7 +6867,7 @@ ${messageText}`;
                           cell.currentMonth && isAfterDeadlineForCurrentMonth ? 'cursor-pointer' : ''
                         }`}
                       >
-                        <div className={`flex items-center justify-between mb-1 gap-0.5 min-h-[14px] ${!isSun && isHol && cell.currentMonth ? 'bg-red-50 -mx-1 -mt-1 px-1 py-0.5 border-b border-red-100' : ''}`}>
+                        <div className={`flex items-center justify-between gap-0.5 -mx-1 -mt-1 px-1 pt-1 pb-0.5 mb-0.5 min-h-[21px] border-b ${!isSun && isHol && cell.currentMonth ? 'bg-red-50 border-red-100' : 'border-transparent'}`}>
                           <div
                             title={closedRule ? (closedRule.label || '外来休診日') : undefined}
                             className={`text-[10px] font-bold leading-none ${isSun || isHol ? 'text-red-500' : isSat ? 'text-blue-500' : 'text-gray-700'} ${!cell.currentMonth && 'opacity-30'}`}
@@ -6895,7 +6895,7 @@ ${messageText}`;
                                 openStaffChangeRequestModal(day, myPendingReqsForDay[0].type || 'swap');
                               }}
                               className="text-[9px] sm:text-[10px] leading-none px-1 py-0.5 rounded-full font-bold whitespace-nowrap border bg-amber-100 text-amber-800 border-amber-300 cursor-pointer hover:bg-amber-200"
-                              title="申請中の勤務交換・変更があります（クリックで確認）"
+                              title="申請中の勤務変更があります（クリックで確認）"
                             >
                               申請中
                             </span>
@@ -7399,7 +7399,7 @@ ${messageText}`;
                 <div className="mb-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 shrink-0">
                   <div className="font-bold mb-1.5 flex items-center gap-1">
                     <RefreshCw size={13} className="text-amber-600" />
-                    締切後の勤務交換・休み変更申請
+                    締切後の勤務変更申請
                   </div>
                   <div className="flex gap-1.5">
                     <button
@@ -7407,14 +7407,14 @@ ${messageText}`;
                       onClick={() => openStaffChangeRequestModal(activePopup.day, 'swap')}
                       className="flex-1 py-1.5 px-2 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-xs transition shadow-sm"
                     >
-                      シフト交換申請
+                      職員同士交換
                     </button>
                     <button
                       type="button"
                       onClick={() => openStaffChangeRequestModal(activePopup.day, 'single')}
                       className="flex-1 py-1.5 px-2 bg-white hover:bg-amber-100 text-amber-800 border border-amber-300 rounded font-bold text-xs transition shadow-sm"
                     >
-                      休み・変更申請
+                      単独変更
                     </button>
                   </div>
                 </div>
@@ -10241,7 +10241,7 @@ ${messageText}`;
                 <div className="flex items-center gap-2">
                   <RefreshCw size={18} className="text-amber-600" />
                   <h3 className="font-bold text-gray-800 text-sm sm:text-base">
-                    { year }年{ month }月 勤務交換・休み変更の申請
+                    { year }年{ month }月 勤務変更申請
                   </h3>
                 </div>
                 <button
@@ -10265,7 +10265,7 @@ ${messageText}`;
                         : 'text-gray-600 hover:text-gray-800'
                     }`}
                   >
-                    職員同士でシフト交換（A⇔B）
+                    職員同士交換
                   </button>
                   <button
                     type="button"
@@ -10276,7 +10276,7 @@ ${messageText}`;
                         : 'text-gray-600 hover:text-gray-800'
                     }`}
                   >
-                    休み・単独変更（体調不良など）
+                    単独変更
                   </button>
                 </div>
 
@@ -10625,7 +10625,7 @@ ${messageText}`;
                 <div className="flex items-center gap-2">
                   <RefreshCw size={18} className="text-amber-600" />
                   <h3 className="font-bold text-gray-800 text-sm sm:text-base">
-                    {year}年{month}月 勤務交換・休み変更申請の確認と承認
+                    {year}年{month}月 勤務変更申請の確認と承認
                   </h3>
                   {pendingChangeRequests.length > 0 && (
                     <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-xs font-bold">
@@ -10651,7 +10651,7 @@ ${messageText}`;
 
                   {pendingChangeRequests.length === 0 ? (
                     <div className="p-6 text-center bg-gray-50 border border-gray-200 rounded-lg text-gray-500">
-                      現在、承認待ちの勤務交換・変更申請はありません。
+                      現在、承認待ちの勤務変更申請はありません。
                     </div>
                   ) : (
                     pendingChangeRequests.map(req => {
@@ -10680,7 +10680,7 @@ ${messageText}`;
                                       : 'bg-rose-100 text-rose-800 border border-rose-200'
                                   }`}
                                 >
-                                  {isSwap ? 'シフト交換（A⇔B）' : '休み・単独変更'}
+                                  {isSwap ? '職員同士交換' : '単独変更'}
                                 </span>
                                 <span className="text-xs text-gray-500">
                                   申請日時:{' '}
