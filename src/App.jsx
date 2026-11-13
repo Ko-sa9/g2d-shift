@@ -6292,7 +6292,7 @@ ${messageText}`;
                 <table className="w-full border-collapse select-none">
                   <thead>
                     <tr>
-                      <th className="sticky top-0 left-0 z-30 bg-gray-100 border-b border-r p-2 min-w-[120px] h-24 text-left">
+                      <th className="sticky top-0 left-0 z-30 bg-gray-100 border-b border-r px-2 py-1.5 min-w-[116px] h-20 text-left">
                         <div className="flex flex-col justify-between h-full">
                           <span className="text-xs text-gray-500">職員 / 日付</span>
                           {appUser.role === 'admin' && (
@@ -6320,14 +6320,14 @@ ${messageText}`;
                           <th
                             key={day}
                             title={closedRule ? (closedRule.label || '外来休診日') : undefined}
-                            className={`sticky top-0 z-20 border-b border-r min-w-[40px] p-1 text-center ${headerBg} ${bgClass}`}
+                            className={`sticky top-0 z-20 border-b border-r min-w-[36px] px-0.5 py-1 text-center ${headerBg} ${bgClass}`}
                           >
-                            <div className="text-sm font-bold">{day}</div>
-                            <div className="text-xs font-normal opacity-80">{['日','月','火','水','木','金','土'][getDayOfWeek(year, month, day)]}</div>
+                            <div className="text-xs font-bold leading-tight">{day}</div>
+                            <div className="text-[11px] font-normal opacity-80 leading-tight">{['日','月','火','水','木','金','土'][getDayOfWeek(year, month, day)]}</div>
                           </th>
                         );
                       })}
-                      <th className="sticky top-0 z-20 bg-red-50 border-b border-r p-2 min-w-[60px] text-center text-xs font-bold text-red-800">残業</th>
+                      <th className="sticky top-0 z-20 bg-red-50 border-b border-r px-1.5 py-1 min-w-[48px] text-center text-xs font-bold text-red-800">残業</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white">
@@ -6353,14 +6353,14 @@ ${messageText}`;
                             if(isMasterAdmin) handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
                           }}
                         >
-                          <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r p-2 font-medium text-gray-700 whitespace-nowrap">
+                          <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r px-2 py-1 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
                               <div className={isMasterAdmin ? "cursor-pointer flex-1" : "flex-1"} onClick={(e) => { if(isMasterAdmin) { e.stopPropagation(); handleEditStaff(staff); } }}>
-                                <div className="text-sm font-bold text-gray-800 flex items-center gap-1">
+                                <div className="text-xs sm:text-sm font-bold text-gray-800 leading-tight flex items-center gap-1">
                                   {staff.name}
                                   {isMasterAdmin && <Edit2 size={10} className="text-gray-300 opacity-0 group-hover/cell:opacity-100 transition"/>}
                                 </div>
-                                <div className="text-[10px] text-gray-500 flex items-center gap-2">
+                                <div className="text-[10px] text-gray-500 leading-tight flex items-center gap-2">
                                   {staff.jobTitle}
                                   {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
                                   {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
@@ -6494,7 +6494,7 @@ ${messageText}`;
                             const taskTooltip = taskTooltips.join('\n');
 
                             return (
-                              <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
+                              <td key={day} className={`border-b border-r text-center p-0 h-11 relative ${cellBg}`}>
                                 <div className="w-full h-full flex flex-col">
                                   {/* シフト表示部分(上1/2)にだけスタイルとツールチップを適用 */}
                                   <div 
@@ -6507,21 +6507,21 @@ ${messageText}`;
                                     onClick={(e) => { if(isShiftEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
                                   >
                                     {teamShiftLock && (
-                                      <span className="absolute top-1 left-1 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
+                                      <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
                                     )}
                                     {appUser.role === 'admin' && reqShiftCode && (
                                       shiftCode !== reqShiftCode ? (
-                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[38px] inline-flex items-center gap-0.5">
+                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[34px] inline-flex items-center gap-0.5">
                                           <span className="truncate">{reqShift?.label || reqShiftCode}</span>
                                           {reqReason && <MessageSquare size={8} className="shrink-0 text-pink-600 fill-pink-200" />}
                                         </span>
                                       ) : reqReason ? (
-                                        <MessageSquare size={10} className="absolute top-0.5 right-0.5 text-pink-500 fill-pink-100 pointer-events-none" />
+                                        <MessageSquare size={9} className="absolute top-0.5 right-0.5 text-pink-500 fill-pink-100 pointer-events-none" />
                                       ) : (
-                                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
+                                        <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
                                       )
                                     )}
-                                    {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : null}
+                                    {shift ? <span className={`font-bold text-xs leading-none ${shift.text}`}>{shift.label}</span> : null}
                                   </div>
                                   
                                   {/* タスク表示部分(下1/2) */}
@@ -6542,21 +6542,21 @@ ${messageText}`;
                                     )}
                                     {appUser.role === 'admin' && reqTaskCode && (
                                       taskCode !== reqTaskCode && !task ? (
-                                        <span className="px-0.5 rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[36px] truncate">
+                                        <span className="px-0.5 rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[34px] truncate">
                                           {reqTask?.label || reqTaskCode}
                                         </span>
                                       ) : (
                                         <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full pointer-events-none ${taskCode !== reqTaskCode ? 'bg-pink-600 ring-1 ring-pink-200' : 'bg-pink-400'}`} />
                                       )
                                     )}
-                                    {task ? <span className={`font-bold text-[10px] ${task.text} transform scale-90`}>{task.label}</span> : null}
+                                    {task ? <span className={`font-bold text-[10px] leading-none ${task.text}`}>{task.label}</span> : null}
                                   </div>
                                 </div>
                               </td>
                             );
                           })}
-                          <td className={`border-b border-r text-center p-1 font-bold text-sm ${overtime > 60 ? 'bg-red-100 text-red-600' : 'bg-gray-50 text-gray-600'}`}>
-                            <div className="flex flex-col items-center justify-center h-full"><span>{overtime > 0 ? overtime : '-'}</span>{overtime > 60 && <AlertTriangle size={12} className="text-red-500 mt-1" />}</div>
+                          <td className={`border-b border-r text-center px-1 py-0.5 font-bold text-xs ${overtime > 60 ? 'bg-red-100 text-red-600' : 'bg-gray-50 text-gray-600'}`}>
+                            <div className="flex flex-col items-center justify-center h-full"><span>{overtime > 0 ? overtime : '-'}</span>{overtime > 60 && <AlertTriangle size={11} className="text-red-500 mt-0.5" />}</div>
                           </td>
                         </tr>
                       );
