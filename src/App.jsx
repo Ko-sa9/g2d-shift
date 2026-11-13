@@ -1401,6 +1401,7 @@ export default function WorkScheduleApp() {
   const [prevMonthShiftData, setPrevMonthShiftData] = useState({}); // Step 3: 前月シフトの引き継ぎ用データ
   const [taskData, setTaskData] = useState({});
   const [bellData, setBellData] = useState({}); // カテゴリ1: 緊急待機番(ベル)のタスク欄背景色フラグ
+  const [leaderData, setLeaderData] = useState({}); // カテゴリ1: 3クールにリーダー不在時などの手動リーダー背景色フラグ
   const [userInputs, setUserInputs] = useState({}); // ★追加：個人が入力した箇所を記憶するリスト
 
   const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
@@ -1635,11 +1636,13 @@ export default function WorkScheduleApp() {
         setShiftData(data.shifts || {});
         setTaskData(data.tasks || {});
         setBellData(data.bells || {});
+        setLeaderData(data.leaders || {});
         setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
       } else {
         setShiftData({});
         setTaskData({});
         setBellData({});
+        setLeaderData({});
         setUserInputs({});
       }
     });
@@ -1683,18 +1686,36 @@ export default function WorkScheduleApp() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
 
-// ★引数に newUserInputs / newBells を追加し、デフォルト値として現在の状態を維持します
-  const saveSchedule = async (newShifts, newTasks, newUserInputs = userInputs, newBells = bellData) => {
+// ★引数に newUserInputs / newBells / newLeaders を追加し、デフォルト値として現在の状態を維持します
+  const saveSchedule = async (
+    newShifts,
+    newTasks,
+    newUserInputs = userInputs,
+    newBells = bellData,
+    newLeaders = leaderData
+  ) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     
     try {
-      // ★ userInputs / bells も一緒に保存します
-      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs, bells: newBells });
+      // ★ userInputs / bells / leaders も一緒に保存します
+      await updateDoc(scheduleDocRef, {
+        shifts: newShifts,
+        tasks: newTasks,
+        userInputs: newUserInputs,
+        bells: newBells,
+        leaders: newLeaders,
+      });
     } catch (e) {
       if (e.code === 'not-found') {
-        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs, bells: newBells });
+        await setDoc(scheduleDocRef, {
+          shifts: newShifts,
+          tasks: newTasks,
+          userInputs: newUserInputs,
+          bells: newBells,
+          leaders: newLeaders,
+        });
       } else {
         console.error("Save error:", e);
       }
@@ -2231,9 +2252,29 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         delete nextUserInputs[staffId][day];
       }
 
+      // シフトクリアまたは坂田・君津以外への変更時は手動リーダー色付けフラグも自動解除
+      let nextLeaders = leaderData;
+      if (leaderData[staffId]?.[day]) {
+        const nextDef = toolCode ? shiftDefs[toolCode] : null;
+        const nextCat = nextDef ? categoryDefs[nextDef.category] : null;
+        const keepsTargetFacility = Boolean(
+          nextDef &&
+          getEffectiveShiftType(nextDef, categoryDefs) === 'shift' &&
+          isLeaderHighlightTargetFacility(nextCat)
+        );
+        if (!keepsTargetFacility) {
+          nextLeaders = { ...leaderData };
+          const staffL = { ...(nextLeaders[staffId] || {}) };
+          delete staffL[day];
+          if (Object.keys(staffL).length > 0) nextLeaders[staffId] = staffL;
+          else delete nextLeaders[staffId];
+          setLeaderData(nextLeaders);
+        }
+      }
+
       setShiftData(nextShifts);
       setUserInputs(nextUserInputs); // ★追加
-      saveSchedule(nextShifts, taskData, nextUserInputs); // ★引数追加
+      saveSchedule(nextShifts, taskData, nextUserInputs, bellData, nextLeaders); // ★引数追加
     } else {
       const nextTasks = { ...taskData };
       if (nextTasks[staffId]) {
@@ -2292,7 +2333,46 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       delete nextBells[staffId];
     }
     setBellData(nextBells);
-    saveSchedule(shiftData, taskData, userInputs, nextBells);
+    saveSchedule(shiftData, taskData, userInputs, nextBells, leaderData);
+  };
+
+  // 各施設(君津・坂田)の手動リーダー色付け（3クールにリーダー不在時など）をON/OFF切り替え
+  const handleToggleManualLeader = (staffId, day) => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isSunday(year, month, day)) return;
+    const code = shiftData[staffId]?.[day];
+    const def = code ? shiftDefs[code] : null;
+    const cat = def ? categoryDefs[def.category] : null;
+    if (!def || getEffectiveShiftType(def, categoryDefs) !== 'shift' || !isLeaderHighlightTargetFacility(cat)) {
+      return;
+    }
+
+    const nextLeaders = { ...leaderData };
+    const isCurrentlyOn = Boolean(nextLeaders[staffId]?.[day]);
+
+    if (isCurrentlyOn) {
+      const staffLeaders = { ...(nextLeaders[staffId] || {}) };
+      delete staffLeaders[day];
+      if (Object.keys(staffLeaders).length > 0) nextLeaders[staffId] = staffLeaders;
+      else delete nextLeaders[staffId];
+    } else {
+      // 同一施設(坂田・君津別)の他の手動リーダー指定は解除し、施設ごとに1名に揃える
+      Object.keys(nextLeaders).forEach(otherId => {
+        if (!nextLeaders[otherId]?.[day]) return;
+        const oCode = shiftData[otherId]?.[day];
+        const oDef = oCode ? shiftDefs[oCode] : null;
+        if (oDef && oDef.category === cat.id) {
+          const updatedOther = { ...nextLeaders[otherId] };
+          delete updatedOther[day];
+          if (Object.keys(updatedOther).length > 0) nextLeaders[otherId] = updatedOther;
+          else delete nextLeaders[otherId];
+        }
+      });
+      nextLeaders[staffId] = { ...(nextLeaders[staffId] || {}), [day]: true };
+    }
+
+    setLeaderData(nextLeaders);
+    saveSchedule(shiftData, taskData, userInputs, bellData, nextLeaders);
   };
 
   const handleCellClick = (e, staffId, day, type) => {
@@ -2830,8 +2910,9 @@ const handleResetSchedule = () => {
         setShiftData(newShiftData);
         setTaskData(newTaskData);
         setBellData({});
+        setLeaderData({});
         setUserInputs(newUserInputs);
-        saveSchedule(newShiftData, newTaskData, newUserInputs, {});
+        saveSchedule(newShiftData, newTaskData, newUserInputs, {}, {});
         
         alert('個人が入力したシフトを残して、その他のデータをリセットしました。');
       }
@@ -5753,7 +5834,7 @@ ${messageText}`;
     return counts;
   }, [daysArray, year, month, staffList, shiftData, userInputs, countedOffShifts]);
 
-  // カテゴリ1: 各施設(君津・坂田)の先頭リーダーおよびME室L/祝日Gの自動背景色マップを計算
+  // カテゴリ1: 各施設(君津・坂田)の先頭3クールリーダー（または手動指定）およびME室L/祝日Gの自動背景色マップを計算
   const autoShiftHighlightMap = useMemo(() => {
     const map = {};
     const targetLeaderCats = Object.values(categoryDefs)
@@ -5764,19 +5845,43 @@ ${messageText}`;
       if (isSunday(year, month, day)) return;
       const isHol = isHoliday(year, month, day, clinicClosedDays);
 
-      // 1. 各施設(君津・坂田)のリーダー：複数人いる場合はstaffList上で一番上の人のみ施設文字色の薄い背景色を付与
+      // 1. 各施設(君津・坂田)のリーダー：
+      //    手動指定がある場合はその人を優先色付けし、手動指定がない場合は「3クールに入っているリーダー」のうちstaffList上で一番上の人のみ自動色付け
       targetLeaderCats.forEach(cat => {
-        for (let i = 0; i < staffList.length; i++) {
-          const s = staffList[i];
-          if (!s?.skills?.isLeader) continue;
+        let hasManualForCat = false;
+        staffList.forEach(s => {
+          if (!leaderData[s.id]?.[day]) return;
           const code = shiftData[s.id]?.[day];
           const def = code ? shiftDefs[code] : null;
           if (def && getEffectiveShiftType(def, categoryDefs) === 'shift' && def.category === cat.id) {
+            hasManualForCat = true;
             map[`${s.id}_${day}`] = {
               bgClass: resolveLightBgFromShiftOrCategory(def, cat),
-              tooltip: `【${cat.label} リーダー】`,
+              tooltip: `【${cat.label} リーダー（手動指定）】`,
+              source: 'manual',
             };
-            break;
+          }
+        });
+
+        if (!hasManualForCat) {
+          for (let i = 0; i < staffList.length; i++) {
+            const s = staffList[i];
+            if (!s?.skills?.isLeader) continue;
+            const code = shiftData[s.id]?.[day];
+            const def = code ? shiftDefs[code] : null;
+            if (
+              def &&
+              getEffectiveShiftType(def, categoryDefs) === 'shift' &&
+              def.category === cat.id &&
+              isCool3ShiftDef(def, categoryDefs)
+            ) {
+              map[`${s.id}_${day}`] = {
+                bgClass: resolveLightBgFromShiftOrCategory(def, cat),
+                tooltip: `【${cat.label} 3クール先頭リーダー】`,
+                source: 'auto',
+              };
+              break;
+            }
           }
         }
       });
@@ -5788,13 +5893,14 @@ ${messageText}`;
           map[`${s.id}_${day}`] = {
             bgClass: 'bg-gray-200',
             tooltip: isHol ? '【ME室 G（祝日・休診日）】' : '【ME室 L】',
+            source: 'me',
           };
         }
       });
     });
 
     return map;
-  }, [daysArray, year, month, clinicClosedDays, staffList, shiftData, shiftDefs, categoryDefs]);
+  }, [daysArray, year, month, clinicClosedDays, staffList, shiftData, leaderData, shiftDefs, categoryDefs]);
 
   // 基本設定タブ用: 個人カレンダーで選択可能なシフト（希望・休み・その他[公出等]・シフト希望表示ON）のみに絞り込み、設定画面が雑多にならないよう整理
   const basicSettingsShiftGroups = useMemo(() => {
@@ -6668,6 +6774,44 @@ ${messageText}`;
                   </div>
                 </div>
               )}
+              {appUser.role === 'admin' && activePopup.type === 'shift' && !isSunday(year, month, activePopup.day) && (() => {
+                const curDef = popupCurrentCode ? shiftDefs[popupCurrentCode] : null;
+                const curCat = curDef ? categoryDefs[curDef.category] : null;
+                if (!curDef || getEffectiveShiftType(curDef, categoryDefs) !== 'shift' || !isLeaderHighlightTargetFacility(curCat)) {
+                  return null;
+                }
+                const isManualOn = Boolean(leaderData[activePopup.staffId]?.[activePopup.day]);
+                const curHighlight = autoShiftHighlightMap[`${activePopup.staffId}_${activePopup.day}`];
+                const lightBg = resolveLightBgFromShiftOrCategory(curDef, curCat);
+                if (curHighlight?.source === 'auto' && !isManualOn) {
+                  return (
+                    <div className={`mb-2.5 px-3 py-1.5 rounded-lg border border-black/10 text-xs font-bold flex items-center justify-between shrink-0 ${lightBg} ${curDef.text || 'text-gray-800'}`}>
+                      <span>{curCat.label} リーダー色付け中（3クール自動）</span>
+                      <span className="text-[10px] bg-white/80 px-1.5 py-0.5 rounded border border-black/10">自動</span>
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    type="button"
+                    onClick={() => { handleToggleManualLeader(activePopup.staffId, activePopup.day); setActivePopup(null); }}
+                    className={`mb-2.5 w-full py-2 px-3 rounded-lg border text-xs font-bold flex items-center justify-between transition shrink-0 ${
+                      isManualOn
+                        ? `${lightBg} border-blue-400 text-gray-900 shadow-xs hover:brightness-95`
+                        : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="3クールにリーダー不在時など、入っているシフト内容を変えずにリーダー色付けを手動でON/OFFします"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className={`inline-block w-3 h-3 rounded-sm border border-black/20 ${lightBg}`} />
+                      <span>{curCat.label} リーダー色付け（手動）</span>
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${isManualOn ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 border border-gray-300'}`}>
+                      {isManualOn ? 'ON（外す）' : 'OFF（付ける）'}
+                    </span>
+                  </button>
+                );
+              })()}
               {appUser.role === 'admin' && activePopup.type === 'task' && !isSunday(year, month, activePopup.day) && (() => {
                 const isBellActive = Boolean(bellData[activePopup.staffId]?.[activePopup.day]);
                 return (
