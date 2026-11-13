@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -1381,6 +1381,65 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 };
 
 // ------------------------------------------------------------------
+// ログイン状態永続化ヘルパー（ページ再読み込み時の再ログイン防止）
+// ------------------------------------------------------------------
+const SAVED_AUTH_SESSION_KEY = 'workScheduleAppSession';
+
+const createAuthFingerprint = (secret = '') => {
+  const str = String(secret || '');
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const readSavedAuthSession = () => {
+  try {
+    const raw = localStorage.getItem(SAVED_AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || (parsed.role !== 'admin' && parsed.role !== 'staff')) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const writeSavedAuthSession = (user, adminSettingsMap = DEFAULT_ADMIN_SETTINGS) => {
+  try {
+    if (!user) {
+      localStorage.removeItem(SAVED_AUTH_SESSION_KEY);
+      return;
+    }
+    if (user.role === 'admin') {
+      const viewKey = user.initialView || 'all';
+      const pwd = adminSettingsMap?.[viewKey]?.password ?? '';
+      localStorage.setItem(
+        SAVED_AUTH_SESSION_KEY,
+        JSON.stringify({
+          role: 'admin',
+          initialView: viewKey,
+          sig: createAuthFingerprint(pwd),
+        })
+      );
+    } else if (user.role === 'staff' && user.id) {
+      localStorage.setItem(
+        SAVED_AUTH_SESSION_KEY,
+        JSON.stringify({
+          role: 'staff',
+          staffId: user.id,
+          sig: createAuthFingerprint(user.password ?? ''),
+        })
+      );
+    }
+  } catch {
+    // ストレージ利用不可環境では無視
+  }
+};
+
+// ------------------------------------------------------------------
 // メインアプリコンポーネント
 // ------------------------------------------------------------------
 
@@ -1388,6 +1447,13 @@ export default function WorkScheduleApp() {
   const [authUser, setAuthUser] = useState(null); 
   const [appUser, setAppUser] = useState(null); 
   const [isDataLoaded, setIsDataLoaded] = useState(false); // ★追加: データ通信完了フラグ
+  const [isRestoringSession, setIsRestoringSession] = useState(() => Boolean(readSavedAuthSession()));
+  const [loadedScheduleId, setLoadedScheduleId] = useState(null);
+  const loadedScheduleIdRef = useRef(null);
+  const updateLoadedScheduleId = (val) => {
+    loadedScheduleIdRef.current = val;
+    setLoadedScheduleId(val);
+  };
   
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth() + 1);
@@ -1626,42 +1692,79 @@ export default function WorkScheduleApp() {
       }
       setIsDataLoaded(true); // ★追加: データの有無に関わらず、通信が終わったらフラグを立てる
     });
-    const scheduleId = `schedule_${year}_${month}`;
-    const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
-    const unsubSchedule = onSnapshot(scheduleDocRef, (docSnap) => {
-      // AI自動作成の週ごとライブ仮反映中は、保存完了または中断までスナップショットによる上書きを保留
-      if (isAutoFillRunningRef.current) return;
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setShiftData(data.shifts || {});
-        setTaskData(data.tasks || {});
-        setBellData(data.bells || {});
-        setLeaderData(data.leaders || {});
-        setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
-      } else {
-        setShiftData({});
-        setTaskData({});
-        setBellData({});
-        setLeaderData({});
-        setUserInputs({});
-      }
-    });
-    // Step 3: 月またぎの連勤・週休・3クール連続判定のため前月スケジュールもリアルタイム購読
-    const prevYear = month === 1 ? year - 1 : year;
-    const prevMonth = month === 1 ? 12 : month - 1;
-    const prevScheduleId = `schedule_${prevYear}_${prevMonth}`;
-    const prevScheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', prevScheduleId);
-    const unsubPrevSchedule = onSnapshot(prevScheduleDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const pData = docSnap.data();
-        setPrevMonthShiftData(pData.shifts || {});
-      } else {
-        setPrevMonthShiftData({});
-      }
-    });
 
     return () => {
       unsubMaster();
+    };
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    let isCurrentEffect = true;
+    const scheduleId = `schedule_${year}_${month}`;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevScheduleId = `schedule_${prevYear}_${prevMonth}`;
+
+    // 月切り替え時に前月のシフト・タスク等が残って表示/誤保存されないよう即座に初期化
+    updateLoadedScheduleId(null);
+    setShiftData({});
+    setTaskData({});
+    setBellData({});
+    setLeaderData({});
+    setUserInputs({});
+    setPrevMonthShiftData({});
+    setActivePopup(null);
+
+    const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
+    const unsubSchedule = onSnapshot(
+      scheduleDocRef,
+      (docSnap) => {
+        if (!isCurrentEffect) return;
+        // AI自動作成の週ごとライブ仮反映中は、保存完了または中断までスナップショットによる上書きを保留
+        if (isAutoFillRunningRef.current) return;
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setShiftData(data.shifts || {});
+          setTaskData(data.tasks || {});
+          setBellData(data.bells || {});
+          setLeaderData(data.leaders || {});
+          setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
+        } else {
+          setShiftData({});
+          setTaskData({});
+          setBellData({});
+          setLeaderData({});
+          setUserInputs({});
+        }
+        updateLoadedScheduleId(scheduleId);
+      },
+      (error) => {
+        console.error('Schedule load error:', error);
+        if (isCurrentEffect) updateLoadedScheduleId(scheduleId);
+      }
+    );
+
+    // Step 3: 月またぎの連勤・週休・3クール連続判定のため前月スケジュールもリアルタイム購読
+    const prevScheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', prevScheduleId);
+    const unsubPrevSchedule = onSnapshot(
+      prevScheduleDocRef,
+      (docSnap) => {
+        if (!isCurrentEffect) return;
+        if (docSnap.exists()) {
+          const pData = docSnap.data();
+          setPrevMonthShiftData(pData.shifts || {});
+        } else {
+          setPrevMonthShiftData({});
+        }
+      },
+      (error) => {
+        console.error('Prev schedule load error:', error);
+      }
+    );
+
+    return () => {
+      isCurrentEffect = false;
       unsubSchedule();
       unsubPrevSchedule();
     };
@@ -1696,6 +1799,8 @@ export default function WorkScheduleApp() {
   ) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
+    // 月切り替え直後の読み込み完了前に前月データで上書き保存するのを防止
+    if (loadedScheduleIdRef.current !== scheduleId) return;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     
     try {
@@ -2375,8 +2480,9 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
   const handleCellClick = (e, staffId, day, type) => {
-    // AI自動作成のライブ仮反映中は誤編集防止のためセル操作をロック（スクロール閲覧のみ可能）
+    // AI自動作成のライブ仮反映中・または月データ読み込み中は誤編集防止のためセル操作をロック
     if (isAutoFillRunningRef.current) return;
+    if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
     if (isSunday(year, month, day)) {
       if (type === 'task') {
         if (!appUser || appUser.role !== 'admin') return;
@@ -2474,11 +2580,17 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       };
       setAdminSettings(newSettings);
       saveMasterData({ adminSettings: newSettings });
+      if (effectiveAdminKey === appUser.initialView) {
+        writeSavedAuthSession(appUser, newSettings);
+      }
       alert(`${newSettings[effectiveAdminKey].label}のパスワードを変更しました。`);
     } else {
       const newList = staffList.map(s => s.id === appUser.id ? { ...s, password: trimmedPassword } : s);
       setStaffList(newList);
       saveMasterData({ staffList: newList });
+      const updatedUser = { ...appUser, password: trimmedPassword };
+      setAppUser(updatedUser);
+      writeSavedAuthSession(updatedUser);
       alert('パスワードを変更しました。次回ログイン時から有効です。');
     }
     
@@ -5669,6 +5781,26 @@ ${messageText}`;
     return stats;
   }, [staffList, shiftData, shiftDefs, daysArray]);
 
+  const staffKikuriStats = useMemo(() => {
+    const stats = {};
+    staffList.forEach(staff => {
+      let count = 0;
+      daysArray.forEach(day => {
+        if (isSunday(year, month, day)) return;
+        const code = shiftData[staff.id]?.[day];
+        if (!code) return;
+        const def = shiftDefs[code];
+        if (!def || getEffectiveShiftType(def, categoryDefs) !== 'shift') return;
+        const catLabel = (categoryDefs[def.category]?.label || '').trim();
+        if (def.category === 'kikuri' || catLabel === '木クリ') {
+          count += 1;
+        }
+      });
+      stats[staff.id] = count;
+    });
+    return stats;
+  }, [staffList, shiftData, shiftDefs, categoryDefs, daysArray, year, month]);
+
   const dailyStats = useMemo(() => {
     const stats = {};
     daysArray.forEach(day => {
@@ -5948,26 +6080,98 @@ ${messageText}`;
     return list;
   }, [staffList, currentView, appUser, viewMode]);
 
+  const applyAuthenticatedUser = useCallback((user, { persist = true } = {}) => {
+    if (!user) return;
+    setAppUser(user);
+    if (user.initialView) {
+      setCurrentView(user.initialView);
+    } else {
+      setCurrentView('all'); // 職員の場合は必ず'all'にリセット
+    }
+    if (user.role === 'admin') {
+      setTargetAdminKey(user.initialView || 'all');
+      if (user.initialView !== 'all') {
+        setActiveSettingsTab(prev => (prev === 'teamAdmin' ? 'password' : prev));
+      }
+    }
+    if (user.role === 'staff') {
+      setViewMode('personal');
+    }
+    if (persist) {
+      writeSavedAuthSession(user, adminSettings);
+    }
+  }, [adminSettings]);
+
+  const handleLogout = () => {
+    writeSavedAuthSession(null);
+    setAppUser(null);
+    setCurrentView('all');
+    setViewMode('personal');
+    setActivePopup(null);
+  };
+
+  const handleChangeMonth = (delta) => {
+    let nm = month + delta;
+    let ny = year;
+    if (nm < 1) {
+      nm = 12;
+      ny -= 1;
+    } else if (nm > 12) {
+      nm = 1;
+      ny += 1;
+    }
+    // 次月・前月へ移動した瞬間に当月データが表示/誤保存されないよう即座にクリア
+    updateLoadedScheduleId(null);
+    setActivePopup(null);
+    setShiftData({});
+    setTaskData({});
+    setBellData({});
+    setLeaderData({});
+    setUserInputs({});
+    setPrevMonthShiftData({});
+    setChangeLogs([]);
+    setMonth(nm);
+    setYear(ny);
+  };
+
+  // ページ再読み込み時に保存済みセッションからログイン状態を自動復元
+  useEffect(() => {
+    if (!isDataLoaded || !isRestoringSession) return;
+    const saved = readSavedAuthSession();
+    let restoredUser = null;
+    if (saved?.role === 'admin') {
+      const viewKey = saved.initialView || 'all';
+      const adminEntry = adminSettings?.[viewKey];
+      if (adminEntry && (!saved.sig || saved.sig === createAuthFingerprint(adminEntry.password ?? ''))) {
+        restoredUser = { role: 'admin', name: '管理者', initialView: viewKey };
+      }
+    } else if (saved?.role === 'staff') {
+      const matchedStaff = staffList.find(s => s.id === saved.staffId);
+      if (matchedStaff && (!saved.sig || saved.sig === createAuthFingerprint(matchedStaff.password ?? ''))) {
+        restoredUser = { role: 'staff', ...matchedStaff };
+      }
+    }
+    if (restoredUser) {
+      applyAuthenticatedUser(restoredUser, { persist: false });
+    } else {
+      writeSavedAuthSession(null);
+    }
+    setIsRestoringSession(false);
+  }, [isDataLoaded, isRestoringSession, adminSettings, staffList, applyAuthenticatedUser]);
+
   // --- Render ---
+  if (!appUser && isRestoringSession) return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
+      <div className="bg-white px-6 py-5 rounded-xl shadow flex items-center gap-3 text-gray-700 font-bold text-sm">
+        <Loader2 className="animate-spin text-blue-600" size={20} />
+        <span>ログイン状態を確認中...</span>
+      </div>
+    </div>
+  );
+
   if (!appUser) return (
     <LoginScreen 
-      onLogin={(user) => { 
-        setAppUser(user); 
-        if (user.initialView) {
-          setCurrentView(user.initialView); 
-        } else {
-          setCurrentView('all'); // 職員の場合は必ず'all'にリセット
-        }
-        if (user.role === 'admin') {
-          setTargetAdminKey(user.initialView || 'all');
-          if (user.initialView !== 'all') {
-            setActiveSettingsTab(prev => (prev === 'teamAdmin' ? 'password' : prev));
-          }
-        }
-        if (user.role === 'staff') {
-          setViewMode('personal'); 
-        }
-      }} 
+      onLogin={(user) => applyAuthenticatedUser(user, { persist: true })} 
       staffList={staffList} adminSettings={adminSettings}
       isDataLoaded={isDataLoaded} // ★追加
     />
@@ -6033,9 +6237,14 @@ ${messageText}`;
       <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
         <div className="flex items-center gap-2 sm:gap-4 shrink-0">
           <div className="flex items-center bg-gray-50 rounded-lg p-1 border shrink-0">
-            <button onClick={() => { let nm = month - 1, ny = year; if(nm < 1){ nm = 12; ny--; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronLeft size={18} className="sm:w-5 sm:h-5" /></button>
-            <div className="px-2 sm:px-4 font-bold text-sm sm:text-lg text-gray-700 min-w-[70px] sm:min-w-[100px] text-center whitespace-nowrap">{year}/{month}</div>
-            <button onClick={() => { let nm = month + 1, ny = year; if(nm > 12){ nm = 1; ny++; } setMonth(nm); setYear(ny); }} className="p-1 hover:bg-gray-200 rounded"><ChevronRight size={18} className="sm:w-5 sm:h-5" /></button>
+            <button onClick={() => handleChangeMonth(-1)} className="p-1 hover:bg-gray-200 rounded" title="前月"><ChevronLeft size={18} className="sm:w-5 sm:h-5" /></button>
+            <div className="px-2 sm:px-4 font-bold text-sm sm:text-lg text-gray-700 min-w-[70px] sm:min-w-[100px] text-center whitespace-nowrap flex items-center justify-center gap-1">
+              <span>{year}/{month}</span>
+              {loadedScheduleId !== `schedule_${year}_${month}` && (
+                <Loader2 size={14} className="animate-spin text-blue-500 shrink-0" title="読み込み中" />
+              )}
+            </div>
+            <button onClick={() => handleChangeMonth(1)} className="p-1 hover:bg-gray-200 rounded" title="次月"><ChevronRight size={18} className="sm:w-5 sm:h-5" /></button>
           </div>
           <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 truncate max-w-[110px] sm:max-w-none ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
             {appUser.role === 'admin' ? (adminSettings[appUser.initialView]?.label || '管理者') : `${appUser.name}`}
@@ -6098,7 +6307,7 @@ ${messageText}`;
                  <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
                </button>
                <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
-               <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
+               <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
              </>
            )}
            {appUser.role === 'admin' && !isMasterAdmin && (
@@ -6115,7 +6324,7 @@ ${messageText}`;
                  <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
                </button>
                <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
-               <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
+               <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
              </>
            )}
            {appUser.role === 'staff' && (
@@ -6132,7 +6341,7 @@ ${messageText}`;
                >
                  <Key size={16} /> <span className="hidden sm:inline ml-1 text-sm font-bold">パスワード</span>
                </button>
-               <button onClick={() => { setAppUser(null); setCurrentView('all'); setViewMode('personal'); }} className="flex items-center justify-center p-1.5 sm:px-3 sm:py-1.5 hover:bg-red-100 hover:text-red-600 text-gray-600 rounded-md transition shrink-0" title="ログアウト">
+               <button onClick={handleLogout} className="flex items-center justify-center p-1.5 sm:px-3 sm:py-1.5 hover:bg-red-100 hover:text-red-600 text-gray-600 rounded-md transition shrink-0" title="ログアウト">
                  <LogOut size={16} /> <span className="hidden sm:inline ml-1 text-sm font-bold">ログアウト</span>
                </button>
              </div>
@@ -6162,9 +6371,12 @@ ${messageText}`;
           <div className="inline-block min-w-full align-middle p-4">
             {viewMode === 'personal' && appUser.role === 'staff' ? (
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
-                <div className="bg-gray-50 px-4 py-3 border-b flex items-center justify-between">
+                <div className="bg-gray-50 px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
-                  <div className="text-xs text-gray-500">残業合計: <span className="font-bold text-red-600 text-sm">{staffOvertimeStats[appUser.id] || 0}h</span></div>
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                    <div>木クリ: <span className="font-bold text-yellow-700 text-sm">{staffKikuriStats[appUser.id] || 0}回</span></div>
+                    <div>残業合計: <span className="font-bold text-red-600 text-sm">{staffOvertimeStats[appUser.id] || 0}h</span></div>
+                  </div>
                 </div>
                 <div className="px-4 py-1.5 bg-white border-b flex flex-wrap items-center justify-between gap-1 text-[10px] sm:text-xs text-gray-500">
                   <span>※日付横の「休○」は現在の休み希望人数（パート除く）</span>
