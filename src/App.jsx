@@ -420,6 +420,57 @@ const isMeShiftDef = (code, shiftDefs = {}, categoryDefs = {}) => {
   );
 };
 
+const LIGHT_BG_CLASS_BY_HUE = {
+  blue: 'bg-blue-100',
+  green: 'bg-green-100',
+  yellow: 'bg-yellow-100',
+  purple: 'bg-purple-100',
+  red: 'bg-red-100',
+  pink: 'bg-pink-100',
+  orange: 'bg-orange-100',
+  indigo: 'bg-indigo-100',
+  teal: 'bg-teal-100',
+  sky: 'bg-sky-100',
+  emerald: 'bg-emerald-100',
+  amber: 'bg-amber-100',
+  gray: 'bg-gray-200',
+};
+
+const extractColorHue = (classStr = '', ignoreGray = true) => {
+  const matches = String(classStr || '').match(/\b(?:text|bg)-([a-z]+)-\d+\b/g) || [];
+  for (const cls of matches) {
+    const hue = cls.split('-')[1];
+    if (hue && (!ignoreGray || hue !== 'gray') && LIGHT_BG_CLASS_BY_HUE[hue]) {
+      return hue;
+    }
+  }
+  return null;
+};
+
+const resolveLightBgFromShiftOrCategory = (shiftDef, categoryDef) => {
+  const shiftHue = extractColorHue(shiftDef?.text, true);
+  if (shiftHue) return LIGHT_BG_CLASS_BY_HUE[shiftHue];
+  const catHue = extractColorHue(categoryDef?.color, true);
+  if (catHue) return LIGHT_BG_CLASS_BY_HUE[catHue];
+  return 'bg-blue-100';
+};
+
+const isLeaderHighlightTargetFacility = (cat) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
+  const id = String(cat.id || '').trim();
+  const lbl = String(cat.label || '').trim();
+  return id === 'saka' || id === 'kimi' || lbl.includes('坂') || lbl.includes('君');
+};
+
+const isMeHighlightTargetShiftDef = (code, isHol, shiftDefs = {}, categoryDefs = {}) => {
+  if (!code || !shiftDefs[code] || !isMeShiftDef(code, shiftDefs, categoryDefs)) return false;
+  const normLabel = String(shiftDefs[code].label || '').trim();
+  if (isHol) {
+    return normLabel === 'G' || normLabel === 'Ｇ' || (code === 'G' && normLabel === 'G');
+  }
+  return normLabel === 'L' || normLabel === 'Ｌ' || (code === 'L' && normLabel === 'L');
+};
+
 const getHolidayMeTargetCount = (code, shiftDefs = {}, categoryDefs = {}, fallbackCount = 0) => {
   const def = shiftDefs[code];
   if (!def || !isMeShiftDef(code, shiftDefs, categoryDefs)) return fallbackCount;
@@ -1349,6 +1400,7 @@ export default function WorkScheduleApp() {
   const [shiftData, setShiftData] = useState({});
   const [prevMonthShiftData, setPrevMonthShiftData] = useState({}); // Step 3: 前月シフトの引き継ぎ用データ
   const [taskData, setTaskData] = useState({});
+  const [bellData, setBellData] = useState({}); // カテゴリ1: 緊急待機番(ベル)のタスク欄背景色フラグ
   const [userInputs, setUserInputs] = useState({}); // ★追加：個人が入力した箇所を記憶するリスト
 
   const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
@@ -1582,10 +1634,12 @@ export default function WorkScheduleApp() {
         const data = docSnap.data();
         setShiftData(data.shifts || {});
         setTaskData(data.tasks || {});
+        setBellData(data.bells || {});
         setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
       } else {
         setShiftData({});
         setTaskData({});
+        setBellData({});
         setUserInputs({});
       }
     });
@@ -1629,18 +1683,18 @@ export default function WorkScheduleApp() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
 
-// ★引数に newUserInputs を追加し、デフォルト値として現在の userInputs を設定します
-  const saveSchedule = async (newShifts, newTasks, newUserInputs = userInputs) => {
+// ★引数に newUserInputs / newBells を追加し、デフォルト値として現在の状態を維持します
+  const saveSchedule = async (newShifts, newTasks, newUserInputs = userInputs, newBells = bellData) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     
     try {
-      // ★ userInputs も一緒に保存します
-      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs });
+      // ★ userInputs / bells も一緒に保存します
+      await updateDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs, bells: newBells });
     } catch (e) {
       if (e.code === 'not-found') {
-        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs });
+        await setDoc(scheduleDocRef, { shifts: newShifts, tasks: newTasks, userInputs: newUserInputs, bells: newBells });
       } else {
         console.error("Save error:", e);
       }
@@ -2221,6 +2275,26 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     }
   };
 
+  // 緊急待機番(ベル)のタスク欄背景色（オレンジ）をタスク内容を変更せずにON/OFF切り替え
+  const handleToggleBell = (staffId, day) => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isSunday(year, month, day)) return;
+    const nextBells = { ...bellData };
+    const staffBells = nextBells[staffId] ? { ...nextBells[staffId] } : {};
+    if (staffBells[day]) {
+      delete staffBells[day];
+    } else {
+      staffBells[day] = true;
+    }
+    if (Object.keys(staffBells).length > 0) {
+      nextBells[staffId] = staffBells;
+    } else {
+      delete nextBells[staffId];
+    }
+    setBellData(nextBells);
+    saveSchedule(shiftData, taskData, userInputs, nextBells);
+  };
+
   const handleCellClick = (e, staffId, day, type) => {
     // AI自動作成のライブ仮反映中は誤編集防止のためセル操作をロック（スクロール閲覧のみ可能）
     if (isAutoFillRunningRef.current) return;
@@ -2755,8 +2829,9 @@ const handleResetSchedule = () => {
         // 抽出したデータで上書き保存します
         setShiftData(newShiftData);
         setTaskData(newTaskData);
+        setBellData({});
         setUserInputs(newUserInputs);
-        saveSchedule(newShiftData, newTaskData, newUserInputs);
+        saveSchedule(newShiftData, newTaskData, newUserInputs, {});
         
         alert('個人が入力したシフトを残して、その他のデータをリセットしました。');
       }
@@ -5678,6 +5753,49 @@ ${messageText}`;
     return counts;
   }, [daysArray, year, month, staffList, shiftData, userInputs, countedOffShifts]);
 
+  // カテゴリ1: 各施設(君津・坂田)の先頭リーダーおよびME室L/祝日Gの自動背景色マップを計算
+  const autoShiftHighlightMap = useMemo(() => {
+    const map = {};
+    const targetLeaderCats = Object.values(categoryDefs)
+      .filter(cat => isLeaderHighlightTargetFacility(cat))
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+
+    daysArray.forEach(day => {
+      if (isSunday(year, month, day)) return;
+      const isHol = isHoliday(year, month, day, clinicClosedDays);
+
+      // 1. 各施設(君津・坂田)のリーダー：複数人いる場合はstaffList上で一番上の人のみ施設文字色の薄い背景色を付与
+      targetLeaderCats.forEach(cat => {
+        for (let i = 0; i < staffList.length; i++) {
+          const s = staffList[i];
+          if (!s?.skills?.isLeader) continue;
+          const code = shiftData[s.id]?.[day];
+          const def = code ? shiftDefs[code] : null;
+          if (def && getEffectiveShiftType(def, categoryDefs) === 'shift' && def.category === cat.id) {
+            map[`${s.id}_${day}`] = {
+              bgClass: resolveLightBgFromShiftOrCategory(def, cat),
+              tooltip: `【${cat.label} リーダー】`,
+            };
+            break;
+          }
+        }
+      });
+
+      // 2. ME室：通常営業日は「L」、祝日・外来休診日は「G」を薄い灰色で自動色付け
+      staffList.forEach(s => {
+        const code = shiftData[s.id]?.[day];
+        if (code && isMeHighlightTargetShiftDef(code, isHol, shiftDefs, categoryDefs)) {
+          map[`${s.id}_${day}`] = {
+            bgClass: 'bg-gray-200',
+            tooltip: isHol ? '【ME室 G（祝日・休診日）】' : '【ME室 L】',
+          };
+        }
+      });
+    });
+
+    return map;
+  }, [daysArray, year, month, clinicClosedDays, staffList, shiftData, shiftDefs, categoryDefs]);
+
   // 基本設定タブ用: 個人カレンダーで選択可能なシフト（希望・休み・その他[公出等]・シフト希望表示ON）のみに絞り込み、設定画面が雑多にならないよう整理
   const basicSettingsShiftGroups = useMemo(() => {
     const priorityByKind = { req: 0, off: 1, basic: 2 };
@@ -5958,6 +6076,8 @@ ${messageText}`;
                     const day = cell.currentMonth ? cell.day : null;
                     const shiftCode = day ? shiftData[appUser.id]?.[day] : null;
                     const taskCode = day ? taskData[appUser.id]?.[day] : null;
+                    const hasBell = day ? Boolean(bellData[appUser.id]?.[day]) : false;
+                    const autoHighlight = day ? autoShiftHighlightMap[`${appUser.id}_${day}`] : null;
                     const shift = shiftDefs[shiftCode];
                     const task = shiftDefs[taskCode];
                     const reqShiftCode = day ? getUserRequestedShift(appUser.id, day) : null;
@@ -6011,7 +6131,7 @@ ${messageText}`;
                               title={reqReason ? `希望理由: ${reqReason}` : isSun && isEditable ? '日曜日は「公出」のみ入力可能です' : ''}
                               className={`flex-1 relative rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
                                 ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
-                                  shift ? 'bg-white border-blue-200 shadow-sm' :
+                                  shift ? `${autoHighlight?.bgClass || 'bg-white'} border-blue-200 shadow-sm` :
                                   reqShiftCode ? 'bg-pink-50/60 border-dashed border-pink-300' : 'bg-transparent border-dashed border-gray-300'} 
                                 ${isEditable ? 'hover:border-blue-400' : ''}`}
                             >
@@ -6037,7 +6157,11 @@ ${messageText}`;
                                 <span className="text-[8px] text-gray-300">{isSun ? '' : '選択'}</span>
                               )}
                             </div>
-                            {task && <div className="text-[8px] text-center border rounded bg-white text-gray-600">{task.label}</div>}
+                            {(task || hasBell) && (
+                              <div className={`text-[8px] text-center border rounded font-bold ${hasBell ? 'bg-orange-200 border-orange-300 text-orange-900' : 'bg-white text-gray-600'}`}>
+                                {task ? task.label : '待機'}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -6182,6 +6306,8 @@ ${messageText}`;
                           {daysArray.map(day => {
                             const shiftCode = shiftData[staff.id]?.[day];
                             const taskCode = taskData[staff.id]?.[day];
+                            const hasBell = Boolean(bellData[staff.id]?.[day]);
+                            const autoShiftHighlight = autoShiftHighlightMap[`${staff.id}_${day}`];
                             const shift = shiftDefs[shiftCode];
                             const task = shiftDefs[taskCode];
                             const reqShiftCode = getUserRequestedShift(staff.id, day);
@@ -6206,6 +6332,9 @@ ${messageText}`;
 
                             // ツールチップ用のテキスト生成（希望履歴・理由は管理者のみ表示。スタッフ自身は自分のセルのみ理由を確認可能）
                             const shiftTooltips = [];
+                            if (autoShiftHighlight?.tooltip) {
+                              shiftTooltips.push(autoShiftHighlight.tooltip);
+                            }
                             if (teamShiftLock) {
                               shiftTooltips.push(`【${TEAM_ADMIN_LABELS[teamShiftLock]}入力】AI変更ロック中（条件計算には反映）`);
                             }
@@ -6230,6 +6359,9 @@ ${messageText}`;
                             const tooltipText = shiftTooltips.join('\n\n');
 
                             const taskTooltips = [];
+                            if (hasBell) {
+                              taskTooltips.push('【緊急待機番（ベル）】背景色オレンジ');
+                            }
                             if (teamTaskLock) {
                               taskTooltips.push(`【${TEAM_ADMIN_LABELS[teamTaskLock]}タスク】AI変更ロック中`);
                             }
@@ -6248,9 +6380,10 @@ ${messageText}`;
                                 <div className="w-full h-full flex flex-col">
                                   {/* シフト表示部分(上3/4)にだけスタイルとツールチップを適用 */}
                                   <div 
-                                    className={`h-3/4 relative flex items-center justify-center border-b border-gray-100 transition hover:bg-black/5 
-                                      ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10' : ''} 
-                                      ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
+                                    className={`h-3/4 relative flex items-center justify-center border-b border-gray-100 transition 
+                                      ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10 hover:bg-yellow-100' : ''} 
+                                      ${!hasLog && activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
+                                      ${!hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') && autoShiftHighlight ? `${autoShiftHighlight.bgClass} hover:brightness-95` : !hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') ? 'hover:bg-black/5' : ''}
                                     `}
                                     title={tooltipText} 
                                     onClick={(e) => { if(isShiftEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
@@ -6275,8 +6408,12 @@ ${messageText}`;
                                   
                                   {/* タスク表示部分(下1/4) */}
                                   <div
-                                    className={`h-1/4 relative flex items-center justify-center transition hover:bg-black/5
-                                      ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
+                                    className={`h-1/4 relative flex items-center justify-center transition
+                                      ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task'
+                                        ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10'
+                                        : hasBell
+                                          ? 'bg-orange-200 hover:bg-orange-300/80'
+                                          : 'hover:bg-black/5'}
                                     `}
                                     title={taskTooltip}
                                     onClick={(e) => { if(isTaskEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
@@ -6531,6 +6668,29 @@ ${messageText}`;
                   </div>
                 </div>
               )}
+              {appUser.role === 'admin' && activePopup.type === 'task' && !isSunday(year, month, activePopup.day) && (() => {
+                const isBellActive = Boolean(bellData[activePopup.staffId]?.[activePopup.day]);
+                return (
+                  <button
+                    type="button"
+                    onClick={() => { handleToggleBell(activePopup.staffId, activePopup.day); setActivePopup(null); }}
+                    className={`mb-2.5 w-full py-2 px-3 rounded-lg border text-xs font-bold flex items-center justify-between transition shrink-0 ${
+                      isBellActive
+                        ? 'bg-orange-200 border-orange-400 text-orange-900 hover:bg-orange-300 shadow-xs'
+                        : 'bg-orange-50/70 border-orange-200 text-orange-800 hover:bg-orange-100'
+                    }`}
+                    title="入っているタスク内容を変えずにタスク欄の背景色（オレンジ）だけをON/OFFします"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className={`inline-block w-3 h-3 rounded-sm border ${isBellActive ? 'bg-orange-500 border-orange-600' : 'bg-orange-200 border-orange-300'}`} />
+                      <span>緊急待機番（ベル）色付け</span>
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${isBellActive ? 'bg-orange-600 text-white' : 'bg-white text-orange-700 border border-orange-300'}`}>
+                      {isBellActive ? 'ON（外す）' : 'OFF（付ける）'}
+                    </span>
+                  </button>
+                );
+              })()}
               {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンは全体管理者・個人・または自班が入力したセルのみ表示。 */}
               <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
                 {teamClearPerm.allowed && (
