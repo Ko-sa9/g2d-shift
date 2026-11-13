@@ -2319,7 +2319,6 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   // 緊急待機番(ベル)のタスク欄背景色（オレンジ）をタスク内容を変更せずにON/OFF切り替え
   const handleToggleBell = (staffId, day) => {
     if (!appUser || appUser.role !== 'admin') return;
-    if (isSunday(year, month, day)) return;
     const nextBells = { ...bellData };
     const staffBells = nextBells[staffId] ? { ...nextBells[staffId] } : {};
     if (staffBells[day]) {
@@ -2379,8 +2378,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     // AI自動作成のライブ仮反映中は誤編集防止のためセル操作をロック（スクロール閲覧のみ可能）
     if (isAutoFillRunningRef.current) return;
     if (isSunday(year, month, day)) {
-      const hasKoushutsu = Object.values(shiftDefs).some(s => isKoushutsuShiftDef(s, categoryDefs));
-      if (type !== 'shift' || !hasKoushutsu) return;
+      if (type === 'task') {
+        if (!appUser || appUser.role !== 'admin') return;
+      } else {
+        const hasKoushutsu = Object.values(shiftDefs).some(s => isKoushutsuShiftDef(s, categoryDefs));
+        if (type !== 'shift' || !hasKoushutsu) return;
+      }
     }
     const rect = e.currentTarget.getBoundingClientRect();
     if (type === 'shift') {
@@ -6231,15 +6234,16 @@ ${messageText}`;
                           )}
                         </div>
                         {cell.currentMonth && (
-                          <div className="flex-1 flex flex-col gap-1">
+                          <div className="flex-1 flex flex-col rounded border border-gray-200 overflow-hidden bg-white">
+                            {/* シフト表示部分(上1/2) */}
                             <div 
                               onClick={(e) => { if(isEditable) { e.stopPropagation(); handleCellClick(e, appUser.id, day, 'shift'); }}}
                               title={reqReason ? `希望理由: ${reqReason}` : isSun && isEditable ? '日曜日は「公出」のみ入力可能です' : ''}
-                              className={`flex-1 relative rounded border flex flex-col items-center justify-center cursor-pointer transition px-0.5
-                                ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-blue-500 bg-blue-50' : 
-                                  shift ? `${autoHighlight?.bgClass || 'bg-white'} border-blue-200 shadow-sm` :
-                                  reqShiftCode ? 'bg-pink-50/60 border-dashed border-pink-300' : 'bg-transparent border-dashed border-gray-300'} 
-                                ${isEditable ? 'hover:border-blue-400' : ''}`}
+                              className={`h-1/2 flex-1 relative border-b border-gray-100 flex flex-col items-center justify-center transition px-0.5
+                                ${activePopup?.day === day && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50' : 
+                                  shift ? `${autoHighlight?.bgClass || 'bg-white'}` :
+                                  reqShiftCode ? 'bg-pink-50/60' : 'bg-transparent'} 
+                                ${isEditable ? 'cursor-pointer hover:bg-blue-50/40' : ''}`}
                             >
                               {reqReason && (
                                 <MessageSquare size={9} className="absolute top-1 right-1 text-pink-500 fill-pink-100 pointer-events-none" />
@@ -6263,11 +6267,19 @@ ${messageText}`;
                                 <span className="text-[8px] text-gray-300">{isSun ? '' : '選択'}</span>
                               )}
                             </div>
-                            {(task || hasBell) && (
-                              <div className={`text-[8px] text-center border rounded font-bold ${hasBell ? 'bg-orange-200 border-orange-300 text-orange-900' : 'bg-white text-gray-600'}`}>
-                                {task ? task.label : '待機'}
-                              </div>
-                            )}
+                            {/* タスク表示部分(下1/2) */}
+                            <div
+                              title={hasBell && !task ? '緊急待機番（ベル）' : hasBell && task ? `${task.label}（緊急待機番・ベル）` : ''}
+                              className={`h-1/2 flex-1 relative flex items-center justify-center px-0.5 transition ${
+                                hasBell ? 'bg-orange-200' : 'bg-white'
+                              }`}
+                            >
+                              {task && (
+                                <span className={`font-bold text-xs leading-tight truncate max-w-full ${task.text || 'text-gray-700'}`}>
+                                  {task.label}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -6424,7 +6436,7 @@ ${messageText}`;
                             const teamShiftLock = appUser.role === 'admin' ? getTeamLockedShiftSource(staff.id, day) : null;
                             const teamTaskLock = appUser.role === 'admin' ? getTeamLockedTaskSource(staff.id, day) : null;
                             const isSun = isSunday(year, month, day);
-                            const isTaskEditable = !isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
+                            const isTaskEditable = (!isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id))) || (isSun && appUser.role === 'admin');
                             const isShiftEditable = (!isSun || hasKoushutsuShiftDef) && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
                             
                             // 該当するログを探す
@@ -6484,9 +6496,9 @@ ${messageText}`;
                             return (
                               <td key={day} className={`border-b border-r text-center p-0 h-16 relative ${cellBg}`}>
                                 <div className="w-full h-full flex flex-col">
-                                  {/* シフト表示部分(上3/4)にだけスタイルとツールチップを適用 */}
+                                  {/* シフト表示部分(上1/2)にだけスタイルとツールチップを適用 */}
                                   <div 
-                                    className={`h-3/4 relative flex items-center justify-center border-b border-gray-100 transition 
+                                    className={`h-1/2 relative flex items-center justify-center border-b border-gray-100 transition 
                                       ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10 hover:bg-yellow-100' : ''} 
                                       ${!hasLog && activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
                                       ${!hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') && autoShiftHighlight ? `${autoShiftHighlight.bgClass} hover:brightness-95` : !hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') ? 'hover:bg-black/5' : ''}
@@ -6512,14 +6524,15 @@ ${messageText}`;
                                     {shift ? <span className={`font-bold text-xs ${shift.text}`}>{shift.label}</span> : null}
                                   </div>
                                   
-                                  {/* タスク表示部分(下1/4) */}
+                                  {/* タスク表示部分(下1/2) */}
                                   <div
-                                    className={`h-1/4 relative flex items-center justify-center transition
+                                    className={`h-1/2 relative flex items-center justify-center transition
+                                      ${isTaskEditable ? 'cursor-pointer' : ''}
                                       ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task'
                                         ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10'
                                         : hasBell
                                           ? 'bg-orange-200 hover:bg-orange-300/80'
-                                          : 'hover:bg-black/5'}
+                                          : isTaskEditable ? 'hover:bg-black/5' : ''}
                                     `}
                                     title={taskTooltip}
                                     onClick={(e) => { if(isTaskEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'task'); } }}
@@ -6807,12 +6820,12 @@ ${messageText}`;
                       <span>{curCat.label} リーダー色付け（手動）</span>
                     </span>
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${isManualOn ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 border border-gray-300'}`}>
-                      {isManualOn ? 'ON（外す）' : 'OFF（付ける）'}
+                      {isManualOn ? 'ON' : 'OFF'}
                     </span>
                   </button>
                 );
               })()}
-              {appUser.role === 'admin' && activePopup.type === 'task' && !isSunday(year, month, activePopup.day) && (() => {
+              {appUser.role === 'admin' && activePopup.type === 'task' && (() => {
                 const isBellActive = Boolean(bellData[activePopup.staffId]?.[activePopup.day]);
                 return (
                   <button
@@ -6830,45 +6843,53 @@ ${messageText}`;
                       <span>緊急待機番（ベル）色付け</span>
                     </span>
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${isBellActive ? 'bg-orange-600 text-white' : 'bg-white text-orange-700 border border-orange-300'}`}>
-                      {isBellActive ? 'ON（外す）' : 'OFF（付ける）'}
+                      {isBellActive ? 'ON' : 'OFF'}
                     </span>
                   </button>
                 );
               })()}
               {/* PC時は4列、スマホ時は4～6列に調整。クリアボタンは全体管理者・個人・または自班が入力したセルのみ表示。 */}
-              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
-                {teamClearPerm.allowed && (
-                  <button
-                    onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
-                    className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
-                    title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
-                  >
-                    クリア
-                  </button>
-                )}
-                {popupOptions.map(shift => (
-                  <button
-                    key={shift.code}
-                    onClick={() => {
-                      handleUpdateCell(
-                        activePopup.staffId,
-                        activePopup.day,
-                        shift.code,
-                        activePopup.type,
-                        appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
-                      );
-                      setActivePopup(null);
-                    }}
-                    className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
-                    title={shift.label}
-                  >
-                    {shift.label}
-                  </button>
-                ))}
-              </div>
-              {popupOptions.length === 0 && (
-                <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
-                  この班で入力可能な項目は設定されていません
+              {!(activePopup.type === 'task' && isSunday(year, month, activePopup.day)) ? (
+                <>
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-4 gap-2 overflow-y-auto flex-1 min-h-0 max-h-[40vh] md:max-h-[45vh] p-1">
+                    {teamClearPerm.allowed && (
+                      <button
+                        onClick={() => { handleUpdateCell(activePopup.staffId, activePopup.day, null, activePopup.type); setActivePopup(null); }}
+                        className="h-12 md:h-9 text-xs text-red-500 border border-red-200 bg-red-50 rounded hover:bg-red-100 flex items-center justify-center font-bold"
+                        title={appUser.role === 'admin' && popupReqCode ? 'セルを空欄にします（個人の希望履歴・理由は保持されます）' : 'クリア'}
+                      >
+                        クリア
+                      </button>
+                    )}
+                    {popupOptions.map(shift => (
+                      <button
+                        key={shift.code}
+                        onClick={() => {
+                          handleUpdateCell(
+                            activePopup.staffId,
+                            activePopup.day,
+                            shift.code,
+                            activePopup.type,
+                            appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
+                          );
+                          setActivePopup(null);
+                        }}
+                        className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
+                        title={shift.label}
+                      >
+                        {shift.label}
+                      </button>
+                    ))}
+                  </div>
+                  {popupOptions.length === 0 && (
+                    <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
+                      この班で入力可能な項目は設定されていません
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-[11px] text-gray-500 text-center py-2 shrink-0">
+                  日曜日のタスク欄は緊急待機番（ベル）の色付けのみ設定可能です
                 </p>
               )}
             </div>
