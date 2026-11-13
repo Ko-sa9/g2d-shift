@@ -1471,6 +1471,21 @@ export default function WorkScheduleApp() {
   const [userInputs, setUserInputs] = useState({}); // ★追加：個人が入力した箇所を記憶するリスト
 
   const [changeLogs, setChangeLogs] = useState([]); // ★追加：変更ログ用
+  // カテゴリ3(B案): 確定後（締切後）の勤務交換(A⇔B)・休み変更申請リスト
+  const [changeRequests, setChangeRequests] = useState([]);
+  const [showChangeRequestModal, setShowChangeRequestModal] = useState(false);
+  const [showAdminChangeRequestsModal, setShowAdminChangeRequestsModal] = useState(false);
+  const [crMode, setCrMode] = useState('swap'); // 'swap' | 'single'
+  const [crRequesterDay, setCrRequesterDay] = useState(1);
+  const [crTargetStaffId, setCrTargetStaffId] = useState('');
+  const [crTargetDay, setCrTargetDay] = useState(1);
+  const [crSameDay, setCrSameDay] = useState(true);
+  const [crSwapShift, setCrSwapShift] = useState(true);
+  const [crSwapTask, setCrSwapTask] = useState(false);
+  const [crSwapBell, setCrSwapBell] = useState(false);
+  const [crSingleShiftCode, setCrSingleShiftCode] = useState('Y');
+  const [crClearTaskAndBell, setCrClearTaskAndBell] = useState(true);
+  const [crReason, setCrReason] = useState('');
   
   const [activePopup, setActivePopup] = useState(null);
   const [popupReasonText, setPopupReasonText] = useState('');
@@ -1713,6 +1728,7 @@ export default function WorkScheduleApp() {
     setBellData({});
     setLeaderData({});
     setUserInputs({});
+    setChangeRequests([]);
     setPrevMonthShiftData({});
     setActivePopup(null);
 
@@ -1730,12 +1746,14 @@ export default function WorkScheduleApp() {
           setBellData(data.bells || {});
           setLeaderData(data.leaders || {});
           setUserInputs(data.userInputs || {}); // ★追加: 保護リストを読み込む
+          setChangeRequests(Array.isArray(data.changeRequests) ? data.changeRequests : []);
         } else {
           setShiftData({});
           setTaskData({});
           setBellData({});
           setLeaderData({});
           setUserInputs({});
+          setChangeRequests([]);
         }
         updateLoadedScheduleId(scheduleId);
       },
@@ -1789,13 +1807,14 @@ export default function WorkScheduleApp() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [aiMessages]);
 
-// ★引数に newUserInputs / newBells / newLeaders を追加し、デフォルト値として現在の状態を維持します
+// ★引数に newUserInputs / newBells / newLeaders / newChangeRequests を追加し、デフォルト値として現在の状態を維持します
   const saveSchedule = async (
     newShifts,
     newTasks,
     newUserInputs = userInputs,
     newBells = bellData,
-    newLeaders = leaderData
+    newLeaders = leaderData,
+    newChangeRequests = changeRequests
   ) => {
     if (!authUser) return;
     const scheduleId = `schedule_${year}_${month}`;
@@ -1804,13 +1823,14 @@ export default function WorkScheduleApp() {
     const scheduleDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'schedules', scheduleId);
     
     try {
-      // ★ userInputs / bells / leaders も一緒に保存します
+      // ★ userInputs / bells / leaders / changeRequests も一緒に保存します
       await updateDoc(scheduleDocRef, {
         shifts: newShifts,
         tasks: newTasks,
         userInputs: newUserInputs,
         bells: newBells,
         leaders: newLeaders,
+        changeRequests: newChangeRequests,
       });
     } catch (e) {
       if (e.code === 'not-found') {
@@ -1820,6 +1840,7 @@ export default function WorkScheduleApp() {
           userInputs: newUserInputs,
           bells: newBells,
           leaders: newLeaders,
+          changeRequests: newChangeRequests,
         });
       } else {
         console.error("Save error:", e);
@@ -1919,35 +1940,362 @@ export default function WorkScheduleApp() {
     return '';
   };
 
-  // スタッフ入力時の締切日超過チェック共通関数
-  const checkIsAfterDeadlineForStaff = () => {
-    let isAfterDeadline = false;
+  // 当月がスタッフ入力の締切日を過ぎているか判定（カテゴリ3 B案の申請モード切替にも使用）
+  const isAfterDeadlineForCurrentMonth = useMemo(() => {
     const today = new Date();
-    const todayStr = today.getFullYear() + '-' + (today.getMonth() + 1).toString().padStart(2, '0') + '-' + today.getDate().toString().padStart(2, '0');
-    const deadlineDay = parseInt(adminSettings.deadlineDay);
+    const todayStr =
+      today.getFullYear() +
+      '-' +
+      (today.getMonth() + 1).toString().padStart(2, '0') +
+      '-' +
+      today.getDate().toString().padStart(2, '0');
+    const deadlineDay = parseInt(adminSettings.deadlineDay, 10);
 
     if (deadlineDay && !isNaN(deadlineDay)) {
       const deadlineDate = new Date(year, month - 2, deadlineDay);
-      const deadlineStr = deadlineDate.getFullYear() + '-' + (deadlineDate.getMonth() + 1).toString().padStart(2, '0') + '-' + deadlineDate.getDate().toString().padStart(2, '0');
+      const deadlineStr =
+        deadlineDate.getFullYear() +
+        '-' +
+        (deadlineDate.getMonth() + 1).toString().padStart(2, '0') +
+        '-' +
+        deadlineDate.getDate().toString().padStart(2, '0');
       if (todayStr > deadlineStr) {
-        isAfterDeadline = true;
+        return true;
       }
     } else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
-      isAfterDeadline = true;
-    }
-
-    if (isAfterDeadline) {
-      alert("締切日を過ぎているため、入力・変更はできません。\n変更が必要な場合は管理者へご連絡ください。");
       return true;
     }
     return false;
+  }, [year, month, adminSettings.deadlineDay, adminSettings.deadline]);
+
+  // カテゴリ3(B案): スタッフ用の勤務変更・交換申請モーダルを開く初期化ヘルパー
+  const openStaffChangeRequestModal = (initialDay = 1, defaultMode = 'swap') => {
+    if (!appUser || appUser.role !== 'staff') return;
+    const validDay = Math.max(1, Math.min(getDaysInMonth(year, month), Number(initialDay) || 1));
+    const otherStaff = staffList.filter(s => s.id !== appUser.id);
+    const defaultPartnerId =
+      crTargetStaffId && otherStaff.some(s => s.id === crTargetStaffId)
+        ? crTargetStaffId
+        : otherStaff[0]?.id || '';
+
+    const myTask = Boolean(taskData[appUser.id]?.[validDay]);
+    const myBell = Boolean(bellData[appUser.id]?.[validDay]);
+    const isSun = isSunday(year, month, validDay);
+
+    setCrMode(defaultMode);
+    setCrRequesterDay(validDay);
+    setCrTargetStaffId(defaultPartnerId);
+    setCrTargetDay(validDay);
+    setCrSameDay(true);
+    setCrSwapShift(!isSun || Boolean(shiftData[appUser.id]?.[validDay]));
+    setCrSwapTask(myTask);
+    setCrSwapBell(myBell || isSun);
+
+    const defaultOffCode = shiftDefs['Y']
+      ? 'Y'
+      : Object.values(shiftDefs).find(s => s && isOffOrReqCategoryId(s.category, categoryDefs))?.code || '__CLEAR__';
+    setCrSingleShiftCode(defaultOffCode);
+    setCrClearTaskAndBell(true);
+    setCrReason('');
+    setActivePopup(null);
+    setShowChangeRequestModal(true);
+  };
+
+  // スタッフ入力時の締切日超過チェック共通関数
+  const checkIsAfterDeadlineForStaff = (targetDay = 1) => {
+    if (isAfterDeadlineForCurrentMonth) {
+      openStaffChangeRequestModal(targetDay, 'swap');
+      return true;
+    }
+    return false;
+  };
+
+  // カテゴリ3(B案): スタッフ本人による勤務交換（A⇔B）・休み変更申請の送信
+  const handleSubmitChangeRequest = () => {
+    if (!appUser || appUser.role !== 'staff') return;
+    const reqDay = Number(crRequesterDay);
+    if (!reqDay || reqDay < 1 || reqDay > getDaysInMonth(year, month)) {
+      alert('対象日を正しく選択してください。');
+      return;
+    }
+
+    if (crMode === 'swap') {
+      if (!crTargetStaffId || crTargetStaffId === appUser.id) {
+        alert('交換相手の職員を選択してください。');
+        return;
+      }
+      const partner = staffList.find(s => s.id === crTargetStaffId);
+      if (!partner) {
+        alert('交換相手の職員情報が見つかりません。');
+        return;
+      }
+      const tDay = crSameDay ? reqDay : Number(crTargetDay);
+      if (!tDay || tDay < 1 || tDay > getDaysInMonth(year, month)) {
+        alert('相手の対象日を正しく選択してください。');
+        return;
+      }
+      if (!crSwapShift && !crSwapTask && !crSwapBell) {
+        alert('入れ替える項目（シフト・タスク・緊急待機番ベル）を1つ以上選択してください。');
+        return;
+      }
+
+      const myS = shiftData[appUser.id]?.[reqDay] || null;
+      const myT = taskData[appUser.id]?.[reqDay] || null;
+      const myB = Boolean(bellData[appUser.id]?.[reqDay]);
+      const partnerS = shiftData[crTargetStaffId]?.[tDay] || null;
+      const partnerT = taskData[crTargetStaffId]?.[tDay] || null;
+      const partnerB = Boolean(bellData[crTargetStaffId]?.[tDay]);
+
+      const hasAnyDiff =
+        (crSwapShift && myS !== partnerS) ||
+        (crSwapTask && myT !== partnerT) ||
+        (crSwapBell && myB !== partnerB);
+      if (!hasAnyDiff) {
+        alert('選択された項目は現在あなたと交換相手で同じ内容のため、入れ替えによる変化がありません。');
+        return;
+      }
+
+      const newReq = {
+        id: `cr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        createdAt: new Date().toISOString(),
+        status: 'pending',
+        type: 'swap',
+        requestType: 'swap',
+        requesterId: appUser.id,
+        requesterName: appUser.name,
+        requesterDay: reqDay,
+        targetStaffId: crTargetStaffId,
+        targetStaffName: partner.name,
+        targetDay: tDay,
+        swapShift: Boolean(crSwapShift),
+        swapTask: Boolean(crSwapTask),
+        swapBell: Boolean(crSwapBell),
+        reason: (crReason || '').trim().slice(0, 100),
+        requesterShift: myS,
+        targetShift: partnerS,
+        snapshot: {
+          requesterShift: myS,
+          requesterTask: myT,
+          requesterBell: myB,
+          targetShift: partnerS,
+          targetTask: partnerT,
+          targetBell: partnerB,
+        },
+        resolvedAt: null,
+      };
+
+      const nextList = [newReq, ...changeRequests];
+      setChangeRequests(nextList);
+      saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextList);
+      setCrReason('');
+      alert(`${partner.name}さんとのシフト交換申請を送信しました。\n管理者の承認後に勤務表へ反映されます。`);
+    } else {
+      const currentS = shiftData[appUser.id]?.[reqDay] || null;
+      const targetS = !crSingleShiftCode || crSingleShiftCode === '__CLEAR__' ? null : crSingleShiftCode;
+      if (currentS === targetS) {
+        alert('現在のシフトと同じ内容が選択されています。');
+        return;
+      }
+
+      const newReq = {
+        id: `cr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        createdAt: new Date().toISOString(),
+        status: 'pending',
+        type: 'single',
+        requestType: 'single',
+        requesterId: appUser.id,
+        requesterName: appUser.name,
+        requesterDay: reqDay,
+        beforeShift: currentS,
+        requestedShiftCode: targetS || '__CLEAR__',
+        clearTaskAndBellOnOff: Boolean(crClearTaskAndBell),
+        reason: (crReason || '').trim().slice(0, 100),
+        snapshot: {
+          requesterShift: currentS,
+          requesterTask: taskData[appUser.id]?.[reqDay] || null,
+          requesterBell: Boolean(bellData[appUser.id]?.[reqDay]),
+        },
+        resolvedAt: null,
+      };
+
+      const nextList = [newReq, ...changeRequests];
+      setChangeRequests(nextList);
+      saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextList);
+      setCrReason('');
+      alert('勤務変更（休み等）の申請を送信しました。\n管理者の承認後に勤務表へ反映されます。');
+    }
+  };
+
+  // カテゴリ3(B案): スタッフ本人による未処理申請の取り消し
+  const handleCancelChangeRequest = (reqId) => {
+    const target = changeRequests.find(r => r && r.id === reqId);
+    if (!target) return;
+    if (appUser.role === 'staff' && target.requesterId !== appUser.id) return;
+    if (target.status !== 'pending') return;
+    const nextList = changeRequests.filter(r => r && r.id !== reqId);
+    setChangeRequests(nextList);
+    saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextList);
+  };
+
+  // カテゴリ3(B案): 管理者が承認カード上で入れ替え対象チェック（シフト・タスク・ベル等）を微調整するヘルパー
+  const handleUpdatePendingRequestOption = (reqId, keyOrPatch, value) => {
+    if (appUser?.role !== 'admin') return;
+    const patch = typeof keyOrPatch === 'string' ? { [keyOrPatch]: value } : keyOrPatch;
+    const nextList = changeRequests.map(r => (r && r.id === reqId ? { ...r, ...patch } : r));
+    setChangeRequests(nextList);
+    saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextList);
+  };
+
+  // カテゴリ3(B案): 全体管理者による変更・交換申請のワンクリック承認＆勤務表反映
+  const handleApproveChangeRequest = (reqOrId) => {
+    const req = typeof reqOrId === 'string' ? changeRequests.find(r => r && r.id === reqOrId) : reqOrId;
+    if (appUser?.role !== 'admin' || !req || req.status !== 'pending') return;
+
+    const nextShifts = { ...shiftData };
+    const nextTasks = { ...taskData };
+    const nextBells = { ...bellData };
+    const nextLeaders = { ...leaderData };
+
+    const cleanLeaderFlagIfNeeded = (staffId, day, newShiftCode) => {
+      if (!nextLeaders[staffId]?.[day]) return;
+      const nextDef = newShiftCode ? shiftDefs[newShiftCode] : null;
+      const nextCat = nextDef ? categoryDefs[nextDef.category] : null;
+      const keepsTargetFacility = Boolean(
+        nextDef &&
+          getEffectiveShiftType(nextDef, categoryDefs) === 'shift' &&
+          isLeaderHighlightTargetFacility(nextCat)
+      );
+      if (!keepsTargetFacility) {
+        const staffL = { ...(nextLeaders[staffId] || {}) };
+        delete staffL[day];
+        if (Object.keys(staffL).length > 0) nextLeaders[staffId] = staffL;
+        else delete nextLeaders[staffId];
+      }
+    };
+
+    if ((req.requestType || req.type) === 'swap') {
+      const s1 = req.requesterId;
+      const d1 = Number(req.requesterDay);
+      const s2 = req.targetStaffId;
+      const d2 = Number(req.targetDay || req.requesterDay);
+
+      if (!req.swapShift && !req.swapTask && !req.swapBell) {
+        alert('入れ替える項目（シフト・タスク・ベル）が1つも選択されていません。');
+        return;
+      }
+
+      const curS1 = nextShifts[s1]?.[d1] || null;
+      const curS2 = nextShifts[s2]?.[d2] || null;
+      const curT1 = nextTasks[s1]?.[d1] || null;
+      const curT2 = nextTasks[s2]?.[d2] || null;
+      const curB1 = Boolean(nextBells[s1]?.[d1]);
+      const curB2 = Boolean(nextBells[s2]?.[d2]);
+
+      if (req.snapshot) {
+        const snapshotMismatch =
+          (req.swapShift && (curS1 !== (req.snapshot.requesterShift || null) || curS2 !== (req.snapshot.targetShift || null))) ||
+          (req.swapTask && (curT1 !== (req.snapshot.requesterTask || null) || curT2 !== (req.snapshot.targetTask || null))) ||
+          (req.swapBell && (curB1 !== Boolean(req.snapshot.requesterBell) || curB2 !== Boolean(req.snapshot.targetBell)));
+        if (snapshotMismatch) {
+          const ok = window.confirm(
+            '申請時点から現在までにシフト・タスク・ベルのいずれかが変更されています。\n現在の勤務表の状態同士を入れ替えて反映しますか？'
+          );
+          if (!ok) return;
+        }
+      }
+
+      if (req.swapShift) {
+        nextShifts[s1] = { ...(nextShifts[s1] || {}) };
+        nextShifts[s2] = { ...(nextShifts[s2] || {}) };
+        if (curS2) nextShifts[s1][d1] = curS2;
+        else delete nextShifts[s1][d1];
+        if (curS1) nextShifts[s2][d2] = curS1;
+        else delete nextShifts[s2][d2];
+        cleanLeaderFlagIfNeeded(s1, d1, curS2);
+        cleanLeaderFlagIfNeeded(s2, d2, curS1);
+      }
+
+      if (req.swapTask) {
+        nextTasks[s1] = { ...(nextTasks[s1] || {}) };
+        nextTasks[s2] = { ...(nextTasks[s2] || {}) };
+        if (curT2) nextTasks[s1][d1] = curT2;
+        else delete nextTasks[s1][d1];
+        if (curT1) nextTasks[s2][d2] = curT1;
+        else delete nextTasks[s2][d2];
+      }
+
+      if (req.swapBell) {
+        const bMap1 = { ...(nextBells[s1] || {}) };
+        if (curB2) bMap1[d1] = true;
+        else delete bMap1[d1];
+        if (Object.keys(bMap1).length > 0) nextBells[s1] = bMap1;
+        else delete nextBells[s1];
+
+        const bMap2 = { ...(nextBells[s2] || {}) };
+        if (curB1) bMap2[d2] = true;
+        else delete bMap2[d2];
+        if (Object.keys(bMap2).length > 0) nextBells[s2] = bMap2;
+        else delete nextBells[s2];
+      }
+    } else {
+      const s1 = req.requesterId;
+      const d1 = Number(req.requesterDay);
+      const newCode = req.requestedShiftCode === '__CLEAR__' ? null : req.requestedShiftCode;
+
+      nextShifts[s1] = { ...(nextShifts[s1] || {}) };
+      if (newCode) nextShifts[s1][d1] = newCode;
+      else delete nextShifts[s1][d1];
+      cleanLeaderFlagIfNeeded(s1, d1, newCode);
+
+      if (req.clearTaskAndBellOnOff) {
+        if (nextTasks[s1]?.[d1]) {
+          nextTasks[s1] = { ...nextTasks[s1] };
+          delete nextTasks[s1][d1];
+        }
+        if (nextBells[s1]?.[d1]) {
+          const bMap = { ...nextBells[s1] };
+          delete bMap[d1];
+          if (Object.keys(bMap).length > 0) nextBells[s1] = bMap;
+          else delete nextBells[s1];
+        }
+      }
+    }
+
+    const nextChangeRequests = changeRequests.map(r =>
+      r && r.id === req.id ? { ...r, status: 'approved', resolvedAt: new Date().toISOString() } : r
+    );
+
+    setShiftData(nextShifts);
+    setTaskData(nextTasks);
+    setBellData(nextBells);
+    setLeaderData(nextLeaders);
+    setChangeRequests(nextChangeRequests);
+    saveSchedule(nextShifts, nextTasks, userInputs, nextBells, nextLeaders, nextChangeRequests);
+  };
+
+  // カテゴリ3(B案): 全体管理者による申請の却下
+  const handleRejectChangeRequest = (reqId) => {
+    if (!isMasterAdmin) return;
+    const nextChangeRequests = changeRequests.map(r =>
+      r && r.id === reqId ? { ...r, status: 'rejected', resolvedAt: new Date().toISOString() } : r
+    );
+    setChangeRequests(nextChangeRequests);
+    saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextChangeRequests);
+  };
+
+  // カテゴリ3(B案): 処理済み（承認済・却下）の申請履歴をクリア
+  const handleClearResolvedChangeRequests = () => {
+    if (!isMasterAdmin) return;
+    const nextChangeRequests = changeRequests.filter(r => r && r.status === 'pending');
+    setChangeRequests(nextChangeRequests);
+    saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextChangeRequests);
   };
 
   // スタッフが既存の希望に対して「希望理由のみ」を追記・更新・削除するハンドラ
   const handleSaveStaffReason = (staffId, day, newReason) => {
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return;
-      if (checkIsAfterDeadlineForStaff()) return;
+      if (checkIsAfterDeadlineForStaff(day)) return;
     }
 
     const currentShiftBefore = shiftData[staffId]?.[day];
@@ -2273,7 +2621,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     if (appUser.role === 'staff') {
       if (staffId !== appUser.id) return; 
       // 締切チェック
-      if (checkIsAfterDeadlineForStaff()) return;
+      if (checkIsAfterDeadlineForStaff(day)) return;
     } else if (appUser.role === 'admin' && !isMasterAdmin) {
       if (!toolCode) {
         const existingVal = type === 'task' ? taskData[staffId]?.[day] : shiftData[staffId]?.[day];
@@ -2483,7 +2831,9 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     // AI自動作成のライブ仮反映中・または月データ読み込み中は誤編集防止のためセル操作をロック
     if (isAutoFillRunningRef.current) return;
     if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
-    if (isSunday(year, month, day)) {
+    const isStaffPostDeadlineSelf =
+      appUser?.role === 'staff' && staffId === appUser.id && isAfterDeadlineForCurrentMonth;
+    if (isSunday(year, month, day) && !isStaffPostDeadlineSelf) {
       if (type === 'task') {
         if (!appUser || appUser.role !== 'admin') return;
       } else {
@@ -6069,6 +6419,49 @@ ${messageText}`;
       });
   }, [dynamicPaletteGroups, categoryDefs, shiftDefs, countedOffShifts]);
 
+  const pendingChangeRequests = useMemo(
+    () => (Array.isArray(changeRequests) ? changeRequests.filter(r => r && r.status === 'pending') : []),
+    [changeRequests]
+  );
+
+  const myChangeRequests = useMemo(() => {
+    if (!appUser) return [];
+    return (Array.isArray(changeRequests) ? changeRequests : []).filter(
+      r => r && (r.requesterId === appUser.id || r.targetStaffId === appUser.id)
+    );
+  }, [changeRequests, appUser]);
+
+  const pendingChangeRequestMapByStaffDay = useMemo(() => {
+    const map = {};
+    pendingChangeRequests.forEach(req => {
+      const addEntry = (sId, d) => {
+        if (!sId || !d) return;
+        const key = `${sId}_${d}`;
+        if (!map[key]) map[key] = [];
+        map[key].push(req);
+      };
+      addEntry(req.requesterId, req.requesterDay);
+      if ((req.requestType || req.type) === 'swap') {
+        addEntry(req.targetStaffId, req.targetDay || req.requesterDay);
+      }
+    });
+    return map;
+  }, [pendingChangeRequests]);
+
+  const getDayOfWeekStr = (y, m, d) => ['日', '月', '火', '水', '木', '金', '土'][new Date(y, m - 1, d).getDay()];
+
+  const formatShiftCodeLabel = (code) => {
+    if (!code || code === '__CLEAR__') return '空欄(公休)';
+    const def = shiftDefs[code];
+    return def ? (def.label || code) : code;
+  };
+
+  const formatTaskCodeLabel = (code) => {
+    if (!code || code === '__CLEAR__') return 'なし';
+    const def = shiftDefs[code];
+    return def ? (def.label || code) : code;
+  };
+
   const displayStaffList = useMemo(() => {
     if (!appUser) return [];
     let list = staffList;
@@ -6130,6 +6523,7 @@ ${messageText}`;
     setUserInputs({});
     setPrevMonthShiftData({});
     setChangeLogs([]);
+    setChangeRequests([]);
     setMonth(nm);
     setYear(ny);
   };
@@ -6292,7 +6686,23 @@ ${messageText}`;
                    <Check size={13} className="text-emerald-600" />
                  ) : null}
                </button>
-               <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
+               <button onClick={() => setShowAdminChangeRequestsModal(true)}
+                  className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
+                    pendingChangeRequests.length > 0
+                      ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                  }`}
+                  title="締切後の勤務交換・休み変更申請の確認と承認"
+                >
+                  <RefreshCw size={16} className="sm:w-4 sm:h-4" />
+                  <span className="hidden md:inline text-sm">変更申請</span>
+                  {pendingChangeRequests.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                      {pendingChangeRequests.length}
+                    </span>
+                  )}
+                </button>
+                <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
                  <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
                </button>
                <button
@@ -6349,6 +6759,24 @@ ${messageText}`;
         </div>
       </header>
 
+      {/* ★追加：勤務交換・休み変更申請の未承認通知バー（管理者向け） */}
+      {appUser.role === 'admin' && pendingChangeRequests.length > 0 && (
+        <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-6 py-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm shrink-0 z-10">
+          <div className="flex items-center gap-2 text-amber-900 text-xs sm:text-sm font-bold">
+            <RefreshCw size={16} className="text-amber-600 shrink-0" />
+            <span>
+              スタッフから勤務交換・休み変更の申請が <strong className="text-amber-700 underline">{pendingChangeRequests.length}件</strong> 届いています。
+            </span>
+          </div>
+          <button
+            onClick={() => setShowAdminChangeRequestsModal(true)}
+            className="flex items-center gap-1 px-3 py-1 bg-amber-600 text-white rounded text-xs font-bold hover:bg-amber-700 shadow-sm shrink-0 transition"
+          >
+            <Check size={14} /> 内容を確認・承認する
+          </button>
+        </div>
+      )}
+
       {/* ★修正：全体管理者への通知バー（確認ボタン付き） */}
       {isMasterAdmin && changeLogs.length > 0 && (
         <div className="bg-orange-100 border-b border-orange-200 px-4 py-2 text-orange-800 text-xs font-bold flex items-center justify-between animate-pulse">
@@ -6373,9 +6801,32 @@ ${messageText}`;
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
                 <div className="bg-gray-50 px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
-                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
                     <div>木クリ: <span className="font-bold text-yellow-700 text-sm">{staffKikuriStats[appUser.id] || 0}回</span></div>
                     <div>残業合計: <span className="font-bold text-red-600 text-sm">{staffOvertimeStats[appUser.id] || 0}h</span></div>
+                    <button
+                      type="button"
+                      onClick={() => openStaffChangeRequestModal(1, 'swap')}
+                      disabled={!isAfterDeadlineForCurrentMonth}
+                      title={
+                        isAfterDeadlineForCurrentMonth
+                          ? '締切後のシフト交換や体調不良等による休み変更を管理者に申請します'
+                          : '締切日前はカレンダーのセルを直接クリックして希望を入力できます（締切日後に申請ボタンが有効になります）'
+                      }
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded font-bold border transition ${
+                        isAfterDeadlineForCurrentMonth
+                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 shadow-sm'
+                          : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                      }`}
+                    >
+                      <RefreshCw size={13} />
+                      <span>変更・交換申請</span>
+                      {myChangeRequests.filter(r => r.status === 'pending').length > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                          {myChangeRequests.filter(r => r.status === 'pending').length}
+                        </span>
+                      )}
+                    </button>
                   </div>
                 </div>
                 <div className="px-4 py-1.5 bg-white border-b flex flex-wrap items-center justify-between gap-1 text-[10px] sm:text-xs text-gray-500">
@@ -6411,8 +6862,9 @@ ${messageText}`;
                     const isSat = cell.date.getDay() === 6;
                     const isHol = isHoliday(cellYear, cellMonth, cellDay, clinicClosedDays);
                     const closedRule = getClinicClosedRuleMatch(cellYear, cellMonth, cellDay, clinicClosedDays);
-                    const isEditable = cell.currentMonth && (!isSun || hasKoushutsuShiftDef);
+                    const isEditable = cell.currentMonth && (!isSun || hasKoushutsuShiftDef || isAfterDeadlineForCurrentMonth);
                     const offCount = day && !isSun ? (dailyOffRequestCounts[day] || 0) : 0;
+                    const myPendingReqsForDay = day ? (pendingChangeRequestMapByStaffDay[`${appUser.id}_${day}`] || []) : [];
                     const alertThreshold = parseInt(adminSettings.offRequestAlertCount, 10);
                     const hasAlertThreshold = !isNaN(alertThreshold) && alertThreshold > 0;
                     const isOffAlert = hasAlertThreshold && offCount >= alertThreshold;
@@ -6442,6 +6894,18 @@ ${messageText}`;
                               title={`現在の休み希望人数: ${offCount}人`}
                             >
                               休{offCount}
+                            </span>
+                          )}
+                          {cell.currentMonth && myPendingReqsForDay.length > 0 && (
+                            <span
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openStaffChangeRequestModal(day, myPendingReqsForDay[0].type || 'swap');
+                              }}
+                              className="text-[9px] sm:text-[10px] leading-none px-1 py-0.5 rounded-full font-bold whitespace-nowrap border bg-amber-100 text-amber-800 border-amber-300 cursor-pointer hover:bg-amber-200"
+                              title="申請中の勤務交換・変更があります（クリックで確認）"
+                            >
+                              申請中
                             </span>
                           )}
                         </div>
@@ -6654,6 +7118,8 @@ ${messageText}`;
                             // 該当するログを探す
                             const targetLog = changeLogs.find(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
                             const hasLog = !!targetLog;
+                            const pendingReqsForCell = pendingChangeRequestMapByStaffDay[`${staff.id}_${day}`] || [];
+                            const hasPendingReq = pendingReqsForCell.length > 0;
 
                             let cellBg = '';
                             if (isSun) cellBg = isShiftEditable ? 'bg-red-50 cursor-pointer hover:bg-red-100/60' : 'bg-red-50';
@@ -6686,6 +7152,20 @@ ${messageText}`;
                               const afterLabel = shiftDefs[targetLog.after]?.label || targetLog.after || '未設定';
                               shiftTooltips.push(`【変更履歴】\n日時: ${dateStr}\n内容: ${beforeLabel} → ${afterLabel}`);
                             }
+                            if (hasPendingReq) {
+                              pendingReqsForCell.forEach(req => {
+                                if (req.type === 'swap') {
+                                  const tDay = req.targetDay || req.requesterDay;
+                                  shiftTooltips.push(
+                                    `【シフト交換申請中】\n${req.requesterName} (${month}/${req.requesterDay}) ⇔ ${req.targetStaffName} (${month}/${tDay})\n理由: ${req.reason || 'なし'}`
+                                  );
+                                } else {
+                                  shiftTooltips.push(
+                                    `【休み・変更申請中】\n${req.requesterName} (${month}/${req.requesterDay}): ${formatShiftCodeLabel(req.beforeShift)} → ${formatShiftCodeLabel(req.requestedShiftCode)}\n理由: ${req.reason || 'なし'}`
+                                  );
+                                }
+                              });
+                            }
                             const tooltipText = shiftTooltips.join('\n\n');
 
                             const taskTooltips = [];
@@ -6712,8 +7192,9 @@ ${messageText}`;
                                   <div 
                                     className={`h-1/2 relative flex items-center justify-center border-b border-gray-100 transition 
                                       ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10 hover:bg-yellow-100' : ''} 
-                                      ${!hasLog && activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
-                                      ${!hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') && autoShiftHighlight ? `${autoShiftHighlight.bgClass} hover:brightness-95` : !hasLog && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') ? 'hover:bg-black/5' : ''}
+                                      ${!hasLog && hasPendingReq ? 'bg-amber-50 ring-2 ring-inset ring-amber-400 z-10 hover:bg-amber-100' : ''}
+                                      ${!hasLog && !hasPendingReq && activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
+                                      ${!hasLog && !hasPendingReq && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') && autoShiftHighlight ? `${autoShiftHighlight.bgClass} hover:brightness-95` : !hasLog && !hasPendingReq && !(activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift') ? 'hover:bg-black/5' : ''}
                                     `}
                                     title={tooltipText} 
                                     onClick={(e) => { if(isShiftEditable) { e.stopPropagation(); handleCellClick(e, staff.id, day, 'shift'); } }}
@@ -6902,6 +7383,50 @@ ${messageText}`;
                 </div>
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
+              {appUser.role === 'admin' && (pendingChangeRequestMapByStaffDay[`${activePopup.staffId}_${activePopup.day}`] || []).length > 0 && (
+                <div className="mb-2 p-2 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-900 shrink-0">
+                  <div className="font-bold flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1">
+                      <RefreshCw size={13} className="text-amber-600" />
+                      この日の変更・交換申請が届いています
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActivePopup(null);
+                        setShowAdminChangeRequestsModal(true);
+                      }}
+                      className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-[11px] transition shrink-0"
+                    >
+                      確認・承認画面へ
+                    </button>
+                  </div>
+                </div>
+              )}
+              {appUser.role === 'staff' && activePopup.staffId === appUser.id && isAfterDeadlineForCurrentMonth && (
+                <div className="mb-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 shrink-0">
+                  <div className="font-bold mb-1.5 flex items-center gap-1">
+                    <RefreshCw size={13} className="text-amber-600" />
+                    締切後の勤務交換・休み変更申請
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => openStaffChangeRequestModal(activePopup.day, 'swap')}
+                      className="flex-1 py-1.5 px-2 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold text-xs transition shadow-sm"
+                    >
+                      シフト交換申請
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openStaffChangeRequestModal(activePopup.day, 'single')}
+                      className="flex-1 py-1.5 px-2 bg-white hover:bg-amber-100 text-amber-800 border border-amber-300 rounded font-bold text-xs transition shadow-sm"
+                    >
+                      休み・変更申請
+                    </button>
+                  </div>
+                </div>
+              )}
               {appUser.role === 'admin' && popupReqCode && (
                 <div className="mb-2.5 p-2 bg-pink-50 border border-pink-200 rounded-lg text-xs shrink-0">
                   <div className="flex items-center justify-between gap-2">
@@ -9709,6 +10234,663 @@ ${messageText}`;
           )
         )}
         {/* ↑↑↑ ここまで追加 ↑↑↑ */}
+
+        {/* ★カテゴリ3（B案）：スタッフ向け 締切後の勤務交換・休み変更申請モーダル */}
+        {showChangeRequestModal && appUser && (
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-[120] p-2 sm:p-4"
+            onClick={() => setShowChangeRequestModal(false)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <RefreshCw size={18} className="text-amber-600" />
+                  <h3 className="font-bold text-gray-800 text-sm sm:text-base">
+                    { year }年{ month }月 勤務交換・休み変更の申請
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowChangeRequestModal(false)}
+                  className="p-1 text-gray-500 hover:text-gray-700 hover:bg-amber-100 rounded transition"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-4 overflow-y-auto space-y-4 text-xs sm:text-sm">
+                {/* モード切替タブ */}
+                <div className="grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setCrMode('swap')}
+                    className={`py-2 px-3 rounded-md font-bold transition ${
+                      crMode === 'swap'
+                        ? 'bg-white text-amber-700 shadow-sm border border-amber-200'
+                        : 'text-gray-600 hover:text-gray-800'
+                    }`}
+                  >
+                    職員同士でシフト交換（A⇔B）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCrMode('single')}
+                    className={`py-2 px-3 rounded-md font-bold transition ${
+                      crMode === 'single'
+                        ? 'bg-white text-amber-700 shadow-sm border border-amber-200'
+                        : 'text-gray-600 hover:text-gray-800'
+                    }`}
+                  >
+                    休み・単独変更（体調不良など）
+                  </button>
+                </div>
+
+                {crMode === 'swap' ? (
+                  <div className="space-y-3">
+                    <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900">
+                      事前に交換相手のスタッフと相談のうえ申請してください。管理者が承認すると勤務表に自動反映されます。
+                    </div>
+
+                    {/* 自分の対象日と現在の勤務 */}
+                    <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
+                      <div className="font-bold text-gray-700 flex items-center justify-between">
+                        <span>① あなた（{appUser.name}）の対象日</span>
+                        <select
+                          value={crRequesterDay}
+                          onChange={e => {
+                            const d = Number(e.target.value);
+                            setCrRequesterDay(d);
+                            if (crSameDay) setCrTargetDay(d);
+                          }}
+                          className="border border-gray-300 rounded px-2.5 py-1 bg-white font-bold text-gray-800"
+                        >
+                          {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => (
+                            <option key={d} value={d}>
+                              {month}月{d}日({ getDayOfWeekStr(year, month, d) })
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-wrap gap-2 text-xs text-gray-600 pt-1 border-t border-gray-200">
+                        <span>
+                          現在シフト:{' '}
+                          <strong className="text-gray-900">
+                            {formatShiftCodeLabel(shiftData[appUser.id]?.[crRequesterDay])}
+                          </strong>
+                        </span>
+                        <span>
+                          タスク:{' '}
+                          <strong className="text-gray-900">
+                            {formatTaskCodeLabel(taskData[appUser.id]?.[crRequesterDay])}
+                          </strong>
+                        </span>
+                        <span>
+                          ベル:{' '}
+                          <strong className="text-gray-900">
+                            {bellData[appUser.id]?.[crRequesterDay] ? '🔔あり' : 'なし'}
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 交換相手と相手の対象日 */}
+                    <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-gray-700">② 交換相手のスタッフ</span>
+                        <select
+                          value={crTargetStaffId}
+                          onChange={e => setCrTargetStaffId(e.target.value)}
+                          className="border border-gray-300 rounded px-2.5 py-1 bg-white font-bold text-gray-800 min-w-[160px]"
+                        >
+                          <option value="">-- 相手を選択 --</option>
+                          {staffList
+                            .filter(s => s.id !== appUser.id)
+                            .map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-gray-200">
+                        <label className="flex items-center gap-1.5 text-xs font-bold text-gray-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={crSameDay}
+                            onChange={e => {
+                              const checked = e.target.checked;
+                              setCrSameDay(checked);
+                              if (checked) setCrTargetDay(crRequesterDay);
+                            }}
+                            className="rounded text-amber-600"
+                          />
+                          同じ日（{month}月{crRequesterDay}日）同士で交換する
+                        </label>
+                        {!crSameDay && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">相手の対象日:</span>
+                            <select
+                              value={crTargetDay}
+                              onChange={e => setCrTargetDay(Number(e.target.value))}
+                              className="border border-gray-300 rounded px-2 py-1 bg-white font-bold text-gray-800 text-xs"
+                            >
+                              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => (
+                                <option key={d} value={d}>
+                                  {month}月{d}日({ getDayOfWeekStr(year, month, d) })
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      {crTargetStaffId && (
+                        <div className="flex flex-wrap gap-2 text-xs text-gray-600 pt-1 border-t border-gray-200">
+                          <span>
+                            相手の現在シフト({month}/{crSameDay ? crRequesterDay : crTargetDay}):{' '}
+                            <strong className="text-gray-900">
+                              {formatShiftCodeLabel(
+                                shiftData[crTargetStaffId]?.[crSameDay ? crRequesterDay : crTargetDay]
+                              )}
+                            </strong>
+                          </span>
+                          <span>
+                            タスク:{' '}
+                            <strong className="text-gray-900">
+                              {formatTaskCodeLabel(
+                                taskData[crTargetStaffId]?.[crSameDay ? crRequesterDay : crTargetDay]
+                              )}
+                            </strong>
+                          </span>
+                          <span>
+                            ベル:{' '}
+                            <strong className="text-gray-900">
+                              {bellData[crTargetStaffId]?.[crSameDay ? crRequesterDay : crTargetDay]
+                                ? '🔔あり'
+                                : 'なし'}
+                            </strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 入れ替え対象の選択（シフト／タスク／ベル） */}
+                    <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-lg space-y-2">
+                      <div className="font-bold text-gray-800 text-xs">③ 一緒に入れ替える（引き継ぐ）項目</div>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-xs">
+                        <label className="flex items-center gap-1.5 font-bold text-gray-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={crSwapShift}
+                            onChange={e => setCrSwapShift(e.target.checked)}
+                            className="rounded text-amber-600"
+                          />
+                          シフトを入れ替える
+                        </label>
+                        <label className="flex items-center gap-1.5 font-bold text-gray-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={crSwapTask}
+                            onChange={e => setCrSwapTask(e.target.checked)}
+                            className="rounded text-amber-600"
+                          />
+                          タスク欄も一緒に入れ替える
+                        </label>
+                        <label className="flex items-center gap-1.5 font-bold text-gray-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={crSwapBell}
+                            onChange={e => setCrSwapBell(e.target.checked)}
+                            className="rounded text-amber-600"
+                          />
+                          緊急待機番（ベル）も一緒に入れ替える
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900">
+                      体調不良や急用等による休み変更・単独の勤務変更を申請します。管理者が承認すると勤務表に反映されます。
+                    </div>
+
+                    <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-gray-700">① 対象日</span>
+                        <select
+                          value={crRequesterDay}
+                          onChange={e => setCrRequesterDay(Number(e.target.value))}
+                          className="border border-gray-300 rounded px-2.5 py-1 bg-white font-bold text-gray-800"
+                        >
+                          {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => (
+                            <option key={d} value={d}>
+                              {month}月{d}日({ getDayOfWeekStr(year, month, d) })
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="text-xs text-gray-600 flex flex-wrap gap-3 pt-1 border-t border-gray-200">
+                        <span>
+                          現在のシフト:{' '}
+                          <strong className="text-gray-900">
+                            {formatShiftCodeLabel(shiftData[appUser.id]?.[crRequesterDay])}
+                          </strong>
+                        </span>
+                        <span>
+                          タスク:{' '}
+                          <strong className="text-gray-900">
+                            {formatTaskCodeLabel(taskData[appUser.id]?.[crRequesterDay])}
+                          </strong>
+                        </span>
+                        <span>
+                          ベル:{' '}
+                          <strong className="text-gray-900">
+                            {bellData[appUser.id]?.[crRequesterDay] ? '🔔あり' : 'なし'}
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-gray-700">② 変更後の希望シフト</span>
+                        <select
+                          value={crSingleShiftCode}
+                          onChange={e => setCrSingleShiftCode(e.target.value)}
+                          className="border border-gray-300 rounded px-2.5 py-1 bg-white font-bold text-gray-800 min-w-[160px]"
+                        >
+                          <option value="__CLEAR__">空欄（公休）</option>
+                          {Object.entries(shiftDefs)
+                            .filter(([, def]) => def && getEffectiveShiftType(def, categoryDefs) === 'shift')
+                            .map(([code, def]) => (
+                              <option key={code} value={code}>
+                                {def.label || code}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs font-bold text-gray-700 cursor-pointer pt-1 border-t border-gray-200">
+                        <input
+                          type="checkbox"
+                          checked={crClearTaskAndBell}
+                          onChange={e => setCrClearTaskAndBell(e.target.checked)}
+                          className="rounded text-amber-600"
+                        />
+                        休み等になる場合、当日のタスク欄・緊急待機番（ベル）も自動で外す
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* 申請理由・メモ */}
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                    理由・メモ（交換相手との合意内容や体調不良など）
+                  </label>
+                  <input
+                    type="text"
+                    value={crReason}
+                    onChange={e => setCrReason(e.target.value)}
+                    placeholder={
+                      crMode === 'swap'
+                        ? '例: 〇〇さんと相談済み、家庭の都合のため交換希望'
+                        : '例: 発熱のため年休へ変更をお願いします'
+                    }
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-xs sm:text-sm focus:ring-2 focus:ring-amber-400 outline-none"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-gray-200">
+                  <button
+                    type="button"
+                    onClick={() => setShowChangeRequestModal(false)}
+                    className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs sm:text-sm transition"
+                  >
+                    閉じる
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSubmitChangeRequest}
+                    className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs sm:text-sm shadow transition flex items-center gap-1.5"
+                  >
+                    <Check size={16} />
+                    管理者に申請を送る
+                  </button>
+                </div>
+
+                {/* 自分が関係する当月の申請履歴 */}
+                {myChangeRequests.length > 0 && (
+                  <div className="pt-3 border-t border-gray-200 space-y-2">
+                    <div className="font-bold text-gray-700 text-xs">あなたの当月の申請履歴（{myChangeRequests.length}件）</div>
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                      {myChangeRequests.map(req => {
+                        const tDay = req.targetDay || req.requesterDay;
+                        const statusBadge =
+                          req.status === 'pending'
+                            ? { label: '承認待ち', cls: 'bg-amber-100 text-amber-800 border-amber-300' }
+                            : req.status === 'approved'
+                              ? { label: '承認・反映済', cls: 'bg-emerald-100 text-emerald-800 border-emerald-300' }
+                              : { label: '却下', cls: 'bg-rose-100 text-rose-800 border-rose-300' };
+                        return (
+                          <div
+                            key={req.id}
+                            className="p-2 rounded border border-gray-200 bg-gray-50 flex items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge.cls}`}>
+                                  {statusBadge.label}
+                                </span>
+                                {(req.requestType || req.type) === 'swap' ? (
+                                  <span className="font-bold text-gray-800">
+                                    【交換】{req.requesterName}({month}/{req.requesterDay}:{formatShiftCodeLabel(req.requesterShift ?? req.snapshot?.requesterShift)}) ⇔{' '}
+                                    {req.targetStaffName}({month}/{tDay}:{formatShiftCodeLabel(req.targetShift ?? req.snapshot?.targetShift)})
+                                  </span>
+                                ) : (
+                                  <span className="font-bold text-gray-800">
+                                    【変更】{month}/{req.requesterDay}: {formatShiftCodeLabel(req.beforeShift ?? req.snapshot?.requesterShift)} →{' '}
+                                    {formatShiftCodeLabel(req.requestedShiftCode)}
+                                  </span>
+                                )}
+                              </div>
+                              {req.reason && <div className="text-gray-500 text-[11px]">理由: {req.reason}</div>}
+                            </div>
+                            {req.status === 'pending' && req.requesterId === appUser.id && (
+                              <button
+                                type="button"
+                                onClick={() => handleCancelChangeRequest(req.id)}
+                                className="px-2 py-1 rounded bg-white border border-gray-300 hover:bg-red-50 hover:text-red-600 text-gray-600 font-bold text-[11px] shrink-0 transition"
+                              >
+                                取り消し
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ★カテゴリ3（B案）：管理者向け 勤務交換・休み変更申請の一覧・承認モーダル */}
+        {showAdminChangeRequestsModal && appUser?.role === 'admin' && (
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-[120] p-2 sm:p-4"
+            onClick={() => setShowAdminChangeRequestsModal(false)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <RefreshCw size={18} className="text-amber-600" />
+                  <h3 className="font-bold text-gray-800 text-sm sm:text-base">
+                    {year}年{month}月 勤務交換・休み変更申請の確認と承認
+                  </h3>
+                  {pendingChangeRequests.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-xs font-bold">
+                      未処理 {pendingChangeRequests.length}件
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminChangeRequestsModal(false)}
+                  className="p-1 text-gray-500 hover:text-gray-700 hover:bg-amber-100 rounded transition"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-4 overflow-y-auto space-y-4 text-xs sm:text-sm">
+                {/* 未承認の申請リスト */}
+                <div className="space-y-2.5">
+                  <div className="font-bold text-gray-800 flex items-center justify-between">
+                    <span>承認待ちの申請（{pendingChangeRequests.length}件）</span>
+                  </div>
+
+                  {pendingChangeRequests.length === 0 ? (
+                    <div className="p-6 text-center bg-gray-50 border border-gray-200 rounded-lg text-gray-500">
+                      現在、承認待ちの勤務交換・変更申請はありません。
+                    </div>
+                  ) : (
+                    pendingChangeRequests.map(req => {
+                      const rDay = Number(req.requesterDay);
+                      const tDay = Number(req.targetDay || req.requesterDay);
+                      const isSwap = (req.requestType || req.type) === 'swap';
+                      const curReqShift = shiftData[req.requesterId]?.[rDay] || '';
+                      const curTgtShift = isSwap ? (shiftData[req.targetStaffId]?.[tDay] || '') : '';
+                      const curReqTask = taskData[req.requesterId]?.[rDay] || '';
+                      const curTgtTask = isSwap ? (taskData[req.targetStaffId]?.[tDay] || '') : '';
+                      const curReqBell = !!bellData[req.requesterId]?.[rDay];
+                      const curTgtBell = isSwap ? !!bellData[req.targetStaffId]?.[tDay] : false;
+
+                      return (
+                        <div
+                          key={req.id}
+                          className="p-3.5 rounded-lg border-2 border-amber-300 bg-amber-50/40 space-y-2.5 shadow-sm"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                    isSwap
+                                      ? 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                                      : 'bg-rose-100 text-rose-800 border border-rose-200'
+                                  }`}
+                                >
+                                  {isSwap ? 'シフト交換（A⇔B）' : '休み・単独変更'}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  申請日時:{' '}
+                                  {req.createdAt
+                                    ? new Date(req.createdAt).toLocaleString('ja-JP', {
+                                        month: 'numeric',
+                                        day: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })
+                                    : '-'}
+                                </span>
+                              </div>
+
+                              {isSwap ? (
+                                <div className="text-sm font-bold text-gray-900 pt-0.5">
+                                  {req.requesterName}（{month}/{rDay}） ⇔ {req.targetStaffName}（{month}/{tDay}）
+                                </div>
+                              ) : (
+                                <div className="text-sm font-bold text-gray-900 pt-0.5">
+                                  {req.requesterName}（{month}/{rDay}）: {formatShiftCodeLabel(curReqShift)} →{' '}
+                                  <span className="text-rose-700">{formatShiftCodeLabel(req.requestedShiftCode)}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleApproveChangeRequest(req)}
+                                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm flex items-center gap-1 transition"
+                              >
+                                <Check size={14} />
+                                承認して勤務表に反映
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRejectChangeRequest(req.id)}
+                                className="px-3 py-1.5 rounded-lg bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-xs transition"
+                              >
+                                却下
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 現在のシフト・タスク・ベルの詳細プレビュー */}
+                          {isSwap ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-white p-2.5 rounded border border-amber-200">
+                              <div>
+                                <div className="font-bold text-gray-700">
+                                  {req.requesterName}（{month}/{rDay}）の現在値
+                                </div>
+                                <div className="text-gray-600 mt-0.5">
+                                  シフト: <strong>{formatShiftCodeLabel(curReqShift)}</strong> / タスク:{' '}
+                                  <strong>{formatTaskCodeLabel(curReqTask)}</strong> / ベル:{' '}
+                                  <strong>{curReqBell ? '🔔あり' : 'なし'}</strong>
+                                </div>
+                              </div>
+                              <div>
+                                <div className="font-bold text-gray-700">
+                                  {req.targetStaffName}（{month}/{tDay}）の現在値
+                                </div>
+                                <div className="text-gray-600 mt-0.5">
+                                  シフト: <strong>{formatShiftCodeLabel(curTgtShift)}</strong> / タスク:{' '}
+                                  <strong>{formatTaskCodeLabel(curTgtTask)}</strong> / ベル:{' '}
+                                  <strong>{curTgtBell ? '🔔あり' : 'なし'}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-xs bg-white p-2.5 rounded border border-amber-200 text-gray-700">
+                              現在の配置 — シフト: <strong>{formatShiftCodeLabel(curReqShift)}</strong> / タスク:{' '}
+                              <strong>{formatTaskCodeLabel(curReqTask)}</strong> / ベル:{' '}
+                              <strong>{curReqBell ? '🔔あり' : 'なし'}</strong>
+                            </div>
+                          )}
+
+                          {/* 承認時の入れ替えオプション微調整（管理者側でもON/OFF変更可能） */}
+                          {isSwap ? (
+                            <div className="flex flex-wrap items-center gap-3 text-xs pt-1">
+                              <span className="font-bold text-gray-700">反映対象:</span>
+                              <label className="flex items-center gap-1 cursor-pointer font-bold text-gray-800">
+                                <input
+                                  type="checkbox"
+                                  checked={req.swapShift !== false}
+                                  onChange={e =>
+                                    handleUpdatePendingRequestOption(req.id, 'swapShift', e.target.checked)
+                                  }
+                                  className="rounded text-amber-600"
+                                />
+                                シフトを入れ替える
+                              </label>
+                              <label className="flex items-center gap-1 cursor-pointer font-bold text-gray-800">
+                                <input
+                                  type="checkbox"
+                                  checked={!!req.swapTask}
+                                  onChange={e =>
+                                    handleUpdatePendingRequestOption(req.id, 'swapTask', e.target.checked)
+                                  }
+                                  className="rounded text-amber-600"
+                                />
+                                タスク欄も入れ替える
+                              </label>
+                              <label className="flex items-center gap-1 cursor-pointer font-bold text-gray-800">
+                                <input
+                                  type="checkbox"
+                                  checked={!!req.swapBell}
+                                  onChange={e =>
+                                    handleUpdatePendingRequestOption(req.id, 'swapBell', e.target.checked)
+                                  }
+                                  className="rounded text-amber-600"
+                                />
+                                ベルも入れ替える
+                              </label>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-3 text-xs pt-1">
+                              <label className="flex items-center gap-1 cursor-pointer font-bold text-gray-800">
+                                <input
+                                  type="checkbox"
+                                  checked={req.clearTaskAndBellOnOff !== false}
+                                  onChange={e =>
+                                    handleUpdatePendingRequestOption(req.id, 'clearTaskAndBellOnOff', e.target.checked)
+                                  }
+                                  className="rounded text-amber-600"
+                                />
+                                承認時に当日のタスク・ベルも自動で外す
+                              </label>
+                            </div>
+                          )}
+
+                          {req.reason && (
+                            <div className="text-xs text-gray-700 bg-white/80 px-2.5 py-1.5 rounded border border-gray-200">
+                              <span className="font-bold text-gray-600">理由・メモ: </span>
+                              {req.reason}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* 処理済み（承認・却下）の履歴 */}
+                {(Array.isArray(changeRequests) ? changeRequests.filter(r => r && r.status !== 'pending') : []).length > 0 && (
+                  <div className="pt-3 border-t border-gray-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-gray-700 text-xs">
+                        処理済みの申請履歴（
+                        {(Array.isArray(changeRequests) ? changeRequests.filter(r => r && r.status !== 'pending') : []).length}
+                        件）
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleClearResolvedChangeRequests}
+                        className="text-xs text-gray-500 hover:text-red-600 underline"
+                      >
+                        処理済みの履歴をクリア
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                      {(Array.isArray(changeRequests) ? changeRequests.filter(r => r && r.status !== 'pending') : []).map(
+                        req => {
+                          const tDay = req.targetDay || req.requesterDay;
+                          return (
+                            <div
+                              key={req.id}
+                              className="p-2 rounded border border-gray-200 bg-gray-50 flex items-center justify-between gap-2 text-xs text-gray-600"
+                            >
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                    req.status === 'approved'
+                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                      : 'bg-rose-100 text-rose-800 border-rose-300'
+                                  }`}
+                                >
+                                  {req.status === 'approved' ? '承認済' : '却下'}
+                                </span>
+                                {(req.requestType || req.type) === 'swap' ? (
+                                  <span>
+                                    {req.requesterName}({month}/{req.requesterDay}) ⇔ {req.targetStaffName}({month}/{tDay})
+                                  </span>
+                                ) : (
+                                  <span>
+                                    {req.requesterName}({month}/{req.requesterDay}): {formatShiftCodeLabel(req.beforeShift ?? req.snapshot?.requesterShift)} →{' '}
+                                    {formatShiftCodeLabel(req.requestedShiftCode)}
+                                  </span>
+                                )}
+                                {req.reason && <span className="text-gray-400">（{req.reason}）</span>}
+                              </div>
+                            </div>
+                          );
+                        }
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
