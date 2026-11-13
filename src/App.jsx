@@ -2035,7 +2035,7 @@ export default function WorkScheduleApp() {
         return;
       }
       if (!crSwapShift && !crSwapTask && !crSwapBell) {
-        alert('入れ替える項目（シフト・タスク・緊急待機番ベル）を1つ以上選択してください。');
+        alert('入れ替える項目（シフト・タスク・緊急待機番）を1つ以上選択してください。');
         return;
       }
 
@@ -6937,7 +6937,7 @@ ${messageText}`;
                             </div>
                             {/* タスク表示部分(下1/2) */}
                             <div
-                              title={hasBell && !task ? '緊急待機番（ベル）' : hasBell && task ? `${task.label}（緊急待機番・ベル）` : ''}
+                              title={hasBell && !task ? '緊急待機番' : hasBell && task ? `${task.label}（緊急待機番）` : ''}
                               className={`h-1/2 flex-1 relative flex items-center justify-center px-0.5 transition ${
                                 hasBell ? 'bg-orange-200' : 'bg-white'
                               }`}
@@ -7162,7 +7162,7 @@ ${messageText}`;
 
                             const taskTooltips = [];
                             if (hasBell) {
-                              taskTooltips.push('【緊急待機番（ベル）】背景色オレンジ');
+                              taskTooltips.push('【緊急待機番】背景色オレンジ');
                             }
                             if (teamTaskLock) {
                               taskTooltips.push(`【${TEAM_ADMIN_LABELS[teamTaskLock]}タスク】AI変更ロック中`);
@@ -7569,7 +7569,7 @@ ${messageText}`;
                   >
                     <span className="flex items-center gap-1.5">
                       <span className={`inline-block w-3 h-3 rounded-sm border ${isBellActive ? 'bg-orange-500 border-orange-600' : 'bg-orange-200 border-orange-300'}`} />
-                      <span>緊急待機番（ベル）色付け</span>
+                      <span>緊急待機番 色付け</span>
                     </span>
                     <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${isBellActive ? 'bg-orange-600 text-white' : 'bg-white text-orange-700 border border-orange-300'}`}>
                       {isBellActive ? 'ON' : 'OFF'}
@@ -7618,7 +7618,7 @@ ${messageText}`;
                 </>
               ) : (
                 <p className="text-[11px] text-gray-500 text-center py-2 shrink-0">
-                  日曜日のタスク欄は緊急待機番（ベル）の色付けのみ設定可能です
+                  日曜日のタスク欄は緊急待機番の色付けのみ設定可能です
                 </p>
               )}
             </div>
@@ -10439,7 +10439,7 @@ ${messageText}`;
                             onChange={e => setCrSwapBell(e.target.checked)}
                             className="rounded text-amber-600"
                           />
-                          緊急待機番（ベル）も一緒に入れ替える
+                          緊急待機番も一緒に入れ替える
                         </label>
                       </div>
                     </div>
@@ -10512,7 +10512,7 @@ ${messageText}`;
                           onChange={e => setCrClearTaskAndBell(e.target.checked)}
                           className="rounded text-amber-600"
                         />
-                        休み等になる場合、当日のタスク欄・緊急待機番（ベル）も自動で外す
+                        休み等になる場合、当日のタスク欄・緊急待機番も自動で外す
                       </label>
                     </div>
                   </div>
