@@ -2833,7 +2833,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
     const isStaffPostDeadlineSelf =
       appUser?.role === 'staff' && staffId === appUser.id && isAfterDeadlineForCurrentMonth;
-    if (isSunday(year, month, day) && !isStaffPostDeadlineSelf) {
+    if (isStaffPostDeadlineSelf) {
+      openStaffChangeRequestModal(day, 'swap');
+      return;
+    }
+    if (isSunday(year, month, day)) {
       if (type === 'task') {
         if (!appUser || appUser.role !== 'admin') return;
       } else {
@@ -6801,32 +6805,9 @@ ${messageText}`;
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
                 <div className="bg-gray-50 px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
                   <h3 className="font-bold text-gray-700 flex items-center gap-2"><User size={18}/> {appUser.name}さんの勤務表</h3>
-                  <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
                     <div>木クリ: <span className="font-bold text-yellow-700 text-sm">{staffKikuriStats[appUser.id] || 0}回</span></div>
                     <div>残業合計: <span className="font-bold text-red-600 text-sm">{staffOvertimeStats[appUser.id] || 0}h</span></div>
-                    <button
-                      type="button"
-                      onClick={() => openStaffChangeRequestModal(1, 'swap')}
-                      disabled={!isAfterDeadlineForCurrentMonth}
-                      title={
-                        isAfterDeadlineForCurrentMonth
-                          ? '締切後のシフト交換や体調不良等による休み変更を管理者に申請します'
-                          : '締切日前はカレンダーのセルを直接クリックして希望を入力できます（締切日後に申請ボタンが有効になります）'
-                      }
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded font-bold border transition ${
-                        isAfterDeadlineForCurrentMonth
-                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 shadow-sm'
-                          : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                      }`}
-                    >
-                      <RefreshCw size={13} />
-                      <span>変更・交換申請</span>
-                      {myChangeRequests.filter(r => r.status === 'pending').length > 0 && (
-                        <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
-                          {myChangeRequests.filter(r => r.status === 'pending').length}
-                        </span>
-                      )}
-                    </button>
                   </div>
                 </div>
                 <div className="px-4 py-1.5 bg-white border-b flex flex-wrap items-center justify-between gap-1 text-[10px] sm:text-xs text-gray-500">
@@ -6874,7 +6855,18 @@ ${messageText}`;
                     else if (isSat) bg = 'bg-blue-50';
 
                     return (
-                      <div key={idx} className={`${bg} min-h-[5rem] p-1 flex flex-col relative`}>
+                      <div
+                        key={idx}
+                        onClick={(e) => {
+                          if (cell.currentMonth && isAfterDeadlineForCurrentMonth) {
+                            e.stopPropagation();
+                            openStaffChangeRequestModal(day, 'swap');
+                          }
+                        }}
+                        className={`${bg} min-h-[5rem] p-1 flex flex-col relative ${
+                          cell.currentMonth && isAfterDeadlineForCurrentMonth ? 'cursor-pointer' : ''
+                        }`}
+                      >
                         <div className={`flex items-center justify-between mb-1 gap-0.5 min-h-[14px] ${!isSun && isHol && cell.currentMonth ? 'bg-red-50 -mx-1 -mt-1 px-1 py-0.5 border-b border-red-100' : ''}`}>
                           <div
                             title={closedRule ? (closedRule.label || '外来休診日') : undefined}
