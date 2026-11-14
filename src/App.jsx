@@ -3982,7 +3982,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         powerScore,
         maxCool3: s.maxCool3, 
         excludeFromAi: s.excludeFromAi,
-        ...(String(s.requestNote || '').trim() ? { requestNote: String(s.requestNote).trim() } : {}),
         allowedFacilities: allowedFacilityCats.map(fc => ({ id: fc.id, label: fc.label })),
         allowedWorkShifts,
         day1AllowedWorkShifts,
@@ -5106,7 +5105,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             powerScore: st.powerScore,
             maxCool3: st.maxCool3,
             excludeFromAi: st.excludeFromAi,
-            ...(st.requestNote ? { requestNote: st.requestNote } : {}),
             allowedWorkShifts: st.allowedWorkShifts,
             ...(allowedWeekDaysSet.has(1) ? { day1AllowedWorkShifts: st.day1AllowedWorkShifts } : {}),
             ...(targetWeek.weekIndex === 1 ? { prevMonthCarryOver: st.prevMonthCarryOver } : {}),
@@ -5196,7 +5194,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 祝日が「空欄（休み）」になった職員は、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントし、基本は残り5日間を出勤にします（ただし同じ週に休・年休・振休・公出等の休み希望がある場合は、祝日の空欄と合わせて週4日以下の出勤になっても構いません）。祝日に出勤した職員は、同じ週に休・振休等がなければ他の平日に1日「空欄の公休」を残して5日出勤とし、別週に「振休」が入っている場合はその振休を該当週の休み1日分として扱います（同週に他の休み希望があれば週4日以下の出勤で可）。
          - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）は管理者・個人・OPE班入力用のためAI配置対象外です（新規出力禁止・既存変更禁止）。
          - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
-         - 職員情報に "requestNote"（個人的要望・パート契約内容など）が記載されている職員は、その契約・要望内容も可能な限り尊重してシフトを組んでください。
       3. 今週の週休確保（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
          - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak"（今週初日の直前までの連勤数）と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" を必ず守ってください（0の場合は今週初日 ${firstDay}日 を必ず空欄休みにすること）。
          - AIが休ませる日（週休枠の公休・振替休にあたる日）には休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
@@ -5919,7 +5916,7 @@ ${shiftSystemRefText}
   ・AIが新規入力・入れ替え提案できるシフトは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。
   ・"staffRequests"（スタッフ本人が入力した希望・シフト、および管理者が空欄公休に対応済みの lockedBlankOffDays を含む）、"teamAdminLocks"、ME室（${meShiftDescStr}）、およびその他（出勤・公出等）は、AIから新規に入れたり、変更・移動・削除することは絶対禁止です。
   ・既に入力済みのME室・出勤はその職員の連勤数・出勤日数に含めて考慮してください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休・年休等の休みが入っていない週）は必ずもう1日「空欄の公休」を残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを入れてください。
-- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。また、各職員に "requestNote"（個人的要望・パート契約内容など）が登録されている場合は、その契約・要望内容を可能な限り考慮してください。
+- 配置可能施設・シフト制限（重要）: 各職員に出勤シフトを割り当てる際は、必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみを使用してください（許可されていない施設・シフトには絶対に入れないこと。管理者が名指しで特例指示した場合のみ一言確認を添えて提案可）。
 - 前月末引き継ぎ・週休2日・祝日空欄と振休・最大連勤制限・休みの「空欄」表現（重要）:
   ・週休2日制（日曜休み＋月〜土のうち週1日休み）のため、連続出勤は月またぎ（前月末＋当月初）の通算も含めて最大「${maxStreak}日（${maxStreak}連勤）」までとし、${maxStreak + 1}連勤以上は作らないでください。
   ・祝日の休みは「空欄」で表し、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントします（基本は残り5日間が出勤ですが、同じ週に休み希望等がある場合は週4日以下の出勤でも構いません）。また、祝日に出勤した職員に月の別日で「振休」が入っている場合も、その「振休」を該当週の休み1日分としてカウントします（基本は5日出勤、同じ週に休み希望等がある場合は週4日以下の出勤でも可）。
@@ -9401,7 +9398,7 @@ ${messageText}`;
                     placeholder="例: パート週3日（月・水・金）契約、16時まで、祝日は休み希望など"
                   />
                   <p className="text-[10px] text-gray-400 mt-1">
-                    ※管理者画面の職員名欄にアイコン表示（カーソルで内容確認）され、AIシフト作成時にも考慮されます。
+                    ※管理者画面の職員名欄にアイコンが表示され、カーソルを合わせると内容をすぐ確認できます（AI作成用データには送信されません）。
                   </p>
                 </div>
 
