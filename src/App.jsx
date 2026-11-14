@@ -2138,9 +2138,9 @@ export default function WorkScheduleApp() {
     saveSchedule(shiftData, taskData, userInputs, bellData, leaderData, nextList);
   };
 
-  // カテゴリ3(B案): 管理者が承認カード上で入れ替え対象チェック（シフト・タスク・ベル等）を微調整するヘルパー
+  // カテゴリ3(B案): 全体管理者が承認カード上で入れ替え対象チェック（シフト・タスク・ベル等）を微調整するヘルパー
   const handleUpdatePendingRequestOption = (reqId, keyOrPatch, value) => {
-    if (appUser?.role !== 'admin') return;
+    if (!isMasterAdmin) return;
     const patch = typeof keyOrPatch === 'string' ? { [keyOrPatch]: value } : keyOrPatch;
     const nextList = changeRequests.map(r => (r && r.id === reqId ? { ...r, ...patch } : r));
     setChangeRequests(nextList);
@@ -2150,7 +2150,7 @@ export default function WorkScheduleApp() {
   // カテゴリ3(B案): 全体管理者による変更・交換申請のワンクリック承認＆勤務表反映
   const handleApproveChangeRequest = (reqOrId) => {
     const req = typeof reqOrId === 'string' ? changeRequests.find(r => r && r.id === reqOrId) : reqOrId;
-    if (appUser?.role !== 'admin' || !req || req.status !== 'pending') return;
+    if (!isMasterAdmin || !req || req.status !== 'pending') return;
 
     const nextShifts = { ...shiftData };
     const nextTasks = { ...taskData };
@@ -6779,8 +6779,8 @@ ${messageText}`;
         </div>
       </header>
 
-      {/* ★追加：勤務変更申請の未承認通知バー（管理者向け） */}
-      {appUser.role === 'admin' && pendingChangeRequests.length > 0 && (
+      {/* ★追加：勤務変更申請の未承認通知バー（全体管理者向け） */}
+      {isMasterAdmin && pendingChangeRequests.length > 0 && (
         <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-6 py-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm shrink-0 z-10">
           <div className="flex items-center gap-2 text-amber-900 text-xs sm:text-sm font-bold">
             <RefreshCw size={16} className="text-amber-600 shrink-0" />
@@ -7150,7 +7150,10 @@ ${messageText}`;
                             // 該当するログを探す
                             const targetLog = changeLogs.find(log => log.staffId === staff.id && log.targetDay === day && log.type === 'shift');
                             const hasLog = !!targetLog;
-                            const pendingReqsForCell = pendingChangeRequestMapByStaffDay[`${staff.id}_${day}`] || [];
+                            const pendingReqsForCell =
+                              isMasterAdmin || (appUser.role === 'staff' && staff.id === appUser.id)
+                                ? pendingChangeRequestMapByStaffDay[`${staff.id}_${day}`] || []
+                                : [];
                             const hasPendingReq = pendingReqsForCell.length > 0;
 
                             let cellBg = '';
@@ -7186,14 +7189,14 @@ ${messageText}`;
                             }
                             if (hasPendingReq) {
                               pendingReqsForCell.forEach(req => {
-                                if (req.type === 'swap') {
+                                if ((req.requestType || req.type) === 'swap') {
                                   const tDay = req.targetDay || req.requesterDay;
                                   shiftTooltips.push(
-                                    `【シフト交換申請中】\n${req.requesterName} (${month}/${req.requesterDay}) ⇔ ${req.targetStaffName} (${month}/${tDay})\n理由: ${req.reason || 'なし'}`
+                                    `【職員同士交換申請中】\n${req.requesterName} (${month}/${req.requesterDay}) ⇔ ${req.targetStaffName} (${month}/${tDay})\n理由: ${req.reason || 'なし'}`
                                   );
                                 } else {
                                   shiftTooltips.push(
-                                    `【休み・変更申請中】\n${req.requesterName} (${month}/${req.requesterDay}): ${formatShiftCodeLabel(req.beforeShift)} → ${formatShiftCodeLabel(req.requestedShiftCode)}\n理由: ${req.reason || 'なし'}`
+                                    `【単独変更申請中】\n${req.requesterName} (${month}/${req.requesterDay}): ${formatShiftCodeLabel(req.beforeShift ?? req.snapshot?.requesterShift)} → ${formatShiftCodeLabel(req.requestedShiftCode)}\n理由: ${req.reason || 'なし'}`
                                   );
                                 }
                               });
@@ -7415,12 +7418,12 @@ ${messageText}`;
                 </div>
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
-              {appUser.role === 'admin' && (pendingChangeRequestMapByStaffDay[`${activePopup.staffId}_${activePopup.day}`] || []).length > 0 && (
+              {isMasterAdmin && (pendingChangeRequestMapByStaffDay[`${activePopup.staffId}_${activePopup.day}`] || []).length > 0 && (
                 <div className="mb-2 p-2 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-900 shrink-0">
                   <div className="font-bold flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1">
                       <RefreshCw size={13} className="text-amber-600" />
-                      この日の変更・交換申請が届いています
+                      この日の勤務変更申請が届いています
                     </span>
                     <button
                       type="button"
@@ -10681,8 +10684,8 @@ ${messageText}`;
           </div>
         )}
 
-        {/* ★カテゴリ3（B案）：管理者向け 勤務交換・休み変更申請の一覧・承認モーダル */}
-        {showAdminChangeRequestsModal && appUser?.role === 'admin' && (
+        {/* ★カテゴリ3（B案）：全体管理者向け 勤務変更申請の一覧・承認モーダル */}
+        {showAdminChangeRequestsModal && isMasterAdmin && (
           <div
             className="fixed inset-0 bg-black/50 flex items-center justify-center z-[120] p-2 sm:p-4"
             onClick={() => setShowAdminChangeRequestsModal(false)}
