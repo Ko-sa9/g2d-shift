@@ -2156,6 +2156,41 @@ export default function WorkScheduleApp() {
     const nextTasks = { ...taskData };
     const nextBells = { ...bellData };
     const nextLeaders = { ...leaderData };
+    const nextUserInputs = { ...userInputs };
+
+    const updateTeamInputMark = (staffId, day, field, nextTeamKey) => {
+      const entry = normalizeUserInputEntry(
+        nextUserInputs[staffId]?.[day],
+        shiftData[staffId]?.[day],
+        taskData[staffId]?.[day]
+      );
+      if (nextTeamKey) {
+        entry[field] = nextTeamKey;
+      } else {
+        delete entry[field];
+      }
+      const staffInputs = { ...(nextUserInputs[staffId] || {}) };
+      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
+        staffInputs[day] = entry;
+        nextUserInputs[staffId] = staffInputs;
+      } else {
+        delete staffInputs[day];
+        if (Object.keys(staffInputs).length > 0) nextUserInputs[staffId] = staffInputs;
+        else delete nextUserInputs[staffId];
+      }
+    };
+
+    const resolveMovedTeamShiftKey = (sourceTeamKey, destStaffId, destShiftCode) => {
+      if (!destShiftCode) return null;
+      if (!sourceTeamKey) return isMeRoomShiftCode(destShiftCode) ? 'ope' : null;
+      if (sourceTeamKey === 'hhd') {
+        const destStaff = staffList.find(s => s.id === destStaffId);
+        if (!destStaff || !Array.isArray(destStaff.roles) || !destStaff.roles.includes('HHD班')) {
+          return null;
+        }
+      }
+      return sourceTeamKey;
+    };
 
     const cleanLeaderFlagIfNeeded = (staffId, day, newShiftCode) => {
       if (!nextLeaders[staffId]?.[day]) return;
@@ -2191,6 +2226,10 @@ export default function WorkScheduleApp() {
       const curT2 = nextTasks[s2]?.[d2] || null;
       const curB1 = Boolean(nextBells[s1]?.[d1]);
       const curB2 = Boolean(nextBells[s2]?.[d2]);
+      const curTeamShift1 = userInputs[s1]?.[d1] && typeof userInputs[s1][d1] === 'object' ? userInputs[s1][d1].teamShiftBy || null : null;
+      const curTeamShift2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].teamShiftBy || null : null;
+      const curTeamTask1 = userInputs[s1]?.[d1] && typeof userInputs[s1][d1] === 'object' ? userInputs[s1][d1].teamTaskBy || null : null;
+      const curTeamTask2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].teamTaskBy || null : null;
 
       if (req.snapshot) {
         const snapshotMismatch =
@@ -2214,6 +2253,8 @@ export default function WorkScheduleApp() {
         else delete nextShifts[s2][d2];
         cleanLeaderFlagIfNeeded(s1, d1, curS2);
         cleanLeaderFlagIfNeeded(s2, d2, curS1);
+        updateTeamInputMark(s1, d1, 'teamShiftBy', resolveMovedTeamShiftKey(curTeamShift2, s1, curS2));
+        updateTeamInputMark(s2, d2, 'teamShiftBy', resolveMovedTeamShiftKey(curTeamShift1, s2, curS1));
       }
 
       if (req.swapTask) {
@@ -2223,6 +2264,8 @@ export default function WorkScheduleApp() {
         else delete nextTasks[s1][d1];
         if (curT1) nextTasks[s2][d2] = curT1;
         else delete nextTasks[s2][d2];
+        updateTeamInputMark(s1, d1, 'teamTaskBy', curT2 ? curTeamTask2 : null);
+        updateTeamInputMark(s2, d2, 'teamTaskBy', curT1 ? curTeamTask1 : null);
       }
 
       if (req.swapBell) {
@@ -2247,11 +2290,13 @@ export default function WorkScheduleApp() {
       if (newCode) nextShifts[s1][d1] = newCode;
       else delete nextShifts[s1][d1];
       cleanLeaderFlagIfNeeded(s1, d1, newCode);
+      updateTeamInputMark(s1, d1, 'teamShiftBy', newCode && isMeRoomShiftCode(newCode) ? 'ope' : null);
 
       if (req.clearTaskAndBellOnOff) {
         if (nextTasks[s1]?.[d1]) {
           nextTasks[s1] = { ...nextTasks[s1] };
           delete nextTasks[s1][d1];
+          updateTeamInputMark(s1, d1, 'teamTaskBy', null);
         }
         if (nextBells[s1]?.[d1]) {
           const bMap = { ...nextBells[s1] };
@@ -2268,10 +2313,11 @@ export default function WorkScheduleApp() {
 
     setShiftData(nextShifts);
     setTaskData(nextTasks);
+    setUserInputs(nextUserInputs);
     setBellData(nextBells);
     setLeaderData(nextLeaders);
     setChangeRequests(nextChangeRequests);
-    saveSchedule(nextShifts, nextTasks, userInputs, nextBells, nextLeaders, nextChangeRequests);
+    saveSchedule(nextShifts, nextTasks, nextUserInputs, nextBells, nextLeaders, nextChangeRequests);
   };
 
   // カテゴリ3(B案): 全体管理者による申請の却下
@@ -6334,11 +6380,18 @@ ${messageText}`;
       .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
 
     daysArray.forEach(day => {
-      // 0. HHD班管理者が入力した勤務：薄い黄色（bg-yellow-100）で自動色付け（日曜の公出含む、リーダー色・ME室色が優先）
+      // 0. HHD班管理者が入力した勤務：対象職員がHHD班に所属している場合のみ薄い黄色（bg-yellow-100）で自動色付け（日曜の公出含む、リーダー色・ME室色が優先）
       staffList.forEach(s => {
         const code = shiftData[s.id]?.[day];
         const rawInput = userInputs[s.id]?.[day];
-        if (code && rawInput && typeof rawInput === 'object' && rawInput.teamShiftBy === 'hhd') {
+        if (
+          code &&
+          rawInput &&
+          typeof rawInput === 'object' &&
+          rawInput.teamShiftBy === 'hhd' &&
+          Array.isArray(s.roles) &&
+          s.roles.includes('HHD班')
+        ) {
           map[`${s.id}_${day}`] = {
             bgClass: 'bg-yellow-100',
             tooltip: '',
