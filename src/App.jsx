@@ -6334,6 +6334,19 @@ ${messageText}`;
       .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
 
     daysArray.forEach(day => {
+      // 0. HHD班管理者が入力した勤務：薄い黄色（bg-yellow-100）で自動色付け（日曜の公出含む、リーダー色・ME室色が優先）
+      staffList.forEach(s => {
+        const code = shiftData[s.id]?.[day];
+        const rawInput = userInputs[s.id]?.[day];
+        if (code && rawInput && typeof rawInput === 'object' && rawInput.teamShiftBy === 'hhd') {
+          map[`${s.id}_${day}`] = {
+            bgClass: 'bg-yellow-100',
+            tooltip: '',
+            source: 'hhd',
+          };
+        }
+      });
+
       if (isSunday(year, month, day)) return;
       const isHol = isHoliday(year, month, day, clinicClosedDays);
 
@@ -6392,7 +6405,7 @@ ${messageText}`;
     });
 
     return map;
-  }, [daysArray, year, month, clinicClosedDays, staffList, shiftData, leaderData, shiftDefs, categoryDefs]);
+  }, [daysArray, year, month, clinicClosedDays, staffList, shiftData, leaderData, userInputs, shiftDefs, categoryDefs]);
 
   // 基本設定タブ用: 個人カレンダーで選択可能なシフト（希望・休み・その他[公出等]・シフト希望表示ON）のみに絞り込み、設定画面が雑多にならないよう整理
   const basicSettingsShiftGroups = useMemo(() => {
@@ -7027,29 +7040,46 @@ ${messageText}`;
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r px-2 py-1 font-medium text-gray-700 whitespace-nowrap">
                             <div className="flex items-center justify-between group/cell w-full">
                               <div className={isMasterAdmin ? "cursor-pointer flex-1" : "flex-1"} onClick={(e) => { if(isMasterAdmin) { e.stopPropagation(); handleEditStaff(staff); } }}>
-                                <div className="text-xs sm:text-sm font-bold text-gray-800 leading-tight flex items-center gap-1">
+                                <div
+                                  className="text-xs sm:text-sm font-bold text-gray-800 leading-tight flex items-center gap-1"
+                                  title={appUser.role === 'admin' && staff.requestNote?.trim() ? `希望要項・契約内容:\n${staff.requestNote}` : undefined}
+                                >
                                   {staff.name}
                                   {isMasterAdmin && <Edit2 size={10} className="text-gray-300 opacity-0 group-hover/cell:opacity-100 transition"/>}
                                 </div>
                                 <div className="text-[10px] text-gray-500 leading-tight flex items-center gap-2">
                                   {staff.jobTitle}
-                                  {staff.skills?.isLeader && <ShieldCheck size={10} className="text-blue-500" title="リーダー可"/>}
-                                  {staff.skills?.isVeteran && <Star size={10} className="text-yellow-500" title="ベテラン"/>}
+                                  {staff.skills?.isLeader && (
+                                    <span className="inline-flex items-center" title="リーダー可">
+                                      <ShieldCheck size={10} className="text-blue-500" />
+                                    </span>
+                                  )}
+                                  {staff.skills?.isVeteran && (
+                                    <span className="inline-flex items-center" title="ベテラン">
+                                      <Star size={10} className="text-yellow-500" />
+                                    </span>
+                                  )}
                                   {getStaffRestrictionSummaryText(staff) && (
-                                    <ListFilter
-                                      size={10}
-                                      className="text-amber-500"
+                                    <span
+                                      className="inline-flex items-center"
                                       title={`AI配置制限あり（${getStaffRestrictionSummaryText(staff)}）`}
-                                    />
+                                    >
+                                      <ListFilter size={10} className="text-amber-500" />
+                                    </span>
                                   )}
                                   {appUser.role === 'admin' && staff.requestNote?.trim() && (
-                                    <MessageSquare
-                                      size={10}
-                                      className="text-indigo-500 fill-indigo-100"
+                                    <span
+                                      className="inline-flex items-center p-1 -m-1 rounded hover:bg-indigo-100 transition"
                                       title={`希望要項・契約内容:\n${staff.requestNote}`}
-                                    />
+                                    >
+                                      <MessageSquare size={12} className="text-indigo-600 fill-indigo-100" />
+                                    </span>
                                   )}
-                                  {staff.excludeFromAi && <Lock size={10} className="text-red-500" title="AI自動生成対象外"/>}
+                                  {staff.excludeFromAi && (
+                                    <span className="inline-flex items-center" title="AI自動生成対象外">
+                                      <Lock size={10} className="text-red-500" />
+                                    </span>
+                                  )}
                                 </div>
                                 {showCarryBadges && (
                                   <div className="mt-0.5 flex flex-wrap items-center gap-1" title={carry.tooltipText}>
