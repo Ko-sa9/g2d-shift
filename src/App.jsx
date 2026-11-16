@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2 } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer } from 'lucide-react';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
@@ -99,6 +99,14 @@ const TEAMS = [
   { id: 'echo', label: 'エコー班', role: 'エコー班' },
   { id: 'hhd', label: 'HHD班', role: 'HHD班' },
 ];
+
+const PRINT_PAPER_PRESETS = {
+  A4: { label: 'A4', shortMm: 210, longMm: 297 },
+  B4: { label: 'B4 (JIS)', shortMm: 257, longMm: 364 },
+  A3: { label: 'A3', shortMm: 297, longMm: 420 },
+};
+const PRINT_MARGIN_MM = 6;
+const PRINT_PX_PER_MM = 96 / 25.4;
 
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
@@ -1507,6 +1515,17 @@ export default function WorkScheduleApp() {
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, message: '', onConfirm: null, title: '確認' });
   const [showTargetCountModal, setShowTargetCountModal] = useState(false);
+
+  // 配布用全体表の印刷設定モーダル用状態
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printPaperSize, setPrintPaperSize] = useState('A4');
+  const [printOrientation, setPrintOrientation] = useState('landscape');
+  const [printFitMode, setPrintFitMode] = useState('auto'); // 'auto' | 'manual'
+  const [printManualScale, setPrintManualScale] = useState(100);
+  const [printTeamFilter, setPrintTeamFilter] = useState('all');
+  const [printShowJobTitle, setPrintShowJobTitle] = useState(false);
+  const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
+  const printSheetMeasureRef = useRef(null);
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
@@ -6613,6 +6632,62 @@ ${messageText}`;
     setYear(ny);
   };
 
+  const printStaffList = useMemo(() => {
+    const team = TEAMS.find(t => t.id === printTeamFilter);
+    if (team && team.role) {
+      return staffList.filter(s => Array.isArray(s.roles) && s.roles.includes(team.role));
+    }
+    return staffList;
+  }, [staffList, printTeamFilter]);
+
+  const printPaperMetrics = useMemo(() => {
+    const preset = PRINT_PAPER_PRESETS[printPaperSize] || PRINT_PAPER_PRESETS.A4;
+    const widthMm = printOrientation === 'landscape' ? preset.longMm : preset.shortMm;
+    const heightMm = printOrientation === 'landscape' ? preset.shortMm : preset.longMm;
+    const printableWidthPx = Math.floor((widthMm - PRINT_MARGIN_MM * 2) * PRINT_PX_PER_MM);
+    const printableHeightPx = Math.floor((heightMm - PRINT_MARGIN_MM * 2) * PRINT_PX_PER_MM);
+    const widthPx = Math.round(widthMm * PRINT_PX_PER_MM);
+    const heightPx = Math.round(heightMm * PRINT_PX_PER_MM);
+    const fitScaleW = (printableWidthPx - 4) / Math.max(1, printMeasuredSize.width);
+    const fitScaleH = (printableHeightPx - 4) / Math.max(1, printMeasuredSize.height);
+    const autoFitScale = Math.max(0.25, Math.min(1, fitScaleW, fitScaleH));
+    const effectiveScale =
+      printFitMode === 'auto'
+        ? autoFitScale
+        : Math.max(0.3, Math.min(1.2, (Number(printManualScale) || 100) / 100));
+    return {
+      label: preset.label,
+      widthMm,
+      heightMm,
+      widthPx,
+      heightPx,
+      printableWidthPx,
+      printableHeightPx,
+      autoFitScale,
+      effectiveScale,
+    };
+  }, [printPaperSize, printOrientation, printMeasuredSize, printFitMode, printManualScale]);
+
+  useLayoutEffect(() => {
+    if (!showPrintModal || !printSheetMeasureRef.current) return;
+    const el = printSheetMeasureRef.current;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (w > 0 && h > 0) {
+      setPrintMeasuredSize(prev => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+    }
+  }, [showPrintModal, printTeamFilter, printShowJobTitle, printStaffList, year, month, daysInMonth]);
+
+  const handleOpenPrintModal = () => {
+    setActivePopup(null);
+    const initialTeam =
+      appUser?.role === 'admin' && appUser.initialView && appUser.initialView !== 'all'
+        ? appUser.initialView
+        : currentView || 'all';
+    setPrintTeamFilter(initialTeam);
+    setShowPrintModal(true);
+  };
+
   // ページ再読み込み時に保存済みセッションからログイン状態を自動復元
   useEffect(() => {
     if (!isDataLoaded || !isRestoringSession) return;
@@ -6711,33 +6786,140 @@ ${messageText}`;
     return opts;
   };
 
-  return (
-    <div className="flex flex-col h-screen bg-gray-100 text-sm font-sans" onClick={() => setActivePopup(null)}>
-      <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
-        <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-          <div className="flex items-center bg-gray-50 rounded-lg p-1 border shrink-0">
-            <button onClick={() => handleChangeMonth(-1)} className="p-1 hover:bg-gray-200 rounded" title="前月"><ChevronLeft size={18} className="sm:w-5 sm:h-5" /></button>
-            <div className="px-2 sm:px-4 font-bold text-sm sm:text-lg text-gray-700 min-w-[70px] sm:min-w-[100px] text-center whitespace-nowrap flex items-center justify-center gap-1">
-              <span>{year}/{month}</span>
-              {loadedScheduleId !== `schedule_${year}_${month}` && (
-                <Loader2 size={14} className="animate-spin text-blue-500 shrink-0" title="読み込み中" />
-              )}
-            </div>
-            <button onClick={() => handleChangeMonth(1)} className="p-1 hover:bg-gray-200 rounded" title="次月"><ChevronRight size={18} className="sm:w-5 sm:h-5" /></button>
+  const renderPrintScheduleSheet = () => {
+    const printTeamObj = TEAMS.find(t => t.id === printTeamFilter);
+    return (
+      <div className="bg-white text-gray-900">
+        <div className="flex items-end justify-between gap-4 mb-1.5 px-0.5">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-sm font-bold text-gray-900 leading-none">
+              {year}年{month}月 勤務表{printTeamObj?.role ? `（${printTeamObj.label}）` : ''}
+            </h2>
+            <span className="text-[10px] text-gray-600 font-medium">対象 {printStaffList.length}名</span>
           </div>
-          <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 truncate max-w-[110px] sm:max-w-none ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
-            {appUser.role === 'admin' ? (adminSettings[appUser.initialView]?.label || '管理者') : `${appUser.name}`}
-          </span>
-          
-          {appUser.role === 'admin' && (
-            <div className="flex items-center bg-gray-100 rounded p-1 border shrink-0">
-              {TEAMS.filter(team => appUser.initialView === 'all' || team.id === appUser.initialView).map(team => (
-                <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-2 sm:px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
-              ))}
-            </div>
-          )}
+          <div className="text-[9px] text-gray-500 whitespace-nowrap">
+            背景色：リーダー（施設色）・ME室(灰)・HHD(黄)・緊急待機番(橙)
+          </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
+        <table className="border-collapse bg-white text-gray-800">
+          <thead>
+            <tr>
+              <th className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap">
+                氏名
+              </th>
+              {daysArray.map(day => {
+                const isSun = isSunday(year, month, day);
+                const isHol = isHoliday(year, month, day, clinicClosedDays);
+                const dow = getDayOfWeek(year, month, day);
+                const thColor =
+                  isSun || isHol
+                    ? 'bg-red-50 text-red-600'
+                    : dow === 6
+                      ? 'bg-blue-50 text-blue-600'
+                      : 'bg-gray-50 text-gray-800';
+                return (
+                  <th
+                    key={day}
+                    className={`w-[32px] min-w-[32px] px-0.5 py-0.5 text-center border border-gray-400 ${thColor}`}
+                  >
+                    <div className="text-[10px] font-bold leading-tight">{day}</div>
+                    <div className="text-[9px] font-normal leading-none">
+                      {['日', '月', '火', '水', '木', '金', '土'][dow]}
+                    </div>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {printStaffList.map(staff => (
+              <tr key={staff.id}>
+                <td className="px-1.5 py-0.5 border border-gray-400 bg-white text-left whitespace-nowrap">
+                  <div className="text-[11px] font-bold leading-tight text-gray-900">{staff.name}</div>
+                  {printShowJobTitle && staff.jobTitle && (
+                    <div className="text-[8px] leading-tight text-gray-500">{staff.jobTitle}</div>
+                  )}
+                </td>
+                {daysArray.map(day => {
+                  const shiftCode = shiftData[staff.id]?.[day];
+                  const taskCode = taskData[staff.id]?.[day];
+                  const hasBell = Boolean(bellData[staff.id]?.[day]);
+                  const autoShiftHighlight = autoShiftHighlightMap[`${staff.id}_${day}`];
+                  const shift = shiftDefs[shiftCode];
+                  const task = shiftDefs[taskCode];
+                  const isSun = isSunday(year, month, day);
+                  const shiftBg = autoShiftHighlight
+                    ? autoShiftHighlight.bgClass
+                    : isSun
+                      ? 'bg-red-50'
+                      : 'bg-white';
+                  const taskBg = hasBell ? 'bg-orange-200' : isSun ? 'bg-red-50' : 'bg-white';
+                  return (
+                    <td key={day} className="p-0 border border-gray-400 text-center align-middle">
+                      <div className="flex flex-col w-full">
+                        <div className={`h-[17px] flex items-center justify-center border-b border-gray-200 ${shiftBg}`}>
+                          {shift ? (
+                            <span className={`font-bold text-[10px] leading-none ${shift.text}`}>{shift.label}</span>
+                          ) : null}
+                        </div>
+                        <div className={`h-[16px] flex items-center justify-center ${taskBg}`}>
+                          {task ? (
+                            <span className={`font-bold text-[9px] leading-none ${task.text || 'text-gray-700'}`}>
+                              {task.label}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div
+        className={`flex flex-col h-screen bg-gray-100 text-sm font-sans ${showPrintModal ? 'print:hidden' : ''}`}
+        onClick={() => setActivePopup(null)}
+      >
+        <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <div className="flex items-center bg-gray-50 rounded-lg p-1 border shrink-0">
+              <button onClick={() => handleChangeMonth(-1)} className="p-1 hover:bg-gray-200 rounded" title="前月"><ChevronLeft size={18} className="sm:w-5 sm:h-5" /></button>
+              <div className="px-2 sm:px-4 font-bold text-sm sm:text-lg text-gray-700 min-w-[70px] sm:min-w-[100px] text-center whitespace-nowrap flex items-center justify-center gap-1">
+                <span>{year}/{month}</span>
+                {loadedScheduleId !== `schedule_${year}_${month}` && (
+                  <Loader2 size={14} className="animate-spin text-blue-500 shrink-0" title="読み込み中" />
+                )}
+              </div>
+              <button onClick={() => handleChangeMonth(1)} className="p-1 hover:bg-gray-200 rounded" title="次月"><ChevronRight size={18} className="sm:w-5 sm:h-5" /></button>
+            </div>
+            <span className={`px-2 py-1.5 rounded text-xs font-bold shrink-0 truncate max-w-[110px] sm:max-w-none ${appUser.role === 'admin' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+              {appUser.role === 'admin' ? (adminSettings[appUser.initialView]?.label || '管理者') : `${appUser.name}`}
+            </span>
+            
+            {appUser.role === 'admin' && (
+              <div className="flex items-center bg-gray-100 rounded p-1 border shrink-0">
+                {TEAMS.filter(team => appUser.initialView === 'all' || team.id === appUser.initialView).map(team => (
+                  <button key={team.id} onClick={() => { setCurrentView(team.id); if(appUser.role==='staff') setViewMode('all'); }} className={`px-2 sm:px-3 py-1 text-xs rounded transition ${currentView === team.id ? 'bg-white shadow text-blue-600 font-bold' : 'text-gray-500 hover:bg-gray-200'}`}>{team.label}</button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
+             <button
+               type="button"
+               onClick={handleOpenPrintModal}
+               className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+               title="全体表を印刷（A4・B4・A3サイズ調整対応）"
+             >
+               <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
+             </button>
            {appUser.role === 'admin' && isMasterAdmin && (
              <>
                <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
@@ -9328,125 +9510,6 @@ ${messageText}`;
                       if (e.keyCode === 229 || e.nativeEvent.isComposing) return;
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
-                        handleAiSend();
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={() => handleAiSend()}
-                    disabled={isAiLoading || !aiInput.trim()}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl transition disabled:opacity-50 flex items-center justify-center shrink-0 h-10"
-                    title="送信"
-                  >
-                    <Send size={18}/>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* スタッフ詳細（サブモーダル） (z-index 110) */}
-        {showStaffModal && isMasterAdmin && (
-          <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
-                <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
-              </div>
-              <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-                <div className="grid grid-cols-2 gap-3">
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} /></div>
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label><select className="w-full border p-2 rounded text-sm" value={targetStaff.jobTitle || '一般'} onChange={e => setTargetStaff({...targetStaff, jobTitle: e.target.value})}>{JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-                </div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
-                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
-
-                {/* Step 1: AI配置可能な施設・個別シフト制限（B案） */}
-                <div className="border-t pt-4">
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-bold text-gray-700 flex items-center gap-1">
-                      <ListFilter size={13} className="text-blue-600" />
-                      AI配置可能な施設・シフト制限
-                    </label>
-                    {(
-                      (targetStaff.excludedCategories || []).some(cid => categoryDefs[cid] && resolveCategoryKind(categoryDefs[cid]) === 'facility') ||
-                      (targetStaff.excludedShifts || []).some(c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs))
-                    ) && (
-                      <button
-                        type="button"
-                        onClick={() => setTargetStaff({ ...targetStaff, excludedCategories: [], excludedShifts: [] })}
-                        className="text-[10px] text-blue-600 hover:underline font-bold"
-                      >
-                        すべて許可に戻す
-                      </button>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-gray-400 mb-2">
-                    ※AI作成・提案時のみ適用されます（管理者の手動入力時は全シフト選べます。ME室・その他は常時AI対象外）。
-                  </p>
-
-                  <div className="bg-gray-50 border rounded-lg p-3 space-y-2.5">
-                    <div className="text-[11px] font-bold text-gray-600">配置可能な施設（チェックを外すとAI配置対象外）</div>
-                    <div className="flex flex-wrap gap-2">
-                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind === 'facility').map(group => {
-                        const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
-                        const isAllowed = !exCats.includes(group.id);
-                        return (
-                          <label
-                            key={group.id}
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer select-none transition ${
-                              isAllowed
-                                ? 'bg-white border-blue-400 text-gray-800 ring-1 ring-blue-300 shadow-xs'
-                                : 'bg-gray-100 border-gray-200 text-gray-400'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              className="w-3.5 h-3.5 text-blue-600 rounded"
-                              checked={isAllowed}
-                              onChange={() => {
-                                const nextExCats = isAllowed
-                                  ? [...exCats, group.id]
-                                  : exCats.filter(id => id !== group.id);
-                                setTargetStaff({ ...targetStaff, excludedCategories: nextExCats });
-                              }}
-                            />
-                            <span>{group.name}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-
-                    {/* B案: 折りたたみ式の個別シフトOFF設定 */}
-                    <div className="pt-1 border-t border-gray-200">
-                      {(() => {
-                        const effectiveExcludedShiftCount = (targetStaff.excludedShifts || []).filter(
-                          c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)
-                        ).length;
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => setShowStaffShiftDetailRestriction(prev => !prev)}
-                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 py-1"
-                          >
-                            <span>{showStaffShiftDetailRestriction ? '▼' : '▶'} 個別シフト単位で細かく制限する（2クール不可など）</span>
-                            {effectiveExcludedShiftCount > 0 && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px]">
-                                除外 {effectiveExcludedShiftCount}件
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })()}
-
-                      {showStaffShiftDetailRestriction && (
-                        <div className="mt-2 space-y-2.5 bg-white border rounded-lg p-2.5">
-                          <p className="text-[10px] text-gray-400">
-                            チェックを外したシフトにはAIが割り振りません（特定のクールや時間帯のみ除外したい場合に使えます）。
-                          </p>
-                          {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind === 'facility').map(group => {
-                            const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                             const exShifts = Array.isArray(targetStaff.excludedShifts) ? targetStaff.excludedShifts : [];
                             const isCatDisabled = exCats.includes(group.id);
                             return (
@@ -11038,7 +11101,293 @@ ${messageText}`;
           </div>
         )}
 
+        {/* ★配布用全体表 印刷設定＆プレビューモーダル */}
+        {showPrintModal && (() => {
+          const previewPaperScale = Math.min(
+            0.68,
+            680 / Math.max(1, printPaperMetrics.widthPx),
+            390 / Math.max(1, printPaperMetrics.heightPx)
+          );
+          const paperBoxW = Math.round(printPaperMetrics.widthPx * previewPaperScale);
+          const paperBoxH = Math.round(printPaperMetrics.heightPx * previewPaperScale);
+          const marginPx = Math.round(PRINT_MARGIN_MM * PRINT_PX_PER_MM * previewPaperScale);
+          const previewContentScale = printPaperMetrics.effectiveScale * previewPaperScale;
+          const scaledOutW = Math.ceil(printMeasuredSize.width * printPaperMetrics.effectiveScale);
+          const scaledOutH = Math.ceil(printMeasuredSize.height * printPaperMetrics.effectiveScale);
+          const overflowsPaper =
+            scaledOutW > printPaperMetrics.printableWidthPx + 2 ||
+            scaledOutH > printPaperMetrics.printableHeightPx + 2;
+          const allowedPrintTeams =
+            appUser?.role === 'admin' && appUser.initialView && appUser.initialView !== 'all'
+              ? TEAMS.filter(t => t.id === appUser.initialView)
+              : TEAMS;
+
+          return (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-[90] p-3 sm:p-4"
+              onClick={() => setShowPrintModal(false)}
+            >
+              <div
+                className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden border border-gray-200"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Printer size={18} className="text-slate-700" />
+                    <h3 className="font-bold text-gray-800 text-sm sm:text-base">
+                      全体表 印刷設定（配布用・シフト＆タスク）
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrintModal(false)}
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* 設定コントロールバー */}
+                <div className="px-4 py-3 border-b bg-white flex flex-wrap items-center gap-x-5 gap-y-2.5 text-xs shrink-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-gray-600">用紙:</span>
+                    {Object.entries(PRINT_PAPER_PRESETS).map(([key, preset]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setPrintPaperSize(key)}
+                        className={`px-2.5 py-1 rounded border font-bold transition ${
+                          printPaperSize === key
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-gray-600">向き:</span>
+                    {[
+                      { id: 'landscape', label: '横向き（推奨）' },
+                      { id: 'portrait', label: '縦向き' },
+                    ].map(opt => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setPrintOrientation(opt.id)}
+                        className={`px-2.5 py-1 rounded border font-bold transition ${
+                          printOrientation === opt.id
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {allowedPrintTeams.length > 1 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-gray-600">対象:</span>
+                      <select
+                        value={printTeamFilter}
+                        onChange={e => setPrintTeamFilter(e.target.value)}
+                        className="border border-gray-300 rounded px-2 py-1 text-xs font-bold text-gray-700 bg-white"
+                      >
+                        {allowedPrintTeams.map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.id === 'all' ? '全体（職員全員）' : t.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-600">収め方:</span>
+                    <label className="inline-flex items-center gap-1 cursor-pointer font-bold text-gray-700">
+                      <input
+                        type="radio"
+                        name="printFitMode"
+                        checked={printFitMode === 'auto'}
+                        onChange={() => setPrintFitMode('auto')}
+                        className="text-blue-600"
+                      />
+                      1ページに自動収め ({Math.round(printPaperMetrics.autoFitScale * 100)}%)
+                    </label>
+                    <label className="inline-flex items-center gap-1 cursor-pointer font-bold text-gray-700 ml-1">
+                      <input
+                        type="radio"
+                        name="printFitMode"
+                        checked={printFitMode === 'manual'}
+                        onChange={() => {
+                          setPrintManualScale(Math.round(printPaperMetrics.autoFitScale * 100));
+                          setPrintFitMode('manual');
+                        }}
+                        className="text-blue-600"
+                      />
+                      倍率指定
+                    </label>
+                    {printFitMode === 'manual' && (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="range"
+                          min={35}
+                          max={110}
+                          value={printManualScale}
+                          onChange={e => setPrintManualScale(Number(e.target.value))}
+                          className="w-24"
+                        />
+                        <span className="font-bold text-blue-700 w-9 text-right">{printManualScale}%</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <label className="inline-flex items-center gap-1 cursor-pointer text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={printShowJobTitle}
+                      onChange={e => setPrintShowJobTitle(e.target.checked)}
+                      className="rounded text-blue-600"
+                    />
+                    氏名の下に役職・雇用形態を表示
+                  </label>
+                </div>
+
+                {/* 用紙プレビュー領域 */}
+                <div className="flex-1 overflow-auto bg-gray-200/80 p-4 flex flex-col items-center justify-center min-h-[260px]">
+                  <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-[11px] text-gray-600">
+                    <span className="font-bold bg-white/90 px-2 py-0.5 rounded border border-gray-300">
+                      {printPaperMetrics.label} {printOrientation === 'landscape' ? '横' : '縦'}（{printPaperMetrics.widthMm}×{printPaperMetrics.heightMm}mm）
+                    </span>
+                    <span className="bg-white/90 px-2 py-0.5 rounded border border-gray-300">
+                      対象: 職員 {printStaffList.length}名分（集計行・残業列・希望マーク非表示）
+                    </span>
+                    {overflowsPaper && (
+                      <span className="bg-rose-100 text-rose-700 border border-rose-300 px-2 py-0.5 rounded font-bold">
+                        ※ 現在の手動倍率では1枚からはみ出します（「1ページに自動収め」または用紙拡大をおすすめします）
+                      </span>
+                    )}
+                  </div>
+
+                  <div
+                    className={`bg-white shadow-lg border transition-all ${
+                      overflowsPaper ? 'border-rose-400 ring-2 ring-rose-200' : 'border-gray-300'
+                    }`}
+                    style={{
+                      width: `${paperBoxW}px`,
+                      height: `${paperBoxH}px`,
+                      padding: `${marginPx}px`,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.ceil(printMeasuredSize.width * previewContentScale)}px`,
+                        height: `${Math.ceil(printMeasuredSize.height * previewContentScale)}px`,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        ref={printSheetMeasureRef}
+                        className="inline-block"
+                        style={{
+                          width: 'max-content',
+                          transform: `scale(${previewContentScale})`,
+                          transformOrigin: 'top left',
+                        }}
+                      >
+                        {renderPrintScheduleSheet()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* フッター */}
+                <div className="px-4 py-3 border-t bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
+                  <p className="text-[11px] text-gray-500">
+                    ※ 印刷ダイアログでも用紙サイズ（{printPaperMetrics.label}）・向き（
+                    {printOrientation === 'landscape' ? '横' : '縦'}
+                    ）を合わせると正確に収まります（色が付かない場合は詳細設定の「背景のグラフィック」を有効にしてください）。
+                  </p>
+                  <div className="flex items-center justify-end gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowPrintModal(false)}
+                      className="px-3 py-1.5 rounded border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 text-xs font-bold"
+                    >
+                      閉じる
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.print()}
+                      disabled={printStaffList.length === 0}
+                      className="flex items-center gap-1.5 px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-xs font-bold shadow-sm transition"
+                    >
+                      <Printer size={15} />
+                      この設定で印刷する
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
       </div>
     </div>
+
+    {/* 実際の印刷出力専用コンテナ（画面上は非表示、印刷時のみ1ページ用紙サイズで展開） */}
+    {showPrintModal && (
+      <>
+        <style>{`
+          @media print {
+            @page {
+              size: ${printPaperMetrics.widthMm}mm ${printPaperMetrics.heightMm}mm;
+              margin: ${PRINT_MARGIN_MM}mm;
+            }
+            html, body {
+              margin: 0 !important;
+              padding: 0 !important;
+              width: auto !important;
+              height: auto !important;
+              overflow: visible !important;
+              background: #ffffff !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+            #print-sheet-root * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
+        `}</style>
+        <div id="print-sheet-root" className="hidden print:block bg-white">
+          <div
+            style={{
+              width: `${Math.ceil(printMeasuredSize.width * printPaperMetrics.effectiveScale)}px`,
+              height:
+                printFitMode === 'auto'
+                  ? `${Math.ceil(printMeasuredSize.height * printPaperMetrics.effectiveScale)}px`
+                  : 'auto',
+              overflow: printFitMode === 'auto' ? 'hidden' : 'visible',
+            }}
+          >
+            <div
+              style={{
+                width: `${printMeasuredSize.width}px`,
+                transform: `scale(${printPaperMetrics.effectiveScale})`,
+                transformOrigin: 'top left',
+              }}
+            >
+              {renderPrintScheduleSheet()}
+            </div>
+          </div>
+        </div>
+      </>
+    )}
+    </>
   );
 }
