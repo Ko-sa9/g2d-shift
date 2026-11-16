@@ -7049,9 +7049,12 @@ ${messageText}`;
                               <div className="flex items-center gap-1 flex-wrap">
                                 <span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力
                                 <span className="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block ml-1"></span>班管理固定
-                                <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><MessageSquare size={9} className="fill-pink-100"/>理由あり</span>
+                                <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><span className="w-0 h-0 border-t-[7px] border-t-pink-500 border-l-[7px] border-l-transparent inline-block" />理由あり</span>
                               </div>
-                              <div className="flex items-center gap-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>編集前の希望</div>
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <span className="inline-flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-full bg-pink-600 ring-1 ring-pink-300 inline-block" />希望変更</span>
+                                <span className="inline-flex items-center gap-0.5 ml-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>空欄時の元希望</span>
+                              </div>
                             </div>
                           )}
                           {isMasterAdmin && <button onClick={(e) => { e.stopPropagation(); handleAddStaff(); }} className="flex items-center gap-1 text-xs bg-white border px-2 py-1 rounded text-blue-600 font-bold"><Plus size={12}/> 職員追加</button>}
@@ -7303,15 +7306,19 @@ ${messageText}`;
                                       <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
                                     )}
                                     {appUser.role === 'admin' && reqShiftCode && (
-                                      shiftCode !== reqShiftCode ? (
-                                        <span className="absolute top-0.5 right-0.5 px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[34px] inline-flex items-center gap-0.5">
-                                          <span className="truncate">{reqShift?.label || reqShiftCode}</span>
-                                          {reqReason && <MessageSquare size={8} className="shrink-0 text-pink-600 fill-pink-200" />}
-                                        </span>
+                                      shiftCode !== reqShiftCode && !shift ? (
+                                        <>
+                                          {reqReason && (
+                                            <span className="absolute top-0 right-0 w-0 h-0 border-t-[7px] border-t-pink-600 border-l-[7px] border-l-transparent pointer-events-none" />
+                                          )}
+                                          <span className="px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[34px] truncate">
+                                            {reqShift?.label || reqShiftCode}
+                                          </span>
+                                        </>
                                       ) : reqReason ? (
-                                        <span className="absolute top-0 right-0 w-0 h-0 border-t-[7px] border-t-pink-500 border-l-[7px] border-l-transparent pointer-events-none" />
+                                        <span className={`absolute top-0 right-0 w-0 h-0 border-t-[7px] border-l-[7px] border-l-transparent pointer-events-none ${shiftCode !== reqShiftCode ? 'border-t-pink-600' : 'border-t-pink-500'}`} />
                                       ) : (
-                                        <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
+                                        <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full pointer-events-none ${shiftCode !== reqShiftCode ? 'bg-pink-600 ring-1 ring-pink-300' : 'bg-pink-500'}`} />
                                       )
                                     )}
                                     {shift ? <span className={`font-bold text-xs leading-none ${shift.text}`}>{shift.label}</span> : null}
