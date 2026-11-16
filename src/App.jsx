@@ -7051,9 +7051,12 @@ ${messageText}`;
                                 <span className="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block ml-1"></span>班管理固定
                                 <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><span className="w-0 h-0 border-t-[7px] border-t-pink-500 border-l-[7px] border-l-transparent inline-block" />理由あり</span>
                               </div>
-                              <div className="flex items-center gap-1 flex-wrap">
-                                <span className="inline-flex items-center gap-0.5"><span className="w-1.5 h-1.5 rounded-full bg-pink-600 ring-1 ring-pink-300 inline-block" />希望変更</span>
-                                <span className="inline-flex items-center gap-0.5 ml-1"><span className="px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">希望</span>空欄時の元希望</span>
+                              <div className="flex items-center gap-1">
+                                <span className="inline-flex items-center gap-0.5 px-1 py-[1px] rounded bg-pink-100 text-pink-700 border border-pink-200 font-bold text-[8px] leading-none">
+                                  <span>希望</span>
+                                  <MessageSquare size={7} className="text-pink-600 fill-pink-200" />
+                                </span>
+                                編集前の希望
                               </div>
                             </div>
                           )}
@@ -7093,6 +7096,12 @@ ${messageText}`;
                         carry.staffHasPrevWorkShift &&
                         (carry.trailingWorkStreak > 0 || carry.prevLastDayWasCool3)
                       );
+                      const rowHasChangedShiftReq =
+                        appUser.role === 'admin' &&
+                        daysArray.some(d => {
+                          const reqS = getUserRequestedShift(staff.id, d);
+                          return Boolean(reqS && shiftData[staff.id]?.[d] !== reqS);
+                        });
                       return (
                         <tr 
                           key={staff.id} 
@@ -7289,11 +7298,11 @@ ${messageText}`;
                             const taskTooltip = taskTooltips.join('\n');
 
                             return (
-                              <td key={day} className={`border-b border-r text-center p-0 h-11 relative ${cellBg}`}>
+                              <td key={day} className={`border-b border-r text-center p-0 ${rowHasChangedShiftReq ? 'h-[58px]' : 'h-11'} relative ${cellBg}`}>
                                 <div className="w-full h-full flex flex-col">
-                                  {/* シフト表示部分(上1/2)にだけスタイルとツールチップを適用 */}
+                                  {/* シフト表示部分(上段)：希望変更がある行は自動で高さを広げ、元希望バッジとシフト文字を上下に並べる */}
                                   <div 
-                                    className={`h-1/2 relative flex items-center justify-center border-b border-gray-100 transition 
+                                    className={`${rowHasChangedShiftReq ? 'flex-1 min-h-[36px]' : 'h-1/2'} relative flex flex-col items-center justify-center gap-[2px] py-[1px] border-b border-gray-100 transition 
                                       ${hasLog ? 'bg-yellow-100 ring-2 ring-inset ring-orange-400 z-10 hover:bg-yellow-100' : ''} 
                                       ${!hasLog && hasPendingReq ? 'bg-amber-50 ring-2 ring-inset ring-amber-400 z-10 hover:bg-amber-100' : ''}
                                       ${!hasLog && !hasPendingReq && activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'shift' ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10' : ''}
@@ -7306,27 +7315,23 @@ ${messageText}`;
                                       <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500 pointer-events-none" />
                                     )}
                                     {appUser.role === 'admin' && reqShiftCode && (
-                                      shiftCode !== reqShiftCode && !shift ? (
-                                        <>
-                                          {reqReason && (
-                                            <span className="absolute top-0 right-0 w-0 h-0 border-t-[7px] border-t-pink-600 border-l-[7px] border-l-transparent pointer-events-none" />
-                                          )}
-                                          <span className="px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none max-w-[34px] truncate">
-                                            {reqShift?.label || reqShiftCode}
-                                          </span>
-                                        </>
+                                      shiftCode !== reqShiftCode ? (
+                                        <span className={`px-1 py-[1px] rounded text-[8px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold pointer-events-none inline-flex items-center gap-0.5 ${teamShiftLock ? 'ml-1.5 max-w-[26px]' : 'max-w-[34px]'}`}>
+                                          <span className="truncate">{reqShift?.label || reqShiftCode}</span>
+                                          {reqReason && <MessageSquare size={8} className="shrink-0 text-pink-600 fill-pink-200" />}
+                                        </span>
                                       ) : reqReason ? (
-                                        <span className={`absolute top-0 right-0 w-0 h-0 border-t-[7px] border-l-[7px] border-l-transparent pointer-events-none ${shiftCode !== reqShiftCode ? 'border-t-pink-600' : 'border-t-pink-500'}`} />
+                                        <span className="absolute top-0 right-0 w-0 h-0 border-t-[7px] border-t-pink-500 border-l-[7px] border-l-transparent pointer-events-none" />
                                       ) : (
-                                        <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full pointer-events-none ${shiftCode !== reqShiftCode ? 'bg-pink-600 ring-1 ring-pink-300' : 'bg-pink-500'}`} />
+                                        <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-pink-500 pointer-events-none" />
                                       )
                                     )}
                                     {shift ? <span className={`font-bold text-xs leading-none ${shift.text}`}>{shift.label}</span> : null}
                                   </div>
                                   
-                                  {/* タスク表示部分(下1/2) */}
+                                  {/* タスク表示部分(下段) */}
                                   <div
-                                    className={`h-1/2 relative flex items-center justify-center transition
+                                    className={`${rowHasChangedShiftReq ? 'h-[22px] shrink-0' : 'h-1/2'} relative flex items-center justify-center transition
                                       ${isTaskEditable ? 'cursor-pointer' : ''}
                                       ${activePopup?.day === day && activePopup?.staffId === staff.id && activePopup?.type === 'task'
                                         ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 z-10'
