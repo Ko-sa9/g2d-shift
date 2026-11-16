@@ -1381,7 +1381,7 @@ const LoginScreen = ({ onLogin, staffList, adminSettings = DEFAULT_ADMIN_SETTING
 };
 
 // ------------------------------------------------------------------
-// ログイン状態永続化ヘルパー（ページ再読み込み時の再ログイン防止）
+// ログイン状態永続化ヘルパー（ページ再読み込み時は維持し、タブを閉じたらログアウト）
 // ------------------------------------------------------------------
 const SAVED_AUTH_SESSION_KEY = 'workScheduleAppSession';
 
@@ -1397,7 +1397,13 @@ const createAuthFingerprint = (secret = '') => {
 
 const readSavedAuthSession = () => {
   try {
-    const raw = localStorage.getItem(SAVED_AUTH_SESSION_KEY);
+    // 旧localStorage方式の残存データを掃除
+    try {
+      localStorage.removeItem(SAVED_AUTH_SESSION_KEY);
+    } catch {
+      // ignore
+    }
+    const raw = sessionStorage.getItem(SAVED_AUTH_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || (parsed.role !== 'admin' && parsed.role !== 'staff')) return null;
@@ -1409,14 +1415,20 @@ const readSavedAuthSession = () => {
 
 const writeSavedAuthSession = (user, adminSettingsMap = DEFAULT_ADMIN_SETTINGS) => {
   try {
-    if (!user) {
+    // 旧localStorage方式の残存データを掃除
+    try {
       localStorage.removeItem(SAVED_AUTH_SESSION_KEY);
+    } catch {
+      // ignore
+    }
+    if (!user) {
+      sessionStorage.removeItem(SAVED_AUTH_SESSION_KEY);
       return;
     }
     if (user.role === 'admin') {
       const viewKey = user.initialView || 'all';
       const pwd = adminSettingsMap?.[viewKey]?.password ?? '';
-      localStorage.setItem(
+      sessionStorage.setItem(
         SAVED_AUTH_SESSION_KEY,
         JSON.stringify({
           role: 'admin',
@@ -1425,7 +1437,7 @@ const writeSavedAuthSession = (user, adminSettingsMap = DEFAULT_ADMIN_SETTINGS) 
         })
       );
     } else if (user.role === 'staff' && user.id) {
-      localStorage.setItem(
+      sessionStorage.setItem(
         SAVED_AUTH_SESSION_KEY,
         JSON.stringify({
           role: 'staff',
