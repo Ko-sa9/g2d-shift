@@ -9510,6 +9510,125 @@ ${messageText}`;
                       if (e.keyCode === 229 || e.nativeEvent.isComposing) return;
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
+                        handleAiSend();
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => handleAiSend()}
+                    disabled={isAiLoading || !aiInput.trim()}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl transition disabled:opacity-50 flex items-center justify-center shrink-0 h-10"
+                    title="送信"
+                  >
+                    <Send size={18}/>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* スタッフ詳細（サブモーダル） (z-index 110) */}
+        {showStaffModal && isMasterAdmin && (
+          <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
+                <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
+              </div>
+              <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1">ログインID <span className="text-red-500">*</span></label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.loginId || ''} onChange={e => setTargetStaff({...targetStaff, loginId: e.target.value})} /></div>
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1">役職</label><select className="w-full border p-2 rounded text-sm" value={targetStaff.jobTitle || '一般'} onChange={e => setTargetStaff({...targetStaff, jobTitle: e.target.value})}>{JOB_TITLES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                </div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
+                <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
+
+                {/* Step 1: AI配置可能な施設・個別シフト制限（B案） */}
+                <div className="border-t pt-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-gray-700 flex items-center gap-1">
+                      <ListFilter size={13} className="text-blue-600" />
+                      AI配置可能な施設・シフト制限
+                    </label>
+                    {(
+                      (targetStaff.excludedCategories || []).some(cid => categoryDefs[cid] && resolveCategoryKind(categoryDefs[cid]) === 'facility') ||
+                      (targetStaff.excludedShifts || []).some(c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs))
+                    ) && (
+                      <button
+                        type="button"
+                        onClick={() => setTargetStaff({ ...targetStaff, excludedCategories: [], excludedShifts: [] })}
+                        className="text-[10px] text-blue-600 hover:underline font-bold"
+                      >
+                        すべて許可に戻す
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-400 mb-2">
+                    ※AI作成・提案時のみ適用されます（管理者の手動入力時は全シフト選べます。ME室・その他は常時AI対象外）。
+                  </p>
+
+                  <div className="bg-gray-50 border rounded-lg p-3 space-y-2.5">
+                    <div className="text-[11px] font-bold text-gray-600">配置可能な施設（チェックを外すとAI配置対象外）</div>
+                    <div className="flex flex-wrap gap-2">
+                      {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind === 'facility').map(group => {
+                        const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
+                        const isAllowed = !exCats.includes(group.id);
+                        return (
+                          <label
+                            key={group.id}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold cursor-pointer select-none transition ${
+                              isAllowed
+                                ? 'bg-white border-blue-400 text-gray-800 ring-1 ring-blue-300 shadow-xs'
+                                : 'bg-gray-100 border-gray-200 text-gray-400'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="w-3.5 h-3.5 text-blue-600 rounded"
+                              checked={isAllowed}
+                              onChange={() => {
+                                const nextExCats = isAllowed
+                                  ? [...exCats, group.id]
+                                  : exCats.filter(id => id !== group.id);
+                                setTargetStaff({ ...targetStaff, excludedCategories: nextExCats });
+                              }}
+                            />
+                            <span>{group.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    {/* B案: 折りたたみ式の個別シフトOFF設定 */}
+                    <div className="pt-1 border-t border-gray-200">
+                      {(() => {
+                        const effectiveExcludedShiftCount = (targetStaff.excludedShifts || []).filter(
+                          c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)
+                        ).length;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setShowStaffShiftDetailRestriction(prev => !prev)}
+                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 py-1"
+                          >
+                            <span>{showStaffShiftDetailRestriction ? '▼' : '▶'} 個別シフト単位で細かく制限する（2クール不可など）</span>
+                            {effectiveExcludedShiftCount > 0 && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px]">
+                                除外 {effectiveExcludedShiftCount}件
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })()}
+
+                      {showStaffShiftDetailRestriction && (
+                        <div className="mt-2 space-y-2.5 bg-white border rounded-lg p-2.5">
+                          <p className="text-[10px] text-gray-400">
+                            チェックを外したシフトにはAIが割り振りません（特定のクールや時間帯のみ除外したい場合に使えます）。
+                          </p>
+                          {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind === 'facility').map(group => {
+                            const exCats = Array.isArray(targetStaff.excludedCategories) ? targetStaff.excludedCategories : [];
                             const exShifts = Array.isArray(targetStaff.excludedShifts) ? targetStaff.excludedShifts : [];
                             const isCatDisabled = exCats.includes(group.id);
                             return (
