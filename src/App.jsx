@@ -143,6 +143,7 @@ const INITIAL_STAFF = [
 ];
 
 const TEAM_ADMIN_LABELS = {
+  all: '全体管理者',
   ope: 'オペ班管理者',
   echo: 'エコー班管理者',
   hhd: 'HHD班管理者',
@@ -2316,11 +2317,11 @@ export default function WorkScheduleApp() {
 
     const resolveMovedTeamShiftKey = (sourceTeamKey, destStaffId, destShiftCode) => {
       if (!destShiftCode) return null;
-      if (!sourceTeamKey) return isMeRoomShiftCode(destShiftCode) ? 'ope' : null;
+      if (!sourceTeamKey) return isMeRoomShiftCode(destShiftCode) ? 'ope' : 'all';
       if (sourceTeamKey === 'hhd') {
         const destStaff = staffList.find(s => s.id === destStaffId);
         if (!destStaff || !Array.isArray(destStaff.roles) || !destStaff.roles.includes('HHD班')) {
-          return null;
+          return 'all';
         }
       }
       return sourceTeamKey;
@@ -2432,7 +2433,7 @@ export default function WorkScheduleApp() {
       if (newCode) nextShifts[s1][d1] = newCode;
       else delete nextShifts[s1][d1];
       cleanLeaderFlagIfNeeded(s1, d1, newCode);
-      updateTeamInputMark(s1, d1, 'teamShiftBy', newCode && isMeRoomShiftCode(newCode) ? 'ope' : null);
+      updateTeamInputMark(s1, d1, 'teamShiftBy', newCode ? (isMeRoomShiftCode(newCode) ? 'ope' : 'all') : null);
       updateTeamInputMark(s1, d1, 'editedShiftBy', newCode ? 'all' : null);
 
       if (req.clearTaskAndBellOnOff) {
@@ -2901,8 +2902,10 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
             entry.teamShiftBy = activeTeamKey;
           } else if (isMeRoomShiftCode(toolCode)) {
             entry.teamShiftBy = 'ope';
-          } else {
+          } else if (entry.shift === toolCode) {
             delete entry.teamShiftBy;
+          } else {
+            entry.teamShiftBy = loginAdminKey || 'all';
           }
           if (!activeTeamKey && entry.shift === toolCode) {
             delete entry.editedShiftBy;
@@ -2983,8 +2986,10 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         } else if (appUser.role === 'admin') {
           if (activeTeamKey) {
             entry.teamTaskBy = activeTeamKey;
-          } else {
+          } else if (entry.task === toolCode) {
             delete entry.teamTaskBy;
+          } else {
+            entry.teamTaskBy = loginAdminKey || 'all';
           }
           if (!activeTeamKey && entry.task === toolCode) {
             delete entry.editedTaskBy;
@@ -7693,7 +7698,7 @@ ${messageText}`;
                             <div className="text-[9px] font-normal text-gray-500 leading-tight space-y-0.5 my-0.5">
                               <div className="flex items-center gap-1 flex-wrap">
                                 <span className="w-1.5 h-1.5 rounded-full bg-pink-500 inline-block"></span>本人入力
-                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block ml-1"></span>班管理固定
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block ml-1"></span>管理者固定
                                 <span className="inline-flex items-center gap-0.5 text-pink-600 ml-1"><span className="w-0 h-0 border-t-[7px] border-t-pink-500 border-l-[7px] border-l-transparent inline-block" />理由あり</span>
                               </div>
                               <div className="flex items-center gap-1">
