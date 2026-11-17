@@ -1519,7 +1519,7 @@ export default function WorkScheduleApp() {
   // 配布用全体表の印刷設定モーダル用状態
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [printPaperSize, setPrintPaperSize] = useState('A4');
-  const [printOrientation, setPrintOrientation] = useState('landscape');
+  const [printOrientation, setPrintOrientation] = useState('portrait');
   const [printFitMode, setPrintFitMode] = useState('auto'); // 'auto' | 'manual'
   const [printManualScale, setPrintManualScale] = useState(100);
   const [printTeamFilter, setPrintTeamFilter] = useState('all');
@@ -6648,8 +6648,8 @@ ${messageText}`;
     const printableHeightPx = Math.floor((heightMm - PRINT_MARGIN_MM * 2) * PRINT_PX_PER_MM);
     const widthPx = Math.round(widthMm * PRINT_PX_PER_MM);
     const heightPx = Math.round(heightMm * PRINT_PX_PER_MM);
-    const fitScaleW = (printableWidthPx - 4) / Math.max(1, printMeasuredSize.width);
-    const fitScaleH = (printableHeightPx - 4) / Math.max(1, printMeasuredSize.height);
+    const fitScaleW = (printableWidthPx - 6) / Math.max(1, printMeasuredSize.width);
+    const fitScaleH = (printableHeightPx - 6) / Math.max(1, printMeasuredSize.height);
     const autoFitScale = Math.max(0.25, Math.min(1, fitScaleW, fitScaleH));
     const effectiveScale =
       printFitMode === 'auto'
@@ -6789,7 +6789,7 @@ ${messageText}`;
   const renderPrintScheduleSheet = () => {
     const printTeamObj = TEAMS.find(t => t.id === printTeamFilter);
     return (
-      <div className="bg-white text-gray-900">
+      <div className="bg-white text-gray-900 pb-1.5 pr-1">
         <div className="flex items-end justify-between gap-4 mb-1.5 px-0.5">
           <div className="flex items-baseline gap-2">
             <h2 className="text-sm font-bold text-gray-900 leading-none">
@@ -6801,7 +6801,7 @@ ${messageText}`;
             背景色：リーダー（施設色）・ME室(灰)・HHD(黄)・緊急待機番(橙)
           </div>
         </div>
-        <table className="border-collapse bg-white text-gray-800">
+        <table className="border-collapse border border-gray-400 bg-white text-gray-800">
           <thead>
             <tr>
               <th className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap">
@@ -9509,7 +9509,6 @@ ${messageText}`;
                     onKeyDown={e => {
                       if (e.keyCode === 229 || e.nativeEvent.isComposing) return;
                       if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
                         handleAiSend();
                       }
                     }}
@@ -11289,8 +11288,8 @@ ${messageText}`;
                   <div className="flex items-center gap-1.5">
                     <span className="font-bold text-gray-600">向き:</span>
                     {[
-                      { id: 'landscape', label: '横向き（推奨）' },
                       { id: 'portrait', label: '縦向き' },
+                      { id: 'landscape', label: '横向き' },
                     ].map(opt => (
                       <button
                         key={opt.id}
@@ -11404,8 +11403,8 @@ ${messageText}`;
                   >
                     <div
                       style={{
-                        width: `${Math.ceil(printMeasuredSize.width * previewContentScale)}px`,
-                        height: `${Math.ceil(printMeasuredSize.height * previewContentScale)}px`,
+                        width: `${Math.ceil(printMeasuredSize.width * previewContentScale) + 2}px`,
+                        height: `${Math.ceil(printMeasuredSize.height * previewContentScale) + 2}px`,
                         overflow: 'hidden',
                       }}
                     >
@@ -11486,10 +11485,10 @@ ${messageText}`;
         <div id="print-sheet-root" className="hidden print:block bg-white">
           <div
             style={{
-              width: `${Math.ceil(printMeasuredSize.width * printPaperMetrics.effectiveScale)}px`,
+              width: `${Math.ceil(printMeasuredSize.width * printPaperMetrics.effectiveScale) + 2}px`,
               height:
                 printFitMode === 'auto'
-                  ? `${Math.ceil(printMeasuredSize.height * printPaperMetrics.effectiveScale)}px`
+                  ? `${Math.ceil(printMeasuredSize.height * printPaperMetrics.effectiveScale) + 2}px`
                   : 'auto',
               overflow: printFitMode === 'auto' ? 'hidden' : 'visible',
             }}
