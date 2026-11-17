@@ -7257,48 +7257,30 @@ ${messageText}`;
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
-             <button
-               type="button"
-               onClick={handleOpenPrintModal}
-               className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
-               title="全体表を印刷（A4・B4・A3サイズ調整対応）"
-             >
-               <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
-             </button>
            {appUser.role === 'admin' && (
-             <>
-               <div className="flex items-center bg-gray-50 rounded-lg p-0.5 border border-gray-300 shadow-sm shrink-0">
-                 <button
-                   type="button"
-                   onClick={handleUndoSchedule}
-                   disabled={undoHistory.past.length === 0}
-                   className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                   title={undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません'}
-                 >
-                   <ChevronLeft size={16} />
-                   <span className="hidden xl:inline">戻る</span>
-                 </button>
-                 <div className="w-px h-4 bg-gray-300" />
-                 <button
-                   type="button"
-                   onClick={handleRedoSchedule}
-                   disabled={undoHistory.future.length === 0}
-                   className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                   title={undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません'}
-                 >
-                   <span className="hidden xl:inline">進む</span>
-                   <ChevronRight size={16} />
-                 </button>
-               </div>
+             <div className="flex items-center bg-gray-50 rounded-lg p-0.5 border border-gray-300 shadow-sm shrink-0">
                <button
                  type="button"
-                 onClick={handleResetSchedule}
-                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
-                 title={`${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+                 onClick={handleUndoSchedule}
+                 disabled={undoHistory.past.length === 0}
+                 className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
+                 title={undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません'}
                >
-                 <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
+                 <ChevronLeft size={16} />
+                 <span className="hidden xl:inline">戻る</span>
                </button>
-             </>
+               <div className="w-px h-4 bg-gray-300" />
+               <button
+                 type="button"
+                 onClick={handleRedoSchedule}
+                 disabled={undoHistory.future.length === 0}
+                 className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
+                 title={undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません'}
+               >
+                 <span className="hidden xl:inline">進む</span>
+                 <ChevronRight size={16} />
+               </button>
+             </div>
            )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <>
@@ -7333,50 +7315,72 @@ ${messageText}`;
                    <Check size={13} className="text-emerald-600" />
                  ) : null}
                </button>
-               <button onClick={() => setShowAdminChangeRequestsModal(true)}
-                  className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
-                    pendingChangeRequests.length > 0
-                      ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
-                      : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                  }`}
-                  title="締切後の勤務変更申請の確認と承認"
-                >
-                  <RefreshCw size={16} className="sm:w-4 sm:h-4" />
-                  <span className="hidden md:inline text-sm">変更申請</span>
-                  {pendingChangeRequests.length > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
-                      {pendingChangeRequests.length}
-                    </span>
-                  )}
-                </button>
-               <button
-                 onClick={() => {
-                   setEditingShift(null);
-                   handleAddNewShift();
-                   setShowSettingsModal(true);
-                 }}
-                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-                 title="設定"
-               >
-                 <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
-               </button>
-               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
-               <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
              </>
            )}
+           <button
+             type="button"
+             onClick={handleOpenPrintModal}
+             className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+             title="全体表を印刷（A4・B4・A3サイズ調整対応）"
+           >
+             <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
+           </button>
+           {appUser.role === 'admin' && isMasterAdmin && (
+             <button onClick={() => setShowAdminChangeRequestsModal(true)}
+                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
+                  pendingChangeRequests.length > 0
+                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                }`}
+                title="締切後の勤務変更申請の確認と承認"
+              >
+                <RefreshCw size={16} className="sm:w-4 sm:h-4" />
+                <span className="hidden md:inline text-sm">変更申請</span>
+                {pendingChangeRequests.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                    {pendingChangeRequests.length}
+                  </span>
+                )}
+              </button>
+           )}
+           {appUser.role === 'admin' && (
+             <button
+               type="button"
+               onClick={handleResetSchedule}
+               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
+               title={`${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+             >
+               <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
+             </button>
+           )}
+           {appUser.role === 'admin' && isMasterAdmin && (
+             <button
+               onClick={() => {
+                 setEditingShift(null);
+                 handleAddNewShift();
+                 setShowSettingsModal(true);
+               }}
+               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
+               title="設定"
+             >
+               <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
+             </button>
+           )}
            {appUser.role === 'admin' && !isMasterAdmin && (
+             <button
+               onClick={() => {
+                 setTargetAdminKey(appUser.initialView);
+                 setNewPassword('');
+                 setShowPasswordChangeModal(true);
+               }}
+               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
+               title="パスワード変更"
+             >
+               <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
+             </button>
+           )}
+           {appUser.role === 'admin' && (
              <>
-               <button
-                 onClick={() => {
-                   setTargetAdminKey(appUser.initialView);
-                   setNewPassword('');
-                   setShowPasswordChangeModal(true);
-                 }}
-                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-                 title="パスワード変更"
-               >
-                 <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
-               </button>
                <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
                <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
              </>
