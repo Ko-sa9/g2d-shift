@@ -830,6 +830,7 @@ const evaluateScheduleValidation = ({
 
   const staffViolations = [];
   const aiRepairableItems = [];
+  const staffEvalMap = {};
 
   // 1. 職員ごとの勤務ルール検算（連勤超過・3クール連続・3クール上限・配置制限・出勤日数不足）
   staffList.forEach(s => {
@@ -848,6 +849,7 @@ const evaluateScheduleValidation = ({
     let workDays = 0;
     let paidLeaveDays = 0;
     const regOffDaySet = new Set();
+    const workDaySet = new Set();
     const editableBlankDays = [];
 
     const flushStreakRun = (endDay) => {
@@ -913,6 +915,7 @@ const evaluateScheduleValidation = ({
 
       // 出勤シフト
       workDays++;
+      workDaySet.add(d);
       if (streakLen === 0) runStartDay = d;
       streakLen++;
       currentRunDays.push(d);
@@ -1006,14 +1009,21 @@ const evaluateScheduleValidation = ({
       }
     }
 
+    const excessSameWeekRegOffDays = operatingWeeks.reduce((acc, wDays) => {
+      const cnt = wDays.filter(wd => regOffDaySet.has(wd)).length;
+      return acc + Math.max(0, cnt - 1);
+    }, 0);
+    const targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
+    const targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
+    staffEvalMap[s.id] = {
+      workDays,
+      targetMin,
+      targetMax,
+      workDaySet,
+    };
+
     // 1ヶ月分が作成済みの場合のみ、常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック
     if ((isFullMonthCreated || includeEmptyDays) && filledOperatingDaysCount > 0 && !s.excludeFromAi && s.jobTitle !== 'パート') {
-      const excessSameWeekRegOffDays = operatingWeeks.reduce((acc, wDays) => {
-        const cnt = wDays.filter(wd => regOffDaySet.has(wd)).length;
-        return acc + Math.max(0, cnt - 1);
-      }, 0);
-      const targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
-      const targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
       if (workDays < targetMin && editableBlankDays.length > 0) {
         staffViolations.push({
           type: 'underwork_excess_blank',
@@ -1030,6 +1040,68 @@ const evaluateScheduleValidation = ({
       }
     }
   });
+
+  // 週休（空欄公休）と最大連勤・月間出勤上限を守ったまま、指定日に追加出勤できる余力があるか判定
+  const canSafelyFillBlankOnDay = (staff, dayNum) => {
+    if (!staff || staff.excludeFromAi || staff.jobTitle === 'パート') return false;
+    if (shiftsMap?.[staff.id]?.[dayNum] || !isCellAiEditable(staff, dayNum)) return false;
+    const stEval = staffEvalMap[staff.id];
+    if (!stEval) return false;
+    if ((isFullMonthCreated || includeEmptyDays) && stEval.workDays >= stEval.targetMax) {
+      return false;
+    }
+    const weekIdx = operatingWeeks.findIndex(w => w.includes(dayNum));
+    if (weekIdx !== -1) {
+      const wDays = operatingWeeks[weekIdx];
+      const otherNonWorkDaysInWeek = wDays.filter(wd => wd !== dayNum && !stEval.workDaySet.has(wd)).length;
+      if (wDays.length === 6 && otherNonWorkDaysInWeek === 0) {
+        return false;
+      }
+      if (
+        weekIdx === 0 &&
+        wDays.length < 6 &&
+        prevMonthCarryOver?.hasStraddlingWeek &&
+        prevMonthCarryOver?.byStaff?.[staff.id]?.staffHasPrevWorkShift &&
+        (prevMonthCarryOver?.byStaff?.[staff.id]?.prevWeekRegOffCount || 0) + otherNonWorkDaysInWeek === 0
+      ) {
+        return false;
+      }
+    }
+    const carryStreak = prevMonthCarryOver?.byStaff?.[staff.id]?.trailingWorkStreak || 0;
+    let beforeStreak = 0;
+    let cur = dayNum - 1;
+    let hitBreakBefore = false;
+    while (cur >= 1) {
+      if (isSunday(year, month, cur)) {
+        hitBreakBefore = true;
+        break;
+      }
+      if (stEval.workDaySet.has(cur)) {
+        beforeStreak++;
+        cur--;
+      } else {
+        hitBreakBefore = true;
+        break;
+      }
+    }
+    if (!hitBreakBefore && cur === 0) {
+      beforeStreak += carryStreak;
+    }
+    let afterStreak = 0;
+    let nextCur = dayNum + 1;
+    while (nextCur <= daysInMonth && !isSunday(year, month, nextCur)) {
+      if (stEval.workDaySet.has(nextCur)) {
+        afterStreak++;
+        nextCur++;
+      } else {
+        break;
+      }
+    }
+    if (beforeStreak + 1 + afterStreak > maxStreak) {
+      return false;
+    }
+    return true;
+  };
 
   // 2. 日別の必要人数不足・必須スキル不足・目標パワースコア未達の検算
   const facilityCats = Object.values(categoryDefs)
@@ -1121,22 +1193,27 @@ const evaluateScheduleValidation = ({
 
     if (hcItems.length > 0) {
       const nonMeItems = hcItems.filter(it => isAiAssignableFacilityShiftDef(it.code, shiftDefs, categoryDefs));
+      const spareBlankCandidates =
+        nonMeItems.length > 0
+          ? shuffleArray(
+              staffList.filter(
+                s => canSafelyFillBlankOnDay(s, d) && nonMeItems.some(it => isShiftAllowed(s, it.code))
+              )
+            )
+              .map(s => `${s.name}(ID:${s.id})`)
+              .slice(0, 6)
+          : [];
       dailyHeadcountShortages.push({
         day: d,
         dowLabel,
         items: hcItems,
         nonMeItems,
+        hasSpareAiCandidate: spareBlankCandidates.length > 0,
       });
-      if (nonMeItems.length > 0) {
-        const blankCandidates = shuffleArray(
-          staffList.filter(s => !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d))
-        )
-          .map(s => `${s.name}(ID:${s.id})`)
-          .slice(0, 6);
+      // 週休や最大連勤を崩さずに追加出勤できる余力スタッフがいる場合のみAI手直し対象とする（いない場合はパート・AI除外スタッフ・手動調整で補う前提）
+      if (nonMeItems.length > 0 && spareBlankCandidates.length > 0) {
         aiRepairableItems.push(
-          `[必要人数不足] ${month}/${d}(${dowLabel}): ${nonMeItems.map(it => `表示名「${it.label}」(コード:"${it.code}") ${it.actual}/${it.target}名`).join('・')}${
-            blankCandidates.length > 0 ? `（当日の空欄候補: ${blankCandidates.join(', ')} ほか）` : ''
-          }`
+          `[必要人数不足（余力スタッフあり）] ${month}/${d}(${dowLabel}): ${nonMeItems.map(it => `表示名「${it.label}」(コード:"${it.code}") ${it.actual}/${it.target}名`).join('・')}（週休・連勤上限を守ったまま追加出勤可能な候補: ${spareBlankCandidates.join(', ')}）`
         );
       }
     }
@@ -1169,7 +1246,7 @@ const evaluateScheduleValidation = ({
             .map(other => `${other.label}(${skillCountsByCat[other.id]?.[sk.key]}名)`);
 
           const blankSkillHolders = staffList.filter(
-            s => s.skills?.[sk.key] && !shiftsMap?.[s.id]?.[d] && isCellAiEditable(s, d)
+            s => s.skills?.[sk.key] && canSafelyFillBlankOnDay(s, d)
           );
 
           const isAiFixable = surplusCats.length > 0 || blankSkillHolders.length > 0;
@@ -1237,9 +1314,9 @@ const evaluateScheduleValidation = ({
   const allHeadcountShortageCount = dailyHeadcountShortages.reduce((s, d) => s + d.items.length, 0);
   const skillShortageTotalCount = dailySkillShortages.reduce((s, d) => s + d.items.length, 0);
 
-  // 重大度スコア（Pass 1 と Pass 2 の改善度比較用：低いほど優良）
+  // 重大度スコア（Pass 1 と Pass 2 の改善度比較用：低いほど優良。個人の連勤・制限違反を最重視）
   const criticalScore =
-    hardStaffViolationCount * 100 +
+    hardStaffViolationCount * 200 +
     nonMeHeadcountShortageCount * 25 +
     skillShortageTotalCount * 20 +
     underworkCount * 10 +
@@ -4995,7 +5072,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             .join(' ／ ')
         : '設定なし';
       const shiftSystemRefText = buildShiftSystemReferenceText(shiftDefs, categoryDefs, adminSettings, { includeTasks: false });
-      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。名簿の上から機械的にAAAA, FFFFのように同じシフト・施設を固めて並べたり、同じ職員を連日同じ施設に固定することは避け、複数施設に入れる職員は日ごとに勤務地・クールをバラけてローテーションさせ、月間の勤務地の偏りが少なくなるように組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
+      const systemInstruction = "あなたは臨床工学技士のシフト作成の専門家です。提供された現在のシステム設定（シフトコード・表示名・勤務区分・カテゴリ設定）と条件をもとに、可能な範囲でシフトを組んでください。画面上の表示名（例: A）とデータ上のシフトコード（例: 1）が異なる設定の場合があるため、必ず対応表を確認し、JSONにはシフトコードを出力してください。完璧にすべての必要人数をAI対象スタッフだけで100%埋めきる必要はありません。足りない枠はAI除外のパート職員や管理者の手動調整であとから補う運用のため、個人の週休確保（空欄公休）・最大連勤制限・3クール制限・希望休・配置制限を最優先し、人数が足りない日は無理に休みを潰さず不足のまま残してください。名簿の上から機械的にAAAA, FFFFのように同じシフト・施設を固めて並べたり、同じ職員を連日同じ施設に固定することは避け、複数施設に入れる職員は日ごとに勤務地・クールをバラけてローテーションさせ、月間の勤務地の偏りが少なくなるように組んでください。休みの日は空欄のまま残す仕様のため、全ての空欄を出勤で埋め尽くしてはいけません。出力は必ず指定されたJSON形式のみとし、JSONの枠外には絶対に文章を書かないでください。";
 
       const strictConditions = autoFillConditions
         .filter(c => c.active && c.priority !== 'soft')
@@ -5501,8 +5578,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
          - まず各施設に該当スキル保持者（リーダー等）が最低人数以上入るように優先配置してください。
          - どうしても出勤可能な保持者が足りない日は、希望休・既存シフト・配置不可制限・最大${maxStreak}連勤上限を破らず、「1施設に2名以上偏らせず1名ずつ分散配置」し、0名の施設にはベテラン（skills.isVeteran: true）や高powerScoreスタッフを配置してカバーしてください。
-      6. パワーバランスと必要人数・負担平準化:
-         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して満たしてください。
+      6. パワーバランスと必要人数・不足時の優先順位（パート・手動調整前提）・負担平準化:
+         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して、可能な範囲で満たしてください。
+         - 【重要：完璧に埋めきらなくてよいルール】AI対象スタッフだけで必要人数を100%埋めようとして、誰かの週休確保（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ることは絶対禁止です。足りない枠は後からパート職員やAI除外スタッフ・管理者の手動調整で補う前提のため、出勤可能人数が足りない日は無理をせず不足のまま残してください。
+         - 出勤可能なAI対象スタッフ数がその日の必要人数合計に届かない場合は、①各施設の必須スキル（リーダー等）と、②3クール・2クール等の主力枠を優先して割り当て、パートや手動調整で補いやすい枠（日勤・半日・サブ枠など）の方を未達として残してください。
          - 各施設の合計powerScore基準: 【${powerScoreSummaryText}】（ME室は対象外）。
          - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、前週までに負担が多い職員に3クールや残業が偏らないよう平準化してください。
       7. 日ごとの勤務地ローテーション・ランダム分散・施設偏りの防止（★重要★）:
@@ -5729,9 +5808,9 @@ ${dailyCheckExampleLines}
 
           【手直し時の厳守ルール】
           1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室（${meShiftDescStr}）・その他（出勤・公出等）・日曜日は絶対に変更・新規出力しないでください（※公出は公休扱いのため連勤・出勤日数・出勤人数にはカウントしません）。
-          2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、減ったシフトをその日に出勤可能（最大${maxStreak}連勤や3クール連続に違反しない）な他スタッフへ割り当ててください。
-          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、出勤日数に余力のある未ロック空欄スタッフへ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。
-          4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
+          2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、その日に週休・連勤上限を守ったまま追加出勤できる余力スタッフが他にいる場合のみ振り替えてください（余力スタッフがいなければパート・手動調整で補うため未達のまま空けておくこと）。
+          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、週休・連勤上限を守ったまま出勤日数に余力のある未ロック空欄スタッフがいる場合のみ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。誰かの週休（空欄公休）を潰したり${maxStreak + 1}連勤以上を作ってまで人数不足を埋めることは絶対禁止です。
+          4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、週休が消えたり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
           5. 勤務地の偏り・連日同一施設への配慮: 空欄への追加配置やシフト入れ替えを行う際は、複数施設に入れる職員（allowedFacilitiesCount >= 2）について前後の営業日と別の施設・これまでに回数が少ない施設（currentStats.priorityFacilitiesToBalance）を優先して選び、同じ施設ばかり連続しないよう配慮してください。
           ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件（※文中のシフト名・施設名は上の対応表からコードへ変換して適用）】\n${strictConditions}\n` : ''}
           【各職員のAI編集可能日リスト（aiEditableDaysByStaff）】
@@ -5782,8 +5861,11 @@ ${dailyCheckExampleLines}
               includeEmptyDays: true,
             });
 
-            // 重大度スコアが改善（または同等で件数減）した場合のみ手直し版を採用し、万が一の改悪を防止
-            if (pass2Report.criticalScore <= pass1Report.criticalScore) {
+            // 重大度スコアが改善（または同等で件数減）し、かつ個人の連勤・制限違反が増えていない場合のみ手直し版を採用
+            if (
+              pass2Report.hardStaffViolationCount <= pass1Report.hardStaffViolationCount &&
+              pass2Report.criticalScore <= pass1Report.criticalScore
+            ) {
               repairedIssueCount = Math.max(0, pass1Report.totalActionableCount - pass2Report.totalActionableCount);
               finalShifts = pass2.nextShifts;
               finalTasks = pass2.nextTasks;
@@ -6244,7 +6326,7 @@ ${shiftSystemRefText}
   ・各施設の必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】（dailySummary[d].facilitySkillCounts と shortages に現状が計算済みです）。
   ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
 - 施設別目標パワースコア: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores と不足一覧 shortages に計算済みです）。
-- 必要人数: targetCounts（キーはシフトコード）を満たすように調整し、出勤日数・連勤・残業が特定の職員に偏らないよう配慮してください。
+- 必要人数と不足時の優先順位（パート・手動調整前提）: targetCounts（キーはシフトコード）を可能な範囲で満たすように調整しますが、AI対象スタッフだけで完璧に100%埋めきる必要はありません。足りない分はパート職員やAI除外スタッフ・管理者の手動調整で補う運用のため、個人の週休確保（空欄公休）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ってまで無理に埋めず、人数が足りない日はリーダー（必須スキル）や3クール・2クール等の主力枠を優先して確保し、日勤・半日等の補いやすい枠を未達として残してください。
 - ランダム分散・日ごとの勤務地ローテーション・施設偏りの平準化（重要）:
   ・仮組みや複数日のシフト提案を行う際は、名簿の上から機械的に「AAAA, FFFF」のように同じ施設・シフトを固めて並べないでください。
   ・複数の施設に配置可能な職員（currentStats.allowedFacilitiesCount >= 2）は、[絶対]カスタム条件（曜日・施設の固定指定等）や必須スキル・必要人数に反しない限り、連日同じ施設が続かないよう**日ごとに勤務地・クールをバラけてローテーション**させ、currentStats.facilityCounts / priorityFacilitiesToBalance を参照して月間の勤務地の偏りが少なくなるよう組んでください。
