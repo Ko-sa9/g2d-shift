@@ -1680,6 +1680,8 @@ export default function WorkScheduleApp() {
   const chatEndRef = useRef(null);
 
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
+  const [autoFillTargetMode, setAutoFillTargetMode] = useState('all'); // 'all' | 'weeks'
+  const [selectedAutoFillWeeks, setSelectedAutoFillWeeks] = useState([]);
   const [showValidationModal, setShowValidationModal] = useState(false); // Step 6: 検算チェック結果モーダル
   const [showUncreatedDaysInValidation, setShowUncreatedDaysInValidation] = useState(false);
   const [autoFillValidationSummary, setAutoFillValidationSummary] = useState(null);
@@ -4896,6 +4898,60 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     persistAutoFillConditions(nextList);
   };
 
+  const currentMonthCalendarWeeks = useMemo(() => {
+    const totalDays = getDaysInMonth(year, month);
+    const weeks = [];
+    let curDays = [];
+    for (let d = 1; d <= totalDays; d++) {
+      const dow = new Date(year, month - 1, d).getDay();
+      if (dow === 0) {
+        if (curDays.length > 0) {
+          weeks.push({
+            weekIndex: weeks.length + 1,
+            label:
+              curDays.length === 1
+                ? `${month}/${curDays[0]}`
+                : `${month}/${curDays[0]}〜${month}/${curDays[curDays.length - 1]}`,
+            days: curDays,
+            isFullWeek: curDays.length === 6,
+          });
+          curDays = [];
+        }
+      } else {
+        curDays.push(d);
+      }
+    }
+    if (curDays.length > 0) {
+      weeks.push({
+        weekIndex: weeks.length + 1,
+        label:
+          curDays.length === 1
+            ? `${month}/${curDays[0]}`
+            : `${month}/${curDays[0]}〜${month}/${curDays[curDays.length - 1]}`,
+        days: curDays,
+        isFullWeek: curDays.length === 6,
+      });
+    }
+    return weeks;
+  }, [year, month]);
+
+  useEffect(() => {
+    setSelectedAutoFillWeeks(currentMonthCalendarWeeks.map(w => w.weekIndex));
+    setAutoFillTargetMode('all');
+  }, [currentMonthCalendarWeeks]);
+
+  const toggleAutoFillWeekSelection = (weekIndex) => {
+    if (autoFillTargetMode === 'all') {
+      setAutoFillTargetMode('weeks');
+      setSelectedAutoFillWeeks([weekIndex]);
+      return;
+    }
+    setSelectedAutoFillWeeks(prev => {
+      const next = prev.includes(weekIndex) ? prev.filter(w => w !== weekIndex) : [...prev, weekIndex];
+      return [...next].sort((a, b) => a - b);
+    });
+  };
+
   // ワンタップ自動作成
   const handleOpenAutoFill = () => {
     setShowAutoFillModal(true);
@@ -4967,6 +5023,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
   };
 
   const executeAutoFill = async () => {
+    if (autoFillTargetMode === 'weeks' && selectedAutoFillWeeks.length === 0) {
+      alert('作成する週を1つ以上選択してください。');
+      return;
+    }
     const currentRunId = ++autoFillRunIdRef.current;
     autoFillCancelRef.current = false;
     isAutoFillRunningRef.current = true;
@@ -5105,8 +5165,22 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         });
       });
 
-      // Step 7 (案B): 第1週→最終週のうち、未ロック空欄があり配置が必要な週を特定して順番に段階ビルド
+      // Step 7 (案B): 第1週→最終週のうち、選択された対象週かつ未ロック空欄があり配置が必要な週を特定して順番に段階ビルド
+      const isFullMonthTarget =
+        autoFillTargetMode === 'all' || selectedAutoFillWeeks.length >= calendarWeeks.length;
+      const targetWeekIndexSet = isFullMonthTarget
+        ? new Set(calendarWeeks.map(w => w.weekIndex))
+        : new Set(selectedAutoFillWeeks);
+      const targetScopeDaysSet = isFullMonthTarget
+        ? null
+        : new Set(
+            calendarWeeks
+              .filter(w => targetWeekIndexSet.has(w.weekIndex))
+              .flatMap(w => w.days)
+          );
+
       const weeksToBuild = calendarWeeks.filter(w => {
+        if (!targetWeekIndexSet.has(w.weekIndex)) return false;
         const hasAssignableCell = staffList.some(
           s =>
             !s.excludeFromAi &&
@@ -5155,7 +5229,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           id: `week_${w.weekIndex}`,
           label: `第${w.weekIndex}週（${w.label}）のシフト作成`,
           status: buildWeekIdxSet.has(w.weekIndex) ? 'pending' : 'skipped',
-          detail: buildWeekIdxSet.has(w.weekIndex) ? '待機中' : '入力済み（スキップ）',
+          detail: !targetWeekIndexSet.has(w.weekIndex)
+            ? '未選択（スキップ）'
+            : buildWeekIdxSet.has(w.weekIndex)
+              ? '待機中'
+              : '入力済み（スキップ）',
         })),
         {
           id: 'validate',
@@ -5736,7 +5814,7 @@ ${dailyCheckExampleLines}
         prevMonthCarryOver,
         shiftsMap: workingShifts,
         lockedBaselineShifts: originalShifts,
-        includeEmptyDays: true,
+        includeEmptyDays: isFullMonthTarget,
       });
 
       if (totalUpdatedCells === 0 && pass1Report.aiRepairableItems.length === 0) {
@@ -5787,6 +5865,7 @@ ${dailyCheckExampleLines}
             if (s.excludeFromAi) return;
             const editable = [];
             for (let d = 1; d <= totalDaysInMonth; d++) {
+              if (targetScopeDaysSet && !targetScopeDaysSet.has(d)) continue;
               if (isSunday(year, month, d)) continue;
               if (originalShifts[s.id]?.[d]) continue;
               if (getUserRequestedShift(s.id, d)) continue;
@@ -5847,7 +5926,7 @@ ${dailyCheckExampleLines}
             originalShifts,
             originalTasks,
             true,
-            null
+            targetScopeDaysSet
           );
 
           if (pass2.success) {
@@ -5863,7 +5942,7 @@ ${dailyCheckExampleLines}
               prevMonthCarryOver,
               shiftsMap: pass2.nextShifts,
               lockedBaselineShifts: originalShifts,
-              includeEmptyDays: true,
+              includeEmptyDays: isFullMonthTarget,
             });
 
             // 重大度スコアが改善（または同等で件数減）し、かつ個人の連勤・制限違反が増えていない場合のみ手直し版を採用
@@ -9532,6 +9611,84 @@ ${messageText}`;
               </div>
               <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
+
+                {/* 作成範囲（月全体 / 週ごと・隔週選択） */}
+                <div className="mb-3 p-3 bg-white border border-orange-200 rounded-lg shadow-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <span className="text-xs font-bold text-gray-800">作成する範囲を選択</span>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoFillTargetMode('all');
+                          setSelectedAutoFillWeeks(currentMonthCalendarWeeks.map(w => w.weekIndex));
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold border transition ${
+                          autoFillTargetMode === 'all'
+                            ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
+                            : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-100'
+                        }`}
+                      >
+                        月全体（全週）
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoFillTargetMode('weeks');
+                          setSelectedAutoFillWeeks(
+                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 1).map(w => w.weekIndex)
+                          );
+                        }}
+                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
+                        title="第1・第3・第5…週を選択"
+                      >
+                        奇数週（隔週）
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoFillTargetMode('weeks');
+                          setSelectedAutoFillWeeks(
+                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 0).map(w => w.weekIndex)
+                          );
+                        }}
+                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
+                        title="第2・第4…週を選択"
+                      >
+                        偶数週（隔週）
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                    {currentMonthCalendarWeeks.map(w => {
+                      const isSelected =
+                        autoFillTargetMode === 'all' || selectedAutoFillWeeks.includes(w.weekIndex);
+                      return (
+                        <button
+                          key={w.weekIndex}
+                          type="button"
+                          onClick={() => toggleAutoFillWeekSelection(w.weekIndex)}
+                          className={`px-2 py-1.5 rounded-lg border text-left transition flex flex-col justify-center ${
+                            isSelected
+                              ? 'bg-orange-50 border-orange-400 text-orange-900 ring-1 ring-orange-300 font-bold'
+                              : 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1 text-xs">
+                            <span>第{w.weekIndex}週</span>
+                            {isSelected && <Check size={12} className="text-orange-600 shrink-0" />}
+                          </div>
+                          <div className="text-[10px] opacity-80 leading-tight mt-0.5">{w.label}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-gray-500 leading-tight">
+                    ※週ボタンをクリックして、1週だけ・隔週（第1週と第3週など）・任意の複数週だけを作成できます（選択外の週は変更されません）。
+                  </p>
+                </div>
+
                 <div className="mb-3 p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg text-[11px] text-orange-900 space-y-0.5 leading-relaxed">
                   <div>・<strong>連勤・週休：</strong>最大<strong>{adminSettings.maxConsecutiveWorkDays || 5}連勤</strong>まで ／ 週1日の公休は<strong>空欄</strong>のまま残します</div>
                   <div>・<strong>月またぎ・3クール：</strong>前月末からの連勤引き継ぎと<strong>3クール連続配置禁止</strong>（月またぎ含む）を自動適用します</div>
@@ -9637,8 +9794,17 @@ ${messageText}`;
                   <button onClick={addAutoFillCondition} className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded text-xs font-bold border border-blue-200 hover:bg-blue-100 shrink-0">追加</button>
                 </div>
 
-                <button onClick={executeAutoFill} className="w-full py-3 bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold rounded-lg shadow hover:shadow-lg transition flex items-center justify-center gap-2">
-                  <Wand2 size={18}/> 実行する
+                <button
+                  onClick={executeAutoFill}
+                  disabled={autoFillTargetMode === 'weeks' && selectedAutoFillWeeks.length === 0}
+                  className="w-full py-3 bg-gradient-to-r from-yellow-500 to-orange-500 disabled:from-gray-300 disabled:to-gray-300 text-white font-bold rounded-lg shadow hover:shadow-lg transition flex items-center justify-center gap-2"
+                >
+                  <Wand2 size={18}/>
+                  {autoFillTargetMode === 'all' || selectedAutoFillWeeks.length >= currentMonthCalendarWeeks.length
+                    ? '月全体で実行する'
+                    : selectedAutoFillWeeks.length === 0
+                      ? '作成する週を選択してください'
+                      : `選択した週（${selectedAutoFillWeeks.map(w => `第${w}週`).join('・')}）を実行する`}
                 </button>
               </div>
             </div>
