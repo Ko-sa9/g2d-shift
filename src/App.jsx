@@ -1526,6 +1526,17 @@ export default function WorkScheduleApp() {
   const [printShowJobTitle, setPrintShowJobTitle] = useState(false);
   const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
   const printSheetMeasureRef = useRef(null);
+
+  // 管理者編集用の戻る・進む（Undo / Redo）履歴
+  const [undoHistory, setUndoHistory] = useState({ past: [], future: [] });
+  const undoHistoryRef = useRef({ past: [], future: [] });
+  const scheduleSnapshotRef = useRef({
+    shifts: {},
+    tasks: {},
+    userInputs: {},
+    bells: {},
+    leaders: {},
+  });
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
@@ -1944,6 +1955,21 @@ export default function WorkScheduleApp() {
     return {};
   };
 
+  // userInputsエントリに保持すべき履歴・管理者メタデータが残っているか判定
+  const hasAnyUserInputMetadata = (entry) =>
+    Boolean(
+      entry &&
+        typeof entry === 'object' &&
+        (entry.shift ||
+          entry.task ||
+          entry.teamShiftBy ||
+          entry.teamTaskBy ||
+          entry.editedShiftBy ||
+          entry.editedTaskBy ||
+          entry.editedBellBy ||
+          entry.editedLeaderBy)
+    );
+
   // 本人が入力した元の希望シフトコードを取得
   const getUserRequestedShift = (staffId, day) => {
     const raw = userInputs[staffId]?.[day];
@@ -2201,7 +2227,7 @@ export default function WorkScheduleApp() {
         delete entry[field];
       }
       const staffInputs = { ...(nextUserInputs[staffId] || {}) };
-      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
+      if (hasAnyUserInputMetadata(entry)) {
         staffInputs[day] = entry;
         nextUserInputs[staffId] = staffInputs;
       } else {
@@ -2261,6 +2287,10 @@ export default function WorkScheduleApp() {
       const curTeamShift2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].teamShiftBy || null : null;
       const curTeamTask1 = userInputs[s1]?.[d1] && typeof userInputs[s1][d1] === 'object' ? userInputs[s1][d1].teamTaskBy || null : null;
       const curTeamTask2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].teamTaskBy || null : null;
+      const curEditedShift1 = userInputs[s1]?.[d1] && typeof userInputs[s1][d1] === 'object' ? userInputs[s1][d1].editedShiftBy || null : null;
+      const curEditedShift2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].editedShiftBy || null : null;
+      const curEditedTask1 = userInputs[s1]?.[d1] && typeof userInputs[s1][d1] === 'object' ? userInputs[s1][d1].editedTaskBy || null : null;
+      const curEditedTask2 = userInputs[s2]?.[d2] && typeof userInputs[s2][d2] === 'object' ? userInputs[s2][d2].editedTaskBy || null : null;
 
       if (req.snapshot) {
         const snapshotMismatch =
@@ -2286,6 +2316,8 @@ export default function WorkScheduleApp() {
         cleanLeaderFlagIfNeeded(s2, d2, curS1);
         updateTeamInputMark(s1, d1, 'teamShiftBy', resolveMovedTeamShiftKey(curTeamShift2, s1, curS2));
         updateTeamInputMark(s2, d2, 'teamShiftBy', resolveMovedTeamShiftKey(curTeamShift1, s2, curS1));
+        updateTeamInputMark(s1, d1, 'editedShiftBy', curS2 ? (curEditedShift2 || 'all') : null);
+        updateTeamInputMark(s2, d2, 'editedShiftBy', curS1 ? (curEditedShift1 || 'all') : null);
       }
 
       if (req.swapTask) {
@@ -2297,6 +2329,8 @@ export default function WorkScheduleApp() {
         else delete nextTasks[s2][d2];
         updateTeamInputMark(s1, d1, 'teamTaskBy', curT2 ? curTeamTask2 : null);
         updateTeamInputMark(s2, d2, 'teamTaskBy', curT1 ? curTeamTask1 : null);
+        updateTeamInputMark(s1, d1, 'editedTaskBy', curT2 ? (curEditedTask2 || 'all') : null);
+        updateTeamInputMark(s2, d2, 'editedTaskBy', curT1 ? (curEditedTask1 || 'all') : null);
       }
 
       if (req.swapBell) {
@@ -2322,12 +2356,14 @@ export default function WorkScheduleApp() {
       else delete nextShifts[s1][d1];
       cleanLeaderFlagIfNeeded(s1, d1, newCode);
       updateTeamInputMark(s1, d1, 'teamShiftBy', newCode && isMeRoomShiftCode(newCode) ? 'ope' : null);
+      updateTeamInputMark(s1, d1, 'editedShiftBy', newCode ? 'all' : null);
 
       if (req.clearTaskAndBellOnOff) {
         if (nextTasks[s1]?.[d1]) {
           nextTasks[s1] = { ...nextTasks[s1] };
           delete nextTasks[s1][d1];
           updateTeamInputMark(s1, d1, 'teamTaskBy', null);
+          updateTeamInputMark(s1, d1, 'editedTaskBy', null);
         }
         if (nextBells[s1]?.[d1]) {
           const bMap = { ...nextBells[s1] };
@@ -2405,6 +2441,9 @@ export default function WorkScheduleApp() {
 
   // 管理者が「希望履歴そのもの」を取り消すハンドラ
   const handleClearUserRequest = (staffId, day, type = 'shift') => {
+    if (appUser?.role === 'admin') {
+      recordAdminUndoSnapshot();
+    }
     const currentShiftBefore = shiftData[staffId]?.[day];
     const currentTaskBefore = taskData[staffId]?.[day];
     const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
@@ -2422,7 +2461,7 @@ export default function WorkScheduleApp() {
       nextUserInputs[staffId] = {};
     }
 
-    if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
+    if (hasAnyUserInputMetadata(entry)) {
       nextUserInputs[staffId][day] = entry;
     } else {
       delete nextUserInputs[staffId][day];
@@ -2574,6 +2613,17 @@ export default function WorkScheduleApp() {
     if (['ope', 'echo', 'hhd'].includes(appUser.initialView)) return appUser.initialView;
     if (['ope', 'echo', 'hhd'].includes(currentView)) return currentView;
     return null;
+  };
+
+  // 現在ログインしている管理者自身のキー（'all' | 'ope' | 'echo' | 'hhd'）と表示名を取得
+  const getLoggedInAdminKey = () => {
+    if (!appUser || appUser.role !== 'admin') return null;
+    return ['ope', 'echo', 'hhd'].includes(appUser.initialView) ? appUser.initialView : 'all';
+  };
+
+  const getLoggedInAdminDisplayLabel = (adminKey = getLoggedInAdminKey()) => {
+    if (!adminKey) return '管理者';
+    return adminSettings?.[adminKey]?.label || TEAM_ADMIN_LABELS[adminKey] || '全体管理者';
   };
 
   // 各班管理者（ope / echo / hhd）のデフォルト入力可能シフトコード一覧を算出（未設定時の互換用）
@@ -2728,6 +2778,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     const currentTaskBefore = taskData[staffId]?.[day];
     const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], currentShiftBefore, currentTaskBefore);
     const activeTeamKey = getActiveTeamAdminKey();
+    const loginAdminKey = getLoggedInAdminKey();
 
     const nextUserInputs = { ...userInputs };
     if (nextUserInputs[staffId]) {
@@ -2737,6 +2788,17 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     }
 
     if (type === 'shift') {
+      if (appUser.role === 'admin') {
+        const changedShift = (toolCode || null) !== (currentShiftBefore || null);
+        const changedOwner =
+          toolCode &&
+          (entry.editedShiftBy !== loginAdminKey ||
+            (activeTeamKey && entry.teamShiftBy !== activeTeamKey));
+        if (changedShift || changedOwner) {
+          recordAdminUndoSnapshot();
+        }
+      }
+
       const nextShifts = { ...shiftData };
       if (nextShifts[staffId]) {
           nextShifts[staffId] = { ...nextShifts[staffId] };
@@ -2765,6 +2827,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           } else {
             delete entry.teamShiftBy;
           }
+          if (!activeTeamKey && entry.shift === toolCode) {
+            delete entry.editedShiftBy;
+          } else if (loginAdminKey) {
+            entry.editedShiftBy = loginAdminKey;
+          }
         }
       } else {
         delete nextShifts[staffId][day];
@@ -2774,13 +2841,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           delete entry.reason;
         } else if (appUser.role === 'admin') {
           delete entry.teamShiftBy;
+          if (entry.shift && loginAdminKey) {
+            entry.editedShiftBy = loginAdminKey;
+          } else {
+            delete entry.editedShiftBy;
+          }
         }
-      }
-
-      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
-        nextUserInputs[staffId][day] = entry;
-      } else {
-        delete nextUserInputs[staffId][day];
       }
 
       // シフトクリアまたは坂田・君津以外への変更時は手動リーダー色付けフラグも自動解除
@@ -2799,14 +2865,32 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           delete staffL[day];
           if (Object.keys(staffL).length > 0) nextLeaders[staffId] = staffL;
           else delete nextLeaders[staffId];
+          delete entry.editedLeaderBy;
           setLeaderData(nextLeaders);
         }
+      }
+
+      if (hasAnyUserInputMetadata(entry)) {
+        nextUserInputs[staffId][day] = entry;
+      } else {
+        delete nextUserInputs[staffId][day];
       }
 
       setShiftData(nextShifts);
       setUserInputs(nextUserInputs); // ★追加
       saveSchedule(nextShifts, taskData, nextUserInputs, bellData, nextLeaders); // ★引数追加
     } else {
+      if (appUser.role === 'admin') {
+        const changedTask = (toolCode || null) !== (currentTaskBefore || null);
+        const changedOwner =
+          toolCode &&
+          (entry.editedTaskBy !== loginAdminKey ||
+            (activeTeamKey && entry.teamTaskBy !== activeTeamKey));
+        if (changedTask || changedOwner) {
+          recordAdminUndoSnapshot();
+        }
+      }
+
       const nextTasks = { ...taskData };
       if (nextTasks[staffId]) {
           nextTasks[staffId] = { ...nextTasks[staffId] };
@@ -2825,6 +2909,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           } else {
             delete entry.teamTaskBy;
           }
+          if (!activeTeamKey && entry.task === toolCode) {
+            delete entry.editedTaskBy;
+          } else if (loginAdminKey) {
+            entry.editedTaskBy = loginAdminKey;
+          }
         }
       } else {
         delete nextTasks[staffId][day];
@@ -2832,10 +2921,15 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           delete entry.task;
         } else if (appUser.role === 'admin') {
           delete entry.teamTaskBy;
+          if (entry.task && loginAdminKey) {
+            entry.editedTaskBy = loginAdminKey;
+          } else {
+            delete entry.editedTaskBy;
+          }
         }
       }
 
-      if (entry.shift || entry.task || entry.teamShiftBy || entry.teamTaskBy) {
+      if (hasAnyUserInputMetadata(entry)) {
         nextUserInputs[staffId][day] = entry;
       } else {
         delete nextUserInputs[staffId][day];
@@ -2850,8 +2944,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   // 緊急待機番(ベル)のタスク欄背景色（オレンジ）をタスク内容を変更せずにON/OFF切り替え
   const handleToggleBell = (staffId, day) => {
     if (!appUser || appUser.role !== 'admin') return;
+    recordAdminUndoSnapshot();
+    const loginAdminKey = getLoggedInAdminKey();
     const nextBells = { ...bellData };
     const staffBells = nextBells[staffId] ? { ...nextBells[staffId] } : {};
+    const willTurnOn = !staffBells[day];
     if (staffBells[day]) {
       delete staffBells[day];
     } else {
@@ -2862,8 +2959,27 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     } else {
       delete nextBells[staffId];
     }
+
+    const entry = normalizeUserInputEntry(userInputs[staffId]?.[day], shiftData[staffId]?.[day], taskData[staffId]?.[day]);
+    if (willTurnOn && loginAdminKey) {
+      entry.editedBellBy = loginAdminKey;
+    } else {
+      delete entry.editedBellBy;
+    }
+    const nextUserInputs = { ...userInputs };
+    const staffInputs = { ...(nextUserInputs[staffId] || {}) };
+    if (hasAnyUserInputMetadata(entry)) {
+      staffInputs[day] = entry;
+      nextUserInputs[staffId] = staffInputs;
+    } else {
+      delete staffInputs[day];
+      if (Object.keys(staffInputs).length > 0) nextUserInputs[staffId] = staffInputs;
+      else delete nextUserInputs[staffId];
+    }
+
     setBellData(nextBells);
-    saveSchedule(shiftData, taskData, userInputs, nextBells, leaderData);
+    setUserInputs(nextUserInputs);
+    saveSchedule(shiftData, taskData, nextUserInputs, nextBells, leaderData);
   };
 
   // 各施設(君津・坂田)の手動リーダー色付け（3クールにリーダー不在時など）をON/OFF切り替え
@@ -2877,14 +2993,37 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       return;
     }
 
+    recordAdminUndoSnapshot();
+    const loginAdminKey = getLoggedInAdminKey();
     const nextLeaders = { ...leaderData };
+    const nextUserInputs = { ...userInputs };
     const isCurrentlyOn = Boolean(nextLeaders[staffId]?.[day]);
+
+    const updateLeaderOwnerMark = (targetStaffId, nextOwnerKey) => {
+      const tEntry = normalizeUserInputEntry(
+        nextUserInputs[targetStaffId]?.[day],
+        shiftData[targetStaffId]?.[day],
+        taskData[targetStaffId]?.[day]
+      );
+      if (nextOwnerKey) tEntry.editedLeaderBy = nextOwnerKey;
+      else delete tEntry.editedLeaderBy;
+      const tMap = { ...(nextUserInputs[targetStaffId] || {}) };
+      if (hasAnyUserInputMetadata(tEntry)) {
+        tMap[day] = tEntry;
+        nextUserInputs[targetStaffId] = tMap;
+      } else {
+        delete tMap[day];
+        if (Object.keys(tMap).length > 0) nextUserInputs[targetStaffId] = tMap;
+        else delete nextUserInputs[targetStaffId];
+      }
+    };
 
     if (isCurrentlyOn) {
       const staffLeaders = { ...(nextLeaders[staffId] || {}) };
       delete staffLeaders[day];
       if (Object.keys(staffLeaders).length > 0) nextLeaders[staffId] = staffLeaders;
       else delete nextLeaders[staffId];
+      updateLeaderOwnerMark(staffId, null);
     } else {
       // 同一施設(坂田・君津別)の他の手動リーダー指定は解除し、施設ごとに1名に揃える
       Object.keys(nextLeaders).forEach(otherId => {
@@ -2896,13 +3035,16 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           delete updatedOther[day];
           if (Object.keys(updatedOther).length > 0) nextLeaders[otherId] = updatedOther;
           else delete nextLeaders[otherId];
+          updateLeaderOwnerMark(otherId, null);
         }
       });
       nextLeaders[staffId] = { ...(nextLeaders[staffId] || {}), [day]: true };
+      updateLeaderOwnerMark(staffId, loginAdminKey);
     }
 
     setLeaderData(nextLeaders);
-    saveSchedule(shiftData, taskData, userInputs, bellData, nextLeaders);
+    setUserInputs(nextUserInputs);
+    saveSchedule(shiftData, taskData, nextUserInputs, bellData, nextLeaders);
   };
 
   const handleCellClick = (e, staffId, day, type) => {
@@ -3415,55 +3557,129 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   };
 
 const handleResetSchedule = () => {
-    if (!isMasterAdmin) return;
+    if (!appUser || appUser.role !== 'admin') return;
+    const loginAdminKey = getLoggedInAdminKey();
+    const adminLabel = getLoggedInAdminDisplayLabel(loginAdminKey);
     setConfirmModal({
       isOpen: true,
-      title: '勤務表の消去',
-      message: `${year}年${month}月のシフトとタスクを削除しますか？\n\n※「個人(スタッフ)」が直接入力したシフトは削除されずに残ります。\nこの操作は取り消せません。`,
+      title: `${adminLabel}の編集内容を全消去`,
+      message: `「${adminLabel}」が編集した${year}年${month}月のシフト・タスク等を消去しますか？\n\n※職員本人の希望入力や、他の管理者が編集したシフトはそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`,
       onConfirm: () => {
-        const newShiftData = {};
-        const newTaskData = {};
-        const newUserInputs = {};
+        recordAdminUndoSnapshot();
+        const newShiftData = JSON.parse(JSON.stringify(shiftData || {}));
+        const newTaskData = JSON.parse(JSON.stringify(taskData || {}));
+        const newBellData = JSON.parse(JSON.stringify(bellData || {}));
+        const newLeaderData = JSON.parse(JSON.stringify(leaderData || {}));
+        const newUserInputs = JSON.parse(JSON.stringify(userInputs || {}));
 
-        // userInputsに記録されているスタッフ本人の希望履歴からシフト・タスクを復元します
-        Object.keys(userInputs).forEach(staffId => {
-          Object.keys(userInputs[staffId] || {}).forEach(day => {
-            const entry = normalizeUserInputEntry(
-              userInputs[staffId][day],
-              shiftData[staffId]?.[day],
-              taskData[staffId]?.[day]
-            );
-            const restoredEntry = {};
+        const staffIdSet = new Set([
+          ...Object.keys(newShiftData),
+          ...Object.keys(newTaskData),
+          ...Object.keys(newBellData),
+          ...Object.keys(newLeaderData),
+          ...Object.keys(newUserInputs),
+        ]);
 
-            if (entry.shift && shiftDefs[entry.shift]) {
-              if (!newShiftData[staffId]) newShiftData[staffId] = {};
-              newShiftData[staffId][day] = entry.shift;
-              restoredEntry.shift = entry.shift;
-              if (entry.reason) {
-                restoredEntry.reason = entry.reason;
+        staffIdSet.forEach(staffId => {
+          const daySet = new Set([
+            ...Object.keys(newShiftData[staffId] || {}),
+            ...Object.keys(newTaskData[staffId] || {}),
+            ...Object.keys(newBellData[staffId] || {}),
+            ...Object.keys(newLeaderData[staffId] || {}),
+            ...Object.keys(newUserInputs[staffId] || {}),
+          ]);
+
+          daySet.forEach(day => {
+            const curShift = newShiftData[staffId]?.[day] || null;
+            const curTask = newTaskData[staffId]?.[day] || null;
+            const hasBell = Boolean(newBellData[staffId]?.[day]);
+            const hasLeader = Boolean(newLeaderData[staffId]?.[day]);
+            const entry = normalizeUserInputEntry(newUserInputs[staffId]?.[day], curShift, curTask);
+
+            // 1. シフトの所有者を判定して、ログイン中管理者の編集分のみ元（個人希望または空欄）に戻す
+            const shiftOwner =
+              entry.editedShiftBy ||
+              (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy] ? entry.teamShiftBy : null) ||
+              (curShift ? (entry.shift && curShift === entry.shift ? 'staff' : 'all') : null);
+            if (shiftOwner === loginAdminKey) {
+              if (entry.shift && shiftDefs[entry.shift]) {
+                newShiftData[staffId] = newShiftData[staffId] || {};
+                newShiftData[staffId][day] = entry.shift;
+              } else if (newShiftData[staffId]) {
+                delete newShiftData[staffId][day];
+                if (Object.keys(newShiftData[staffId]).length === 0) delete newShiftData[staffId];
               }
+              delete entry.teamShiftBy;
+              delete entry.editedShiftBy;
             }
-            if (entry.task && shiftDefs[entry.task]) {
-              if (!newTaskData[staffId]) newTaskData[staffId] = {};
-              newTaskData[staffId][day] = entry.task;
-              restoredEntry.task = entry.task;
+
+            // 2. タスクの所有者を判定して、ログイン中管理者の編集分のみ元（個人希望または空欄）に戻す
+            const taskOwner =
+              entry.editedTaskBy ||
+              (entry.teamTaskBy && TEAM_ADMIN_LABELS[entry.teamTaskBy] ? entry.teamTaskBy : null) ||
+              (curTask ? (entry.task && curTask === entry.task ? 'staff' : 'all') : null);
+            if (taskOwner === loginAdminKey) {
+              if (entry.task && shiftDefs[entry.task]) {
+                newTaskData[staffId] = newTaskData[staffId] || {};
+                newTaskData[staffId][day] = entry.task;
+              } else if (newTaskData[staffId]) {
+                delete newTaskData[staffId][day];
+                if (Object.keys(newTaskData[staffId]).length === 0) delete newTaskData[staffId];
+              }
+              delete entry.teamTaskBy;
+              delete entry.editedTaskBy;
             }
-            if (restoredEntry.shift || restoredEntry.task) {
-              if (!newUserInputs[staffId]) newUserInputs[staffId] = {};
-              newUserInputs[staffId][day] = restoredEntry;
+
+            // 3. 緊急待機番(ベル)・手動リーダー色付けもログイン中管理者の入力分のみ解除（施設対象外になったリーダーも解除）
+            if (hasBell) {
+              const bellOwner = entry.editedBellBy || 'all';
+              if (bellOwner === loginAdminKey) {
+                delete newBellData[staffId][day];
+                if (Object.keys(newBellData[staffId]).length === 0) delete newBellData[staffId];
+                delete entry.editedBellBy;
+              }
+            } else if (entry.editedBellBy === loginAdminKey) {
+              delete entry.editedBellBy;
+            }
+
+            const afterShiftCode = newShiftData[staffId]?.[day] || null;
+            const afterShiftDef = afterShiftCode ? shiftDefs[afterShiftCode] : null;
+            const afterCat = afterShiftDef ? categoryDefs[afterShiftDef.category] : null;
+            const keepsLeaderFacility = Boolean(
+              afterShiftDef &&
+                getEffectiveShiftType(afterShiftDef, categoryDefs) === 'shift' &&
+                isLeaderHighlightTargetFacility(afterCat)
+            );
+            if (hasLeader) {
+              const leaderOwner = entry.editedLeaderBy || 'all';
+              if (leaderOwner === loginAdminKey || !keepsLeaderFacility) {
+                delete newLeaderData[staffId][day];
+                if (Object.keys(newLeaderData[staffId]).length === 0) delete newLeaderData[staffId];
+                delete entry.editedLeaderBy;
+              }
+            } else if (entry.editedLeaderBy === loginAdminKey) {
+              delete entry.editedLeaderBy;
+            }
+
+            if (hasAnyUserInputMetadata(entry)) {
+              newUserInputs[staffId] = newUserInputs[staffId] || {};
+              newUserInputs[staffId][day] = entry;
+            } else if (newUserInputs[staffId]) {
+              delete newUserInputs[staffId][day];
+              if (Object.keys(newUserInputs[staffId]).length === 0) delete newUserInputs[staffId];
             }
           });
         });
 
-        // 抽出したデータで上書き保存します
+        setActivePopup(null);
         setShiftData(newShiftData);
         setTaskData(newTaskData);
-        setBellData({});
-        setLeaderData({});
+        setBellData(newBellData);
+        setLeaderData(newLeaderData);
         setUserInputs(newUserInputs);
-        saveSchedule(newShiftData, newTaskData, newUserInputs, {}, {});
-        
-        alert('個人が入力したシフトを残して、その他のデータをリセットしました。');
+        saveSchedule(newShiftData, newTaskData, newUserInputs, newBellData, newLeaderData);
+
+        alert(`職員本人の希望や他の管理者が編集したシフトを残し、「${adminLabel}」が編集した内容のみ消去しました。`);
       }
     });
   };
@@ -5606,6 +5822,13 @@ ${dailyCheckExampleLines}
       updateStepItem('finish', { status: 'active', detail: '保存中...' });
 
       isAutoFillRunningRef.current = false;
+      recordAdminUndoSnapshot({
+        shifts: originalShifts,
+        tasks: originalTasks,
+        userInputs: originalUserInputs,
+        bells: bellData,
+        leaders: leaderData,
+      });
       setShiftData(finalShifts);
       setTaskData(finalTasks);
       setUserInputs(finalUserInputs);
@@ -5830,6 +6053,8 @@ ${dailyCheckExampleLines}
       prevCode: (item.kind === 'shift' ? shiftData[item.staffId]?.[item.day] : taskData[item.staffId]?.[item.day]) || null,
     }));
 
+    recordAdminUndoSnapshot();
+
     targetMsg.proposedChanges.forEach(item => {
       if (item.kind === 'shift') {
         if (getUserRequestedShift(item.staffId, item.day)) return;
@@ -5843,6 +6068,12 @@ ${dailyCheckExampleLines}
         } else {
           delete ns[item.staffId][item.day];
         }
+        const sEntry = normalizeUserInputEntry(nextUserInputs[item.staffId]?.[item.day], curCode, taskData[item.staffId]?.[item.day]);
+        if (item.afterCode) sEntry.editedShiftBy = 'all';
+        else delete sEntry.editedShiftBy;
+        nextUserInputs[item.staffId] = { ...(nextUserInputs[item.staffId] || {}) };
+        if (hasAnyUserInputMetadata(sEntry)) nextUserInputs[item.staffId][item.day] = sEntry;
+        else delete nextUserInputs[item.staffId][item.day];
       } else {
         if (getUserRequestedTask(item.staffId, item.day)) return;
         if (getTeamLockedTaskSource(item.staffId, item.day)) return;
@@ -5852,6 +6083,12 @@ ${dailyCheckExampleLines}
         } else {
           delete nt[item.staffId][item.day];
         }
+        const tEntry = normalizeUserInputEntry(nextUserInputs[item.staffId]?.[item.day], shiftData[item.staffId]?.[item.day], taskData[item.staffId]?.[item.day]);
+        if (item.afterCode) tEntry.editedTaskBy = 'all';
+        else delete tEntry.editedTaskBy;
+        nextUserInputs[item.staffId] = { ...(nextUserInputs[item.staffId] || {}) };
+        if (hasAnyUserInputMetadata(tEntry)) nextUserInputs[item.staffId][item.day] = tEntry;
+        else delete nextUserInputs[item.staffId][item.day];
       }
     });
 
@@ -6688,6 +6925,114 @@ ${messageText}`;
     setShowPrintModal(true);
   };
 
+  // --- 管理者編集の戻る・進む（Undo / Redo） ---
+  const cloneScheduleSnapshot = (snap) => ({
+    shifts: JSON.parse(JSON.stringify(snap?.shifts || {})),
+    tasks: JSON.parse(JSON.stringify(snap?.tasks || {})),
+    userInputs: JSON.parse(JSON.stringify(snap?.userInputs || {})),
+    bells: JSON.parse(JSON.stringify(snap?.bells || {})),
+    leaders: JSON.parse(JSON.stringify(snap?.leaders || {})),
+  });
+
+  useEffect(() => {
+    scheduleSnapshotRef.current = {
+      shifts: shiftData,
+      tasks: taskData,
+      userInputs,
+      bells: bellData,
+      leaders: leaderData,
+    };
+  }, [shiftData, taskData, userInputs, bellData, leaderData]);
+
+  useEffect(() => {
+    const emptyHistory = { past: [], future: [] };
+    undoHistoryRef.current = emptyHistory;
+    setUndoHistory(emptyHistory);
+  }, [year, month, appUser?.role, appUser?.initialView]);
+
+  const recordAdminUndoSnapshot = (customSnapshot = null) => {
+    if (!appUser || appUser.role !== 'admin') return;
+    const baseSnap = cloneScheduleSnapshot(customSnapshot || scheduleSnapshotRef.current);
+    const nextPast = [...undoHistoryRef.current.past, baseSnap].slice(-50);
+    const nextHistory = { past: nextPast, future: [] };
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+  };
+
+  const applyScheduleSnapshotForHistory = (snapshot) => {
+    const restored = cloneScheduleSnapshot(snapshot);
+    scheduleSnapshotRef.current = restored;
+    setActivePopup(null);
+    setShiftData(restored.shifts);
+    setTaskData(restored.tasks);
+    setUserInputs(restored.userInputs);
+    setBellData(restored.bells);
+    setLeaderData(restored.leaders);
+    saveSchedule(restored.shifts, restored.tasks, restored.userInputs, restored.bells, restored.leaders);
+  };
+
+  const handleUndoSchedule = () => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isAutoFillRunningRef.current) return;
+    if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
+    const { past, future } = undoHistoryRef.current;
+    if (past.length === 0) return;
+
+    const targetSnapshot = past[past.length - 1];
+    const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
+    const nextHistory = {
+      past: past.slice(0, -1),
+      future: [currentSnapshot, ...future].slice(0, 50),
+    };
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+    applyScheduleSnapshotForHistory(targetSnapshot);
+  };
+
+  const handleRedoSchedule = () => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isAutoFillRunningRef.current) return;
+    if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
+    const { past, future } = undoHistoryRef.current;
+    if (future.length === 0) return;
+
+    const targetSnapshot = future[0];
+    const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
+    const nextHistory = {
+      past: [...past, currentSnapshot].slice(-50),
+      future: future.slice(1),
+    };
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+    applyScheduleSnapshotForHistory(targetSnapshot);
+  };
+
+  const undoRedoActionsRef = useRef({ undo: () => {}, redo: () => {} });
+  undoRedoActionsRef.current = { undo: handleUndoSchedule, redo: handleRedoSchedule };
+
+  useEffect(() => {
+    if (!appUser || appUser.role !== 'admin') return;
+    const onKeyDown = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      const key = (e.key || '').toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        if (undoHistoryRef.current.past.length > 0) {
+          e.preventDefault();
+          undoRedoActionsRef.current.undo();
+        }
+      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        if (undoHistoryRef.current.future.length > 0) {
+          e.preventDefault();
+          undoRedoActionsRef.current.redo();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [appUser]);
+
   // ページ再読み込み時に保存済みセッションからログイン状態を自動復元
   useEffect(() => {
     if (!isDataLoaded || !isRestoringSession) return;
@@ -6920,6 +7265,41 @@ ${messageText}`;
              >
                <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
              </button>
+           {appUser.role === 'admin' && (
+             <>
+               <div className="flex items-center bg-gray-50 rounded-lg p-0.5 border border-gray-300 shadow-sm shrink-0">
+                 <button
+                   type="button"
+                   onClick={handleUndoSchedule}
+                   disabled={undoHistory.past.length === 0}
+                   className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
+                   title={undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません'}
+                 >
+                   <ChevronLeft size={16} />
+                   <span className="hidden xl:inline">戻る</span>
+                 </button>
+                 <div className="w-px h-4 bg-gray-300" />
+                 <button
+                   type="button"
+                   onClick={handleRedoSchedule}
+                   disabled={undoHistory.future.length === 0}
+                   className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
+                   title={undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません'}
+                 >
+                   <span className="hidden xl:inline">進む</span>
+                   <ChevronRight size={16} />
+                 </button>
+               </div>
+               <button
+                 type="button"
+                 onClick={handleResetSchedule}
+                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
+                 title={`${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+               >
+                 <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
+               </button>
+             </>
+           )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <>
                <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
@@ -6969,9 +7349,6 @@ ${messageText}`;
                     </span>
                   )}
                 </button>
-                <button onClick={handleResetSchedule} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0" title="シフト全消去">
-                 <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
-               </button>
                <button
                  onClick={() => {
                    setEditingShift(null);
@@ -7740,9 +8117,11 @@ ${messageText}`;
                           onClick={() => {
                             if (!isMasterAdmin && teamClearPerm.allowed && !popupOptions.some(o => o.code === popupReqCode)) {
                               // 班管理者が自班の入力を取り消して元の個人希望に戻す場合
+                              recordAdminUndoSnapshot();
                               const nextShifts = { ...shiftData, [activePopup.staffId]: { ...(shiftData[activePopup.staffId] || {}), [activePopup.day]: popupReqCode } };
                               const entry = normalizeUserInputEntry(userInputs[activePopup.staffId]?.[activePopup.day], shiftData[activePopup.staffId]?.[activePopup.day], taskData[activePopup.staffId]?.[activePopup.day]);
                               delete entry.teamShiftBy;
+                              delete entry.editedShiftBy;
                               const nextInputs = { ...userInputs, [activePopup.staffId]: { ...(userInputs[activePopup.staffId] || {}), [activePopup.day]: entry } };
                               setShiftData(nextShifts);
                               setUserInputs(nextInputs);
@@ -9024,9 +9403,9 @@ ${messageText}`;
                     <div className="max-w-lg mx-auto mt-8 text-center">
                       <div className="bg-red-50 border border-red-200 rounded-xl p-6">
                         <h4 className="font-bold text-red-700 text-lg mb-2 flex items-center justify-center gap-2"><AlertTriangle/> 危険な操作エリア</h4>
-                        <p className="text-sm text-red-600 mb-6">現在表示中の月（{year}年{month}月）のシフトデータを完全に削除します。<br/>この操作は取り消せません。</p>
+                        <p className="text-sm text-red-600 mb-6">現在表示中の月（{year}年{month}月）から、ログイン中の管理者（{getLoggedInAdminDisplayLabel()}）が編集したシフト・タスクのみを削除します。<br/>職員本人の希望や他の管理者が入力したシフトはそのまま残ります。</p>
                         {/* このボタンはヘッダーに移動しましたが、ここにも残しておきます */}
-                        <button onClick={handleResetSchedule} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 w-full"><Eraser size={20}/> 勤務表を全消去（リセット）</button>
+                        <button onClick={handleResetSchedule} className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow flex items-center justify-center gap-2 w-full"><Eraser size={20}/> 自分の編集シフトを全消去（リセット）</button>
                       </div>
                     </div>
                   )}
