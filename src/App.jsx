@@ -9233,7 +9233,7 @@ ${messageText}`;
                           })()}
                         </div>
 
-                        {/* セクション3: 空欄（未入力）の職員（上から下方向・最大縦11×横4で表示） */}
+                        {/* セクション3: 空欄（未入力）の職員（画面幅・人数に応じて上から下方向へ動的に折り返し表示） */}
                         <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-2.5 sm:p-3">
                           <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
                             <span className="text-xs font-bold text-gray-700">
@@ -9246,24 +9246,13 @@ ${messageText}`;
                             )}
                           </div>
                           {blankStaff.length > 0 ? (
-                            (() => {
-                              const rowsPerCol = blankStaff.length > 44 ? Math.ceil(blankStaff.length / 4) : 11;
-                              const blankCols = [0, 1, 2, 3].map(colIdx =>
-                                blankStaff.slice(colIdx * rowsPerCol, (colIdx + 1) * rowsPerCol)
-                              );
-                              return (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
-                                  {blankCols.map((colItems, colIdx) => (
-                                    <div
-                                      key={colIdx}
-                                      className={`space-y-1.5 min-w-0 ${colItems.length === 0 ? 'hidden lg:block' : ''}`}
-                                    >
-                                      {colItems.map(item => renderStaffActionChip(item, false))}
-                                    </div>
-                                  ))}
+                            <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-1.5 sm:gap-2">
+                              {blankStaff.map(item => (
+                                <div key={item.staff.id} className="break-inside-avoid mb-1.5 sm:mb-2">
+                                  {renderStaffActionChip(item, false)}
                                 </div>
-                              );
-                            })()
+                              ))}
+                            </div>
                           ) : (
                             <div className="text-xs text-gray-400 text-center py-2">
                               空欄の職員はいません
