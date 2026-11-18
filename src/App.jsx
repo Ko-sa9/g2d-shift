@@ -3758,10 +3758,13 @@ const handleResetSchedule = () => {
     if (!appUser || appUser.role !== 'admin') return;
     const loginAdminKey = getLoggedInAdminKey();
     const adminLabel = getLoggedInAdminDisplayLabel(loginAdminKey);
+    const isMasterReset = loginAdminKey === 'all';
     setConfirmModal({
       isOpen: true,
-      title: `${adminLabel}の編集内容を全消去`,
-      message: `「${adminLabel}」が編集した${year}年${month}月のシフト・タスク等を消去しますか？\n\n※職員本人の希望入力や、他の管理者が編集したシフトはそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`,
+      title: isMasterReset ? 'AI作成シフトを全消去' : `${adminLabel}の編集内容を全消去`,
+      message: isMasterReset
+        ? `${year}年${month}月の「AIが作成したシフト」のみをすべて消去しますか？\n\n※職員本人の希望入力、各班管理者の入力、および全体管理者が手動入力（固定）したシフト・タスク・待機番はすべてそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`
+        : `「${adminLabel}」が編集した${year}年${month}月のシフト・タスク等を消去しますか？\n\n※職員本人の希望入力や、他の管理者が編集したシフトはそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`,
       onConfirm: () => {
         recordAdminUndoSnapshot();
         const newShiftData = JSON.parse(JSON.stringify(shiftData || {}));
@@ -3794,50 +3797,67 @@ const handleResetSchedule = () => {
             const hasLeader = Boolean(newLeaderData[staffId]?.[day]);
             const entry = normalizeUserInputEntry(newUserInputs[staffId]?.[day], curShift, curTask);
 
-            // 1. シフトの所有者を判定して、ログイン中管理者の編集分のみ元（個人希望または空欄）に戻す
-            const shiftOwner =
-              entry.editedShiftBy ||
-              (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy] ? entry.teamShiftBy : null) ||
-              (curShift ? (entry.shift && curShift === entry.shift ? 'staff' : 'all') : null);
-            if (shiftOwner === loginAdminKey) {
-              if (entry.shift && shiftDefs[entry.shift]) {
-                newShiftData[staffId] = newShiftData[staffId] || {};
-                newShiftData[staffId][day] = entry.shift;
-              } else if (newShiftData[staffId]) {
-                delete newShiftData[staffId][day];
-                if (Object.keys(newShiftData[staffId]).length === 0) delete newShiftData[staffId];
+            if (isMasterReset) {
+              // 全体管理者の全消去: AIが作成したシフト（＝本人希望でも管理者手動固定[teamShiftBy]でもないシフト）のみ消去
+              const hasLockedAdminShift = Boolean(
+                (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy]) ||
+                  isMeRoomShiftCode(curShift)
+              );
+              const isStaffRequestShift = Boolean(entry.shift && curShift === entry.shift);
+              if (curShift && !hasLockedAdminShift && !isStaffRequestShift) {
+                if (entry.shift && shiftDefs[entry.shift]) {
+                  newShiftData[staffId] = newShiftData[staffId] || {};
+                  newShiftData[staffId][day] = entry.shift;
+                } else if (newShiftData[staffId]) {
+                  delete newShiftData[staffId][day];
+                  if (Object.keys(newShiftData[staffId]).length === 0) delete newShiftData[staffId];
+                }
+                delete entry.editedShiftBy;
               }
-              delete entry.teamShiftBy;
-              delete entry.editedShiftBy;
-            }
-
-            // 2. タスクの所有者を判定して、ログイン中管理者の編集分のみ元（個人希望または空欄）に戻す
-            const taskOwner =
-              entry.editedTaskBy ||
-              (entry.teamTaskBy && TEAM_ADMIN_LABELS[entry.teamTaskBy] ? entry.teamTaskBy : null) ||
-              (curTask ? (entry.task && curTask === entry.task ? 'staff' : 'all') : null);
-            if (taskOwner === loginAdminKey) {
-              if (entry.task && shiftDefs[entry.task]) {
-                newTaskData[staffId] = newTaskData[staffId] || {};
-                newTaskData[staffId][day] = entry.task;
-              } else if (newTaskData[staffId]) {
-                delete newTaskData[staffId][day];
-                if (Object.keys(newTaskData[staffId]).length === 0) delete newTaskData[staffId];
+            } else {
+              // 各班管理者の全消去: ログイン中の班管理者が編集したシフト・タスク・待機番のみ元に戻す
+              const shiftOwner =
+                entry.editedShiftBy ||
+                (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy] ? entry.teamShiftBy : null) ||
+                (curShift ? (entry.shift && curShift === entry.shift ? 'staff' : 'all') : null);
+              if (shiftOwner === loginAdminKey) {
+                if (entry.shift && shiftDefs[entry.shift]) {
+                  newShiftData[staffId] = newShiftData[staffId] || {};
+                  newShiftData[staffId][day] = entry.shift;
+                } else if (newShiftData[staffId]) {
+                  delete newShiftData[staffId][day];
+                  if (Object.keys(newShiftData[staffId]).length === 0) delete newShiftData[staffId];
+                }
+                delete entry.teamShiftBy;
+                delete entry.editedShiftBy;
               }
-              delete entry.teamTaskBy;
-              delete entry.editedTaskBy;
-            }
 
-            // 3. 緊急待機番(ベル)・手動リーダー色付けもログイン中管理者の入力分のみ解除（施設対象外になったリーダーも解除）
-            if (hasBell) {
-              const bellOwner = entry.editedBellBy || 'all';
-              if (bellOwner === loginAdminKey) {
-                delete newBellData[staffId][day];
-                if (Object.keys(newBellData[staffId]).length === 0) delete newBellData[staffId];
+              const taskOwner =
+                entry.editedTaskBy ||
+                (entry.teamTaskBy && TEAM_ADMIN_LABELS[entry.teamTaskBy] ? entry.teamTaskBy : null) ||
+                (curTask ? (entry.task && curTask === entry.task ? 'staff' : 'all') : null);
+              if (taskOwner === loginAdminKey) {
+                if (entry.task && shiftDefs[entry.task]) {
+                  newTaskData[staffId] = newTaskData[staffId] || {};
+                  newTaskData[staffId][day] = entry.task;
+                } else if (newTaskData[staffId]) {
+                  delete newTaskData[staffId][day];
+                  if (Object.keys(newTaskData[staffId]).length === 0) delete newTaskData[staffId];
+                }
+                delete entry.teamTaskBy;
+                delete entry.editedTaskBy;
+              }
+
+              if (hasBell) {
+                const bellOwner = entry.editedBellBy || 'all';
+                if (bellOwner === loginAdminKey) {
+                  delete newBellData[staffId][day];
+                  if (Object.keys(newBellData[staffId]).length === 0) delete newBellData[staffId];
+                  delete entry.editedBellBy;
+                }
+              } else if (entry.editedBellBy === loginAdminKey) {
                 delete entry.editedBellBy;
               }
-            } else if (entry.editedBellBy === loginAdminKey) {
-              delete entry.editedBellBy;
             }
 
             const afterShiftCode = newShiftData[staffId]?.[day] || null;
@@ -3850,12 +3870,12 @@ const handleResetSchedule = () => {
             );
             if (hasLeader) {
               const leaderOwner = entry.editedLeaderBy || 'all';
-              if (leaderOwner === loginAdminKey || !keepsLeaderFacility) {
+              if ((!isMasterReset && leaderOwner === loginAdminKey) || !keepsLeaderFacility) {
                 delete newLeaderData[staffId][day];
                 if (Object.keys(newLeaderData[staffId]).length === 0) delete newLeaderData[staffId];
                 delete entry.editedLeaderBy;
               }
-            } else if (entry.editedLeaderBy === loginAdminKey) {
+            } else if (!isMasterReset && entry.editedLeaderBy === loginAdminKey) {
               delete entry.editedLeaderBy;
             }
 
@@ -3877,7 +3897,11 @@ const handleResetSchedule = () => {
         setUserInputs(newUserInputs);
         saveSchedule(newShiftData, newTaskData, newUserInputs, newBellData, newLeaderData);
 
-        alert(`職員本人の希望や他の管理者が編集したシフトを残し、「${adminLabel}」が編集した内容のみ消去しました。`);
+        alert(
+          isMasterReset
+            ? '職員本人の希望や管理者手動入力（固定）のシフトを残し、AIが作成したシフトのみ消去しました。'
+            : `職員本人の希望や他の管理者が編集したシフトを残し、「${adminLabel}」が編集した内容のみ消去しました。`
+        );
       }
     });
   };
@@ -6377,8 +6401,8 @@ ${dailyCheckExampleLines}
           delete ns[item.staffId][item.day];
         }
         const sEntry = normalizeUserInputEntry(nextUserInputs[item.staffId]?.[item.day], curCode, taskData[item.staffId]?.[item.day]);
-        if (item.afterCode) sEntry.editedShiftBy = 'all';
-        else delete sEntry.editedShiftBy;
+        delete sEntry.editedShiftBy;
+        delete sEntry.teamShiftBy;
         nextUserInputs[item.staffId] = { ...(nextUserInputs[item.staffId] || {}) };
         if (hasAnyUserInputMetadata(sEntry)) nextUserInputs[item.staffId][item.day] = sEntry;
         else delete nextUserInputs[item.staffId][item.day];
@@ -7814,7 +7838,7 @@ ${messageText}`;
                type="button"
                onClick={handleResetSchedule}
                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
-               title={`${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+               title={isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
              >
                <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
              </button>
@@ -8103,33 +8127,6 @@ ${messageText}`;
                     )}
                   </div>
 
-                  {overallSubViewMode === 'monthly' && appUser.role === 'admin' && (
-                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1">
-                      <span className="text-[11px] font-bold text-slate-600">右列カウント:</span>
-                      <button
-                        type="button"
-                        onClick={() => setAdminCountDisplayMode('facility')}
-                        className={`px-2 py-0.5 rounded text-xs font-bold transition ${
-                          adminCountDisplayMode === 'facility'
-                            ? 'bg-indigo-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:bg-slate-200/70'
-                        }`}
-                      >
-                        施設別
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAdminCountDisplayMode('slot')}
-                        className={`px-2 py-0.5 rounded text-xs font-bold transition ${
-                          adminCountDisplayMode === 'slot'
-                            ? 'bg-indigo-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:bg-slate-200/70'
-                        }`}
-                      >
-                        シフト表示別
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 {overallSubViewMode === 'daily' ? (
@@ -8630,7 +8627,7 @@ ${messageText}`;
                   <thead>
                     <tr>
                       <th
-                        rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 2 : 1}
+                        rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 3 : 1}
                         className="sticky top-0 left-0 z-30 bg-gray-100 border-b border-r px-2 py-1.5 min-w-[116px] h-20 text-left"
                       >
                         <div className="flex flex-col justify-between h-full">
@@ -8666,7 +8663,7 @@ ${messageText}`;
                         return (
                           <th
                             key={day}
-                            rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 2 : 1}
+                            rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 3 : 1}
                             onClick={() => {
                               setSelectedDailyViewDay(day);
                               setOverallSubViewMode('daily');
@@ -8691,47 +8688,86 @@ ${messageText}`;
                         );
                       })}
                       <th
-                        rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 2 : 1}
+                        rowSpan={appUser.role === 'admin' && adminRightFlatShifts.length > 0 ? 3 : 1}
                         className="sticky top-0 z-20 bg-red-50 border-b border-r px-1.5 py-1 min-w-[48px] text-center text-xs font-bold text-red-800"
                       >
                         残業
                       </th>
                       {appUser.role === 'admin' && adminRightFlatShifts.length > 0 && (
                         <>
-                          {/* 残業セルと右列カウント表の間の隙間セル */}
+                          {/* 残業セルと個人集計表の間の隙間セル */}
                           <th
-                            rowSpan={2}
+                            rowSpan={3}
                             className="sticky top-0 z-20 w-3 min-w-[12px] bg-gray-100 border-b border-r border-gray-300 p-0"
                             aria-hidden="true"
                           />
+                          {/* 1段目: 個人集計の切替ボタン（開始位置＝坂田/3クールの上に左寄せ固定） */}
+                          <th
+                            colSpan={adminRightFlatShifts.length}
+                            className="sticky top-0 z-20 bg-slate-100 border-b border-r px-2 py-1 text-left align-middle"
+                          >
+                            <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                              <span className="text-[11px] font-bold text-slate-700">個人集計:</span>
+                              <div className="inline-flex rounded border border-slate-300 bg-white p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setAdminCountDisplayMode('facility')}
+                                  className={`px-2 py-0.5 rounded-xs text-[10px] font-bold transition ${
+                                    adminCountDisplayMode === 'facility'
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  施設別
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setAdminCountDisplayMode('slot')}
+                                  className={`px-2 py-0.5 rounded-xs text-[10px] font-bold transition ${
+                                    adminCountDisplayMode === 'slot'
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  シフト表示別
+                                </button>
+                              </div>
+                            </div>
+                          </th>
+                        </>
+                      )}
+                    </tr>
+                    {appUser.role === 'admin' && adminRightFlatShifts.length > 0 && (
+                      <>
+                        {/* 2段目: 施設名 / クール区分名 */}
+                        <tr>
                           {adminRightCountGroups.map((grp, gIdx) => (
                             <th
                               key={grp.id}
                               colSpan={grp.shifts.length}
-                              className={`sticky top-0 z-20 border-b border-r px-1.5 py-1 text-center text-[11px] font-bold whitespace-nowrap ${
+                              className={`sticky top-[29px] z-20 border-b border-r px-1.5 py-0.5 text-center text-[11px] font-bold whitespace-nowrap ${
                                 gIdx > 0 ? 'border-l-2 border-l-gray-300' : ''
                               } ${grp.headerColor}`}
                             >
                               {grp.label}
                             </th>
                           ))}
-                        </>
-                      )}
-                    </tr>
-                    {appUser.role === 'admin' && adminRightFlatShifts.length > 0 && (
-                      <tr>
-                        {adminRightFlatShifts.map(item => (
-                          <th
-                            key={`${item.groupId}_${item.shift.code}`}
-                            title={`${item.groupLabel} — ${item.shift.label} (${item.shift.code})`}
-                            className={`sticky top-[28px] z-20 bg-gray-50 border-b border-r px-1 py-1 min-w-[28px] text-center text-[11px] font-bold whitespace-nowrap ${
-                              item.isFirstInGroup ? 'border-l-2 border-l-gray-300' : ''
-                            }`}
-                          >
-                            <span className={item.shift.text || 'text-gray-700'}>{item.shift.label}</span>
-                          </th>
-                        ))}
-                      </tr>
+                        </tr>
+                        {/* 3段目: 個別シフト表示名 */}
+                        <tr>
+                          {adminRightFlatShifts.map(item => (
+                            <th
+                              key={`${item.groupId}_${item.shift.code}`}
+                              title={`${item.groupLabel} — ${item.shift.label} (${item.shift.code})`}
+                              className={`sticky top-[54px] z-20 bg-gray-50 border-b border-r px-1 py-0.5 min-w-[28px] text-center text-[11px] font-bold whitespace-nowrap ${
+                                item.isFirstInGroup ? 'border-l-2 border-l-gray-300' : ''
+                              }`}
+                            >
+                              <span className={item.shift.text || 'text-gray-700'}>{item.shift.label}</span>
+                            </th>
+                          ))}
+                        </tr>
+                      </>
                     )}
                   </thead>
                   <tbody className="bg-white">
