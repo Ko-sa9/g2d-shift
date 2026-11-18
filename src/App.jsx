@@ -1825,6 +1825,9 @@ export default function WorkScheduleApp() {
   const [popupReasonText, setPopupReasonText] = useState('');
   const [showPopupFullMonthCal, setShowPopupFullMonthCal] = useState(false);
   const popupRef = useRef(null);
+  const popupManualPosRef = useRef(null);
+  const popupJustDraggedRef = useRef(false);
+  const popupDragCleanupRef = useRef(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
@@ -3412,6 +3415,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       setPopupReasonText('');
     }
     setShowPopupFullMonthCal(false);
+    popupManualPosRef.current = null;
     setActivePopup({
       staffId,
       day,
@@ -3427,10 +3431,17 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     });
   };
 
-  // PC表示時: ポップアップの実測サイズをもとに、選択セルのすぐ横（右端では左横）かつ画面内に必ず収まる座標へ配置
+  // PC表示時: 手動ドラッグ位置があれば維持しつつ画面内にクランプ、未移動時は選択セルのすぐ横に配置
   useLayoutEffect(() => {
     const popupEl = popupRef.current;
-    if (!activePopup || !popupEl || !activePopup.cellRect) return;
+    if (!activePopup) {
+      popupManualPosRef.current = null;
+      if (popupDragCleanupRef.current) {
+        popupDragCleanupRef.current();
+      }
+      return;
+    }
+    if (!popupEl || !activePopup.cellRect) return;
 
     const updatePosition = () => {
       if (window.innerWidth < 768) {
@@ -3439,12 +3450,22 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         return;
       }
 
-      const gap = 6;
       const margin = 12;
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const pw = popupEl.offsetWidth;
       const ph = popupEl.offsetHeight;
+
+      if (popupManualPosRef.current) {
+        const clampedLeft = Math.max(margin, Math.min(popupManualPosRef.current.left, vw - pw - margin));
+        const clampedTop = Math.max(margin, Math.min(popupManualPosRef.current.top, vh - ph - margin));
+        popupManualPosRef.current = { left: clampedLeft, top: clampedTop };
+        popupEl.style.top = `${Math.round(clampedTop)}px`;
+        popupEl.style.left = `${Math.round(clampedLeft)}px`;
+        return;
+      }
+
+      const gap = 6;
       const { top: cTop, left: cLeft, right: cRight } = activePopup.cellRect;
 
       // 横方向: 基本はセルの右横、右側に収まらない場合はセルの左横へ自動反転
@@ -3474,6 +3495,72 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     window.addEventListener('resize', updatePosition);
     return () => window.removeEventListener('resize', updatePosition);
   }, [activePopup, popupReasonText, showPopupFullMonthCal]);
+
+  // ポップアップヘッダーのドラッグ移動ハンドラ（PC・タブレット幅で有効）
+  const handlePopupDragStart = useCallback((e) => {
+    if (window.innerWidth < 768) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const popupEl = popupRef.current;
+    if (!popupEl) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (popupDragCleanupRef.current) {
+      popupDragCleanupRef.current();
+    }
+
+    const rect = popupEl.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const originLeft = rect.left;
+    const originTop = rect.top;
+    let hasMoved = false;
+
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
+
+    const onPointerMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      if (!hasMoved && Math.hypot(dx, dy) < 3) return;
+      hasMoved = true;
+
+      const margin = 8;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const pw = popupEl.offsetWidth;
+      const ph = popupEl.offsetHeight;
+
+      const nextLeft = Math.max(margin, Math.min(originLeft + dx, vw - pw - margin));
+      const nextTop = Math.max(margin, Math.min(originTop + dy, vh - ph - margin));
+
+      popupManualPosRef.current = { left: nextLeft, top: nextTop };
+      popupEl.style.left = `${Math.round(nextLeft)}px`;
+      popupEl.style.top = `${Math.round(nextTop)}px`;
+    };
+
+    const cleanup = () => {
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      if (popupDragCleanupRef.current === cleanup) {
+        popupDragCleanupRef.current = null;
+      }
+      if (hasMoved) {
+        popupJustDraggedRef.current = true;
+        setTimeout(() => {
+          popupJustDraggedRef.current = false;
+        }, 100);
+      }
+    };
+
+    popupDragCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+  }, []);
 
   const handleChangePassword = () => {
     const trimmedPassword = newPassword.trim();
@@ -8007,7 +8094,13 @@ ${messageText}`;
     <>
       <div
         className={`flex flex-col h-screen bg-gray-100 text-sm font-sans ${showPrintModal ? 'print:hidden' : ''}`}
-        onClick={() => setActivePopup(null)}
+        onClick={() => {
+          if (popupJustDraggedRef.current) {
+            popupJustDraggedRef.current = false;
+            return;
+          }
+          setActivePopup(null);
+        }}
       >
         <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-2 sm:gap-4 shrink-0">
@@ -9714,11 +9807,25 @@ ${messageText}`;
                 ${showPopupScheduleSummary ? 'md:w-96' : 'md:w-80'} md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex justify-between items-center mb-2 pb-2 border-b shrink-0">
-                <div className="text-sm font-bold text-gray-700 truncate pr-2">
-                  {month}月{activePopup.day}日{appUser.role === 'admin' && popupStaff ? ` (${popupStaff.name})` : ''} - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
+              <div
+                onPointerDown={handlePopupDragStart}
+                className="flex justify-between items-center mb-2 pb-2 border-b shrink-0 md:cursor-move md:touch-none select-none"
+                title="ドラッグして移動"
+              >
+                <div className="flex items-center gap-1 text-sm font-bold text-gray-700 truncate pr-2 min-w-0">
+                  <GripVertical size={15} className="hidden md:inline-block text-gray-400 shrink-0" />
+                  <span className="truncate">
+                    {month}月{activePopup.day}日{appUser.role === 'admin' && popupStaff ? ` (${popupStaff.name})` : ''} - {activePopup.type === 'shift' ? 'シフト選択' : 'タスク選択'}
+                  </span>
                 </div>
-                <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setActivePopup(null)}
+                  className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0 cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
               </div>
               {showPopupScheduleSummary && (() => {
                 // 案A: 「月間全体表」「施設別」画面でのシフト変更時に、対象人物のその週のミニシフト帯（前月末またぎ含む） ＋ 3クール・有休(残数/可能数) ＋ 1ヶ月展開を表示
