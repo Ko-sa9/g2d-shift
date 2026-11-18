@@ -10083,6 +10083,36 @@ ${messageText}`;
                                     <span className={wc.sDef.text || 'text-gray-800'}>{wc.sDef.label}</span>
                                   ) : wc.reqDef ? (
                                     <span className="text-[9px] text-pink-500">希:{wc.reqDef.label}</span>
+                                  ) : (
+                                    <span className="text-gray-300 font-normal text-[10px]">-</span>
+                                  )}
+                                </div>
+                                <div
+                                  className={`w-full text-[9px] leading-none rounded px-0.5 truncate ${
+                                    wc.hasBell ? 'bg-orange-200 text-orange-900 font-bold' : 'text-gray-500'
+                                  }`}
+                                >
+                                  {wc.tDef ? wc.tDef.label : wc.hasBell ? '🔔' : wc.isPrevMonthStraddle ? '前月' : ''}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="text-[10px] text-gray-300">-</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* 1ヶ月全体の展開ミニカレンダー（前月末の同じ週にかかる日も表示＋管理固定・本人入力アイコン付き） */}
+                    {showPopupFullMonthCal && (
+                      <div className="pt-1.5 border-t border-slate-200">
+                        <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-bold text-gray-500 mb-0.5">
+                          <span className="text-red-500">日</span>
+                          <span>月</span>
+                          <span>火</span>
+                          <span>水</span>
+                          <span>木</span>
+                          <span>金</span>
                           <span className="text-blue-500">土</span>
                         </div>
                         <div className="grid grid-cols-7 gap-0.5">
