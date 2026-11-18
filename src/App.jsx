@@ -368,10 +368,63 @@ const getEffectiveShiftType = (def, categoryDefs = {}) => {
     : 'shift';
 };
 
+// 施設シフト以外の出勤希望・業務シフト（委・日勤・3以外・出勤など＝休み扱いではなく出勤扱いにするシフト）を判定
+const isWorkRequestShiftDef = (def, categoryDefs = {}) => {
+  if (!def) return false;
+  if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return false;
+  const lbl = String(def.label || '').trim();
+  if (!lbl) return false;
+  if (lbl.includes('公出') || (def.code === 'O' && lbl === 'O' && getCategoryKindById(def.category, categoryDefs) === 'basic')) {
+    return false;
+  }
+  const catKind = getCategoryKindById(def.category, categoryDefs);
+  if (catKind === 'facility' || catKind === 'me') return false;
+  if (def.isWorkRequest === true) return true;
+  if (
+    lbl.includes('休') ||
+    lbl === '希望' ||
+    lbl === '有' ||
+    lbl.includes('有給') ||
+    lbl.includes('年休') ||
+    lbl.includes('夏') ||
+    lbl.includes('リフ')
+  ) {
+    return false;
+  }
+  if (
+    lbl === '委' ||
+    lbl.includes('委員') ||
+    lbl === '日勤' ||
+    lbl.includes('日勤') ||
+    lbl.includes('3以外') ||
+    lbl.includes('３以外') ||
+    lbl.includes('3クール以外') ||
+    lbl.includes('３クール以外') ||
+    lbl.includes('2まで') ||
+    lbl.includes('２まで') ||
+    lbl === '出勤' ||
+    lbl === '出張' ||
+    lbl === '研' ||
+    lbl.includes('研修') ||
+    catKind === 'basic'
+  ) {
+    return true;
+  }
+  return false;
+};
+
+// 純粋な休み・休み希望シフトかどうかを判定（出勤希望扱いの「委・日勤・3以外・出勤」は除外）
+const isTrueOffShiftDef = (def, categoryDefs = {}) => {
+  if (!def) return false;
+  if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return false;
+  if (isWorkRequestShiftDef(def, categoryDefs)) return false;
+  return isOffOrReqCategoryId(def.category, categoryDefs);
+};
+
 const resolveShiftWorkSlot = (def, categoryDefs = {}) => {
   if (!def) return null;
   if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return null;
-  if (isOffOrReqCategoryId(def.category, categoryDefs)) return null;
+  if (isTrueOffShiftDef(def, categoryDefs) || isKoushutsuShiftDef(def, categoryDefs)) return null;
 
   if (def.shiftSlot === 'cool1') return 'day';
   if (SHIFT_WORK_SLOTS.some(s => s.value === def.shiftSlot)) {
@@ -381,6 +434,7 @@ const resolveShiftWorkSlot = (def, categoryDefs = {}) => {
   // 未設定データ向けの自動推定（コードではなく実際の終了時刻・表示名を優先し、初期設定のままの時のみA=坂3/F=君3を判定）
   if (def.endTime && def.endTime >= '21:00') return 'cool3';
   const lbl = String(def.label || '').trim();
+  if (lbl.includes('3以外') || lbl.includes('３以外') || lbl.includes('3クール以外') || lbl.includes('３クール以外')) return 'other';
   if ((def.code === 'A' && lbl === '坂3') || (def.code === 'F' && lbl === '君3')) return 'cool3';
   if (lbl.includes('3') || lbl.includes('３')) return 'cool3';
   if (lbl.includes('2') || lbl.includes('２')) return 'cool2';
@@ -400,6 +454,7 @@ const isCool3ShiftDef = (def, categoryDefs = {}) => {
 
 const resolveOffSubType = (def, categoryDefs = {}) => {
   if (!def) return null;
+  if (isWorkRequestShiftDef(def, categoryDefs)) return null;
   if (isKoushutsuShiftDef(def, categoryDefs)) return 'paid_leave';
   const catKind = getCategoryKindById(def.category, categoryDefs);
   if (catKind === 'off' || catKind === 'req') return 'regular_off';
@@ -464,6 +519,12 @@ const resolveLightBgFromShiftOrCategory = (shiftDef, categoryDef) => {
   return 'bg-blue-100';
 };
 
+const getStaffPowerScore = (staff) => {
+  if (!staff || !staff.skills) return 0;
+  const pts = { isLeader: 5, isVeteran: 3, canEcho: 2, canMachine: 2, canFollow: 1 };
+  return Object.keys(pts).reduce((sum, k) => sum + (staff.skills[k] ? pts[k] : 0), 0);
+};
+
 const isLeaderHighlightTargetFacility = (cat) => {
   if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
   const id = String(cat.id || '').trim();
@@ -500,8 +561,10 @@ const isKoushutsuShiftDef = (def, categoryDefs = {}) => {
 };
 
 // 休み・希望休・または公出（＝出勤日数・連勤・日別出勤人数にカウントしないシフト）かどうかを判定
+// ※施設シフト以外の「委・日勤・3以外・出勤」は出勤希望（出勤扱い）のためfalseを返す
 const isNonWorkOrKoushutsuShiftDef = (def, categoryDefs = {}) => {
   if (!def) return true;
+  if (isWorkRequestShiftDef(def, categoryDefs)) return false;
   return isOffOrReqCategoryId(def.category, categoryDefs) || isKoushutsuShiftDef(def, categoryDefs);
 };
 
@@ -1018,6 +1081,35 @@ const evaluateScheduleValidation = ({
       if (isAiFixable) {
         aiRepairableItems.push(
           `[3クール上限超過] ${s.name}(ID:${s.id}): 3クールが計${cool3Days.length}回（上限${s.maxCool3}回）で ${overBy}回 超過しています。編集可能な3クール日 [${editableCool3.join(', ')}] のうち${overBy}日分を他の上限に余裕がある職員と入れ替えてください。`
+        );
+      }
+    }
+
+    if (
+      !hasScope &&
+      s.minCool3 !== undefined &&
+      s.minCool3 !== null &&
+      Number(s.minCool3) > 0 &&
+      cool3Days.length < Number(s.minCool3)
+    ) {
+      const minReq = Number(s.minCool3);
+      const shortBy = minReq - cool3Days.length;
+      const isAiFixable = !s.excludeFromAi;
+      staffViolations.push({
+        type: 'cool3_under_limit',
+        severity: 'warning',
+        staffId: s.id,
+        staffName: s.name,
+        isAiFixable,
+        label: `3クール月間下限未達（${cool3Days.length}回 / 下限${minReq}回）`,
+        detail:
+          cool3Days.length > 0
+            ? `現在: ${cool3Days.map(d => `${month}/${d}`).join('・')}（あと${shortBy}回必要）`
+            : `現在0回（最低${minReq}回必要）`,
+      });
+      if (isAiFixable) {
+        aiRepairableItems.push(
+          `[3クール下限未達] ${s.name}(ID:${s.id}): 3クールが計${cool3Days.length}回（下限${minReq}回）で ${shortBy}回 不足しています。連続3クール禁止・配置制限を守りつつ、他の3クール上限に余裕がある職員と入れ替えて3クールをあと${shortBy}回増やしてください。`
         );
       }
     }
@@ -1631,6 +1723,11 @@ export default function WorkScheduleApp() {
   
   const [viewMode, setViewMode] = useState('personal'); 
   const [currentView, setCurrentView] = useState('all'); 
+  const [overallSubViewMode, setOverallSubViewMode] = useState('monthly'); // 'monthly' | 'daily'
+  const [selectedDailyViewDay, setSelectedDailyViewDay] = useState(1);
+  const [adminTableSlotFilter, setAdminTableSlotFilter] = useState('all'); // 'all' | 'cool3' | 'cool2' | 'day' | 'half'
+  const [adminTableSort, setAdminTableSort] = useState({ key: null, dir: 'desc' }); // { key: string | null, dir: 'desc' | 'asc' }
+  const [adminCountIncludeBlankOff, setAdminCountIncludeBlankOff] = useState(false);
 
 // 設定モーダル内のタブ管理
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -1757,6 +1854,7 @@ export default function WorkScheduleApp() {
           ...s,
           loginId: s.loginId || '',
           skills: s.skills || {},
+          minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
           maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
           excludeFromAi: s.excludeFromAi || false,
           excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
@@ -2146,7 +2244,7 @@ export default function WorkScheduleApp() {
 
     const defaultOffCode = shiftDefs['Y']
       ? 'Y'
-      : Object.values(shiftDefs).find(s => s && isOffOrReqCategoryId(s.category, categoryDefs))?.code || '__CLEAR__';
+      : Object.values(shiftDefs).find(s => s && isTrueOffShiftDef(s, categoryDefs))?.code || '__CLEAR__';
     setCrSingleShiftCode(defaultOffCode);
     setCrClearTaskAndBell(true);
     setCrReason('');
@@ -2581,24 +2679,25 @@ export default function WorkScheduleApp() {
   };
 
   // 現在のシフト設定に整合した休み希望カウント対象コード一覧を解決
+  // ※施設シフト以外の「委・日勤・3以外・出勤」は出勤希望扱いのため休み希望数カウントから常時除外
   const resolveEffectiveCountedOffShifts = (settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
     const rawList = Array.isArray(settingsObj?.countedOffShifts) ? settingsObj.countedOffShifts : ['HOPE'];
     const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
     if (isUntouchedDefault) {
-      // 初期値['HOPE']のままの場合は、希望(req)・休み(off)カテゴリおよび公出を自動対象にする
+      // 初期値['HOPE']のままの場合は、純粋な休み・休み希望（委・日勤・3以外を除く）および公出を自動対象にする
       const autoCodes = Object.values(defs)
         .filter(
           s =>
             s &&
             getEffectiveShiftType(s, cats) === 'shift' &&
-            (isOffOrReqCategoryId(s.category, cats) || isKoushutsuShiftDef(s, cats))
+            (isTrueOffShiftDef(s, cats) || isKoushutsuShiftDef(s, cats))
         )
         .map(s => s.code);
       if (autoCodes.length > 0) return autoCodes;
     }
-    const existingMatched = rawList.filter(c => Boolean(defs[c]));
+    const existingMatched = rawList.filter(c => Boolean(defs[c]) && !isWorkRequestShiftDef(defs[c], cats));
     if (existingMatched.length > 0) return existingMatched;
-    return rawList;
+    return rawList.filter(c => !defs[c] || !isWorkRequestShiftDef(defs[c], cats));
   };
 
   // 基本設定でカウント対象シフトをON/OFF切り替え
@@ -3320,6 +3419,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       jobTitle: '一般',
       roles: [],
       skills: {},
+      minCool3: 0,
       maxCool3: 5,
       excludeFromAi: false,
       excludedCategories: [],
@@ -3337,6 +3437,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     setTargetStaff({ 
       ...staff, 
       skills: staff.skills || {}, 
+      minCool3: staff.minCool3 !== undefined ? staff.minCool3 : 0,
       maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
       excludeFromAi: staff.excludeFromAi || false,
       excludedCategories: exCats,
@@ -4372,6 +4473,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         roles: s.roles,
         skills: s.skills,
         powerScore,
+        minCool3: s.minCool3 ?? 0,
         maxCool3: s.maxCool3, 
         excludeFromAi: s.excludeFromAi,
         allowedFacilities: allowedFacilityCats.map(fc => ({ id: fc.id, label: fc.label })),
@@ -4407,6 +4509,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           currentMaxStreak,
           cool3Count,
           remainingCool3: Math.max(0, (s.maxCool3 ?? 0) - cool3Count),
+          remainingMinCool3Needed: Math.max(0, (s.minCool3 ?? 0) - cool3Count),
           overtimeHours,
           allowedFacilitiesCount: allowedFacilityCats.length,
           facilityCounts: facilityCountsSummary,
@@ -4750,7 +4853,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 rawVal === '' ||
                 rawVal === 'CLEAR' ||
                 rawVal === 'NONE' ||
-                (resolvedCode && shiftDefs[resolvedCode] && isOffOrReqCategoryId(shiftDefs[resolvedCode].category, categoryDefs));
+                (resolvedCode && shiftDefs[resolvedCode] && isTrueOffShiftDef(shiftDefs[resolvedCode], categoryDefs));
 
               if (isClearOp) {
                 if (allowClearAiCells && ns[staffId]?.[dayNum]) {
@@ -4955,7 +5058,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     setAutoFillTargetMode('all');
     setValidationScopeDays(null);
     setValidationScopeLabel('');
-  }, [currentMonthCalendarWeeks]);
+    setSelectedDailyViewDay(prev => Math.max(1, Math.min(getDaysInMonth(year, month), prev || 1)));
+  }, [currentMonthCalendarWeeks, year, month]);
 
   const toggleAutoFillWeekSelection = (weekIndex) => {
     if (autoFillTargetMode === 'all') {
@@ -5578,6 +5682,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             roles: st.roles,
             skills: st.skills,
             powerScore: st.powerScore,
+            minCool3: st.minCool3 ?? 0,
             maxCool3: st.maxCool3,
             excludeFromAi: st.excludeFromAi,
             allowedWorkShifts: st.allowedWorkShifts,
@@ -5589,6 +5694,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               facilityCountsSoFar: st.currentStats.facilityCounts,
               cool3CountSoFar: st.currentStats.cool3Count,
               remainingCool3: st.currentStats.remainingCool3,
+              remainingMinCool3Needed: st.currentStats.remainingMinCool3Needed,
               overtimeHoursSoFar: st.currentStats.overtimeHours,
             },
             thisWeekPlan: {
@@ -5676,8 +5782,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
            ・mustKeepBlankDaysMinInThisWeek（assignableDaysInThisWeek のうち必ず空欄のまま残すべき最低日数）
            ・recommendedNewWorkDaysInThisWeek（今週AIが新規に割り当てる出勤日数の目安）
            を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
-      4. 3クール制限・連続3クール禁止（★絶対厳守★）:
-         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
+      4. 3クール上限・下限と連続3クール禁止（★絶対厳守★）:
+         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（上限までの残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
+         - 3クール下限（"minCool3" > 0）が設定されており "cumulativeStatsSoFar.remainingMinCool3Needed"（下限達成に必要な残り回数）が1回以上ある職員には、月間で下限回数以上に到達できるよう優先して3クールを割り当ててください。
          - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
       5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
          - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
@@ -6680,6 +6787,191 @@ ${messageText}`;
     });
     return stats;
   }, [staffList, shiftData, shiftDefs, categoryDefs, daysArray, year, month]);
+
+  // #4: 管理者全体表の右側に表示するカテゴリ列定義（坂田・君津・木クリ・じんクリ・ME室・休み）
+  const adminRightCountColumns = useMemo(() => {
+    const sortedCats = Object.values(categoryDefs)
+      .filter(Boolean)
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const facCols = sortedCats
+      .filter(c => resolveCategoryKind(c) === 'facility')
+      .map(c => ({
+        id: c.id,
+        key: `cat:${c.id}`,
+        label: c.label,
+        shortLabel: c.label.length > 4 ? c.label.slice(0, 4) : c.label,
+        kind: 'facility',
+        color: c.color || 'bg-blue-50 text-blue-800',
+      }));
+    const meCols = sortedCats
+      .filter(c => resolveCategoryKind(c) === 'me')
+      .map(c => ({
+        id: c.id,
+        key: `cat:${c.id}`,
+        label: c.label,
+        shortLabel: c.label.length > 4 ? c.label.slice(0, 4) : c.label,
+        kind: 'me',
+        color: c.color || 'bg-emerald-50 text-emerald-800',
+      }));
+    return [
+      ...facCols,
+      ...meCols,
+      {
+        id: '__off__',
+        key: 'off',
+        label: '休み',
+        shortLabel: '休み',
+        kind: 'off',
+        color: 'bg-pink-50 text-pink-800',
+      },
+    ];
+  }, [categoryDefs]);
+
+  // #4: 各職員の施設カテゴリ別・クール区分別・休み取得数集計
+  const staffCategoryAndCoolStats = useMemo(() => {
+    const result = {};
+    staffList.forEach(staff => {
+      const byCatAll = {};
+      const byCatSlot = {};
+      const bySlot = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
+      let offEnteredCount = 0;
+      let offBlankCount = 0;
+      let koushutsuCount = 0;
+      let workRequestCount = 0;
+      let totalWorkDays = 0;
+
+      Object.keys(categoryDefs).forEach(cid => {
+        byCatAll[cid] = 0;
+        byCatSlot[cid] = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
+      });
+
+      daysArray.forEach(day => {
+        if (isSunday(year, month, day)) return;
+        const code = shiftData[staff.id]?.[day];
+        if (!code || !shiftDefs[code]) {
+          offBlankCount += 1;
+          return;
+        }
+        const def = shiftDefs[code];
+        if (getEffectiveShiftType(def, categoryDefs) !== 'shift') {
+          offBlankCount += 1;
+          return;
+        }
+        if (isKoushutsuShiftDef(def, categoryDefs)) {
+          koushutsuCount += 1;
+          return;
+        }
+        if (isTrueOffShiftDef(def, categoryDefs)) {
+          offEnteredCount += 1;
+          return;
+        }
+        totalWorkDays += 1;
+        if (isWorkRequestShiftDef(def, categoryDefs)) {
+          workRequestCount += 1;
+        }
+        const catId = def.category;
+        if (catId) {
+          byCatAll[catId] = (byCatAll[catId] || 0) + 1;
+          if (!byCatSlot[catId]) {
+            byCatSlot[catId] = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
+          }
+        }
+        const slot = resolveShiftWorkSlot(def, categoryDefs) || 'other';
+        bySlot[slot] = (bySlot[slot] || 0) + 1;
+        if (catId && byCatSlot[catId]) {
+          byCatSlot[catId][slot] = (byCatSlot[catId][slot] || 0) + 1;
+        }
+      });
+
+      result[staff.id] = {
+        byCatAll,
+        byCatSlot,
+        bySlot,
+        offEnteredCount,
+        offBlankCount,
+        koushutsuCount,
+        workRequestCount,
+        totalWorkDays,
+      };
+    });
+    return result;
+  }, [staffList, shiftData, shiftDefs, categoryDefs, daysArray, year, month]);
+
+  const toggleAdminTableSort = (key) => {
+    setAdminTableSort(prev => {
+      if (prev.key !== key) return { key, dir: 'desc' };
+      if (prev.dir === 'desc') return { key, dir: 'asc' };
+      return { key: null, dir: 'desc' };
+    });
+  };
+
+  const sortedOverallStaffList = useMemo(() => {
+    if (appUser?.role !== 'admin' || !adminTableSort.key) return displayStaffList;
+    const readMetric = (staffId, sortKey) => {
+      const st = staffCategoryAndCoolStats[staffId];
+      if (!st) return 0;
+      if (sortKey === 'overtime') return staffOvertimeStats[staffId] || 0;
+      if (sortKey === 'off') {
+        return st.offEnteredCount + (adminCountIncludeBlankOff ? st.offBlankCount : 0);
+      }
+      if (sortKey.startsWith('slot:')) {
+        const sl = sortKey.slice(5);
+        if (sl === 'half') return (st.bySlot.half || 0) + (st.bySlot.other || 0);
+        return st.bySlot[sl] || 0;
+      }
+      if (sortKey.startsWith('cat:')) {
+        const cid = sortKey.slice(4);
+        if (adminTableSlotFilter === 'all') return st.byCatAll[cid] || 0;
+        if (adminTableSlotFilter === 'half') {
+          return (st.byCatSlot[cid]?.half || 0) + (st.byCatSlot[cid]?.other || 0);
+        }
+        return st.byCatSlot[cid]?.[adminTableSlotFilter] || 0;
+      }
+      return 0;
+    };
+    const copied = [...displayStaffList];
+    const dirMul = adminTableSort.dir === 'asc' ? 1 : -1;
+    copied.sort((a, b) => {
+      const va = readMetric(a.id, adminTableSort.key);
+      const vb = readMetric(b.id, adminTableSort.key);
+      if (va !== vb) return (va - vb) * dirMul;
+      return 0;
+    });
+    return copied;
+  }, [displayStaffList, appUser, adminTableSort, staffCategoryAndCoolStats, staffOvertimeStats, adminTableSlotFilter, adminCountIncludeBlankOff]);
+
+  // #1: 各日の「施設シフト以外（委・日勤・3以外・出勤など）で施設未割当の人数」をカウント
+  const dailyUnassignedWorkReqCountMap = useMemo(() => {
+    const map = {};
+    daysArray.forEach(day => {
+      if (isSunday(year, month, day)) {
+        map[day] = 0;
+        return;
+      }
+      let cnt = 0;
+      displayStaffList.forEach(s => {
+        const sCode = shiftData[s.id]?.[day];
+        const sDef = sCode ? shiftDefs[sCode] : null;
+        const rawReq = userInputs?.[s.id]?.[day];
+        const reqCode =
+          rawReq === true
+            ? sCode || null
+            : typeof rawReq === 'string'
+              ? rawReq
+              : rawReq && typeof rawReq === 'object'
+                ? rawReq.shift || null
+                : null;
+        const reqDef = reqCode ? shiftDefs[reqCode] : null;
+        if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
+          cnt += 1;
+        } else if (!sDef && reqDef && isWorkRequestShiftDef(reqDef, categoryDefs)) {
+          cnt += 1;
+        }
+      });
+      map[day] = cnt;
+    });
+    return map;
+  }, [daysArray, year, month, displayStaffList, shiftData, shiftDefs, categoryDefs, userInputs]);
 
   const dailyStats = useMemo(() => {
     const stats = {};
@@ -7809,7 +8101,615 @@ ${messageText}`;
                 </div>
               </div>
             ) : (
-              <div className="bg-white rounded-lg shadow overflow-hidden">
+              <div className="space-y-2">
+                {/* #1 & #4: 全体表の表示モード切替バー（月間全体表 ⇔ 施設別・1日単位表示）＆ クール別フィルタ・ソートバー */}
+                <div className="bg-white rounded-lg shadow-xs border border-gray-200 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setOverallSubViewMode('monthly')}
+                        className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1 ${
+                          overallSubViewMode === 'monthly'
+                            ? 'bg-white text-blue-700 shadow-xs'
+                            : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        <Calendar size={13} />
+                        <span>月間全体表</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOverallSubViewMode('daily')}
+                        className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1 ${
+                          overallSubViewMode === 'daily'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-gray-600 hover:text-gray-800'
+                        }`}
+                      >
+                        <Users size={13} />
+                        <span>施設別・1日単位表示 ({month}/{selectedDailyViewDay})</span>
+                      </button>
+                    </div>
+                    {overallSubViewMode === 'monthly' && (
+                      <span className="text-[11px] text-gray-400 hidden sm:inline">
+                        ※日付数字をクリックするとその日の「施設別・1日単位表示」に切り替わります
+                      </span>
+                    )}
+                  </div>
+
+                  {overallSubViewMode === 'monthly' && appUser.role === 'admin' && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                        <span className="text-[10px] font-bold text-slate-500">右列カウント:</span>
+                        {[
+                          { id: 'all', label: '全クール計' },
+                          { id: 'cool3', label: '3クール' },
+                          { id: 'cool2', label: '2クール' },
+                          { id: 'day', label: '日勤(1ｸｰﾙ)' },
+                          { id: 'half', label: '半日・他' },
+                        ].map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setAdminTableSlotFilter(opt.id)}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition ${
+                              adminTableSlotFilter === opt.id
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-slate-600 hover:bg-slate-200/70'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                        <label
+                          className="inline-flex items-center gap-1 ml-1 pl-1.5 border-l border-slate-200 text-[10px] text-slate-600 cursor-pointer select-none"
+                          title="ONにすると「休み」列のカウントに未入力の空欄公休日も含めます"
+                        >
+                          <input
+                            type="checkbox"
+                            className="w-3 h-3 rounded text-pink-600"
+                            checked={adminCountIncludeBlankOff}
+                            onChange={e => setAdminCountIncludeBlankOff(e.target.checked)}
+                          />
+                          <span>休みに空欄含</span>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center gap-1 bg-amber-50/70 border border-amber-200 rounded-lg px-2 py-1">
+                        <span className="text-[10px] font-bold text-amber-800">クール順ソート:</span>
+                        {[
+                          { key: 'slot:cool3', label: '3クール順' },
+                          { key: 'slot:cool2', label: '2クール順' },
+                          { key: 'slot:day', label: '日勤順' },
+                          { key: 'overtime', label: '残業順' },
+                          { key: 'off', label: '休み順' },
+                        ].map(sBtn => {
+                          const isActive = adminTableSort.key === sBtn.key;
+                          return (
+                            <button
+                              key={sBtn.key}
+                              type="button"
+                              onClick={() => toggleAdminTableSort(sBtn.key)}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition ${
+                                isActive
+                                  ? 'bg-amber-600 text-white'
+                                  : 'text-amber-900 hover:bg-amber-200/60'
+                              }`}
+                            >
+                              {sBtn.label}
+                              {isActive ? (adminTableSort.dir === 'desc' ? '▼' : '▲') : ''}
+                            </button>
+                          );
+                        })}
+                        {adminTableSort.key && (
+                          <button
+                            type="button"
+                            onClick={() => setAdminTableSort({ key: null, dir: 'desc' })}
+                            className="px-1.5 py-0.5 rounded bg-white border border-gray-300 text-[10px] font-bold text-gray-600 hover:bg-gray-100"
+                          >
+                            標準順に戻す
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {overallSubViewMode === 'daily' ? (
+                  (() => {
+                    const d = Math.max(1, Math.min(daysInMonth, selectedDailyViewDay || 1));
+                    const dow = getDayOfWeek(year, month, d);
+                    const dowLabel = ['日', '月', '火', '水', '木', '金', '土'][dow];
+                    const isSun = isSunday(year, month, d);
+                    const isHol = isHoliday(year, month, d, clinicClosedDays);
+                    const closedRule = getClinicClosedRuleMatch(year, month, d, clinicClosedDays);
+                    const offReqCount = isSun ? 0 : (dailyOffRequestCounts[d] || 0);
+
+                    // 当日の職員を「①施設未割当の出勤・出勤希望(委・日勤・3以外・出勤)」「②元希望が委・日勤・3以外で施設割当済」「③各施設・ME室」「④休み・公出・空欄」に仕分け
+                    const unassignedWorkReqStaff = [];
+                    const assignedFromWorkReqStaff = [];
+                    const offOrBlankStaff = [];
+                    const byCategoryStaff = {};
+                    Object.keys(categoryDefs).forEach(cid => {
+                      byCategoryStaff[cid] = [];
+                    });
+
+                    displayStaffList.forEach(staff => {
+                      const sCode = shiftData[staff.id]?.[d] || null;
+                      const tCode = taskData[staff.id]?.[d] || null;
+                      const sDef = sCode ? shiftDefs[sCode] : null;
+                      const tDef = tCode ? shiftDefs[tCode] : null;
+                      const reqSCode = getUserRequestedShift(staff.id, d);
+                      const reqSDef = reqSCode ? shiftDefs[reqSCode] : null;
+                      const reqReason = getUserRequestedReason(staff.id, d);
+                      const hasBell = Boolean(bellData[staff.id]?.[d]);
+                      const teamShiftLock = appUser.role === 'admin' ? getTeamLockedShiftSource(staff.id, d) : null;
+                      const isShiftEditable =
+                        (!isSun || hasKoushutsuShiftDef) &&
+                        (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id));
+                      const isTaskEditable =
+                        (!isSun && (appUser.role === 'admin' || (appUser.role === 'staff' && staff.id === appUser.id))) ||
+                        (isSun && appUser.role === 'admin');
+
+                      const item = {
+                        staff,
+                        sCode,
+                        tCode,
+                        sDef,
+                        tDef,
+                        reqSCode,
+                        reqSDef,
+                        reqReason,
+                        hasBell,
+                        teamShiftLock,
+                        isShiftEditable,
+                        isTaskEditable,
+                      };
+
+                      if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
+                        unassignedWorkReqStaff.push(item);
+                      } else if (!sDef && reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs)) {
+                        unassignedWorkReqStaff.push(item);
+                      } else if (
+                        sDef &&
+                        getEffectiveShiftType(sDef, categoryDefs) === 'shift' &&
+                        !isNonWorkOrKoushutsuShiftDef(sDef, categoryDefs) &&
+                        sDef.category &&
+                        byCategoryStaff[sDef.category]
+                      ) {
+                        byCategoryStaff[sDef.category].push(item);
+                        if (reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
+                          assignedFromWorkReqStaff.push(item);
+                        }
+                      } else {
+                        offOrBlankStaff.push(item);
+                      }
+                    });
+
+                    const facilityAndMeGroups = dynamicSummaryGroups.filter(
+                      g => g.kind === 'facility' || g.kind === 'me'
+                    );
+
+                    const renderStaffActionChip = (item, showCategoryBadge = false) => {
+                      const {
+                        staff,
+                        sDef,
+                        tDef,
+                        reqSCode,
+                        reqSDef,
+                        reqReason,
+                        hasBell,
+                        teamShiftLock,
+                        isShiftEditable,
+                        isTaskEditable,
+                      } = item;
+                      const pScore = getStaffPowerScore(staff);
+                      const restrictionText = getStaffRestrictionSummaryText(staff);
+                      const isShiftPopupActive =
+                        activePopup?.day === d && activePopup?.staffId === staff.id && activePopup?.type === 'shift';
+                      const isTaskPopupActive =
+                        activePopup?.day === d && activePopup?.staffId === staff.id && activePopup?.type === 'task';
+
+                      return (
+                        <div
+                          key={staff.id}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white hover:border-indigo-300 shadow-2xs transition"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`text-xs font-bold text-gray-800 ${isMasterAdmin ? 'cursor-pointer hover:text-indigo-600' : ''}`}
+                                onClick={(e) => {
+                                  if (isMasterAdmin) {
+                                    e.stopPropagation();
+                                    handleEditStaff(staff);
+                                  }
+                                }}
+                              >
+                                {staff.name}
+                              </span>
+                              <span className="text-[10px] text-gray-400">{staff.jobTitle}</span>
+                              {staff.skills?.isLeader && (
+                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[9px] font-bold" title="リーダー可">
+                                  <ShieldCheck size={10} className="text-blue-600" />L
+                                </span>
+                              )}
+                              {staff.skills?.isVeteran && (
+                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-yellow-50 text-yellow-700 border border-yellow-200 text-[9px] font-bold" title="ベテラン">
+                                  <Star size={10} className="text-yellow-500" />V
+                                </span>
+                              )}
+                              {STAFF_SKILLS.filter(sk => sk.key !== 'isLeader' && sk.key !== 'isVeteran' && staff.skills?.[sk.key]).map(sk => (
+                                <span key={sk.key} className="px-1 py-0.2 rounded bg-slate-100 text-slate-700 text-[9px] font-bold">
+                                  {sk.label}
+                                </span>
+                              ))}
+                              {appUser.role === 'admin' && (
+                                <span className="text-[9px] text-gray-400 font-mono" title="パワースコア">
+                                  P:{pScore}
+                                </span>
+                              )}
+                              {restrictionText && appUser.role === 'admin' && (
+                                <span className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded" title={`AI配置制限: ${restrictionText}`}>
+                                  制限:{restrictionText}
+                                </span>
+                              )}
+                            </div>
+                            {(appUser.role === 'admin' || staff.id === appUser.id) && (reqSCode || reqReason) && (
+                              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                {reqSCode && (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-pink-50 text-pink-700 border border-pink-200 text-[10px] font-bold">
+                                    <span>元希望: {reqSDef?.label || reqSCode}</span>
+                                  </span>
+                                )}
+                                {reqReason && (
+                                  <span className="text-[10px] text-pink-600 bg-pink-50/60 px-1.5 py-0.2 rounded border border-pink-100">
+                                    理由: {reqReason}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {showCategoryBadge && sDef?.category && categoryDefs[sDef.category] && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-bold">
+                                {categoryDefs[sDef.category].label}
+                              </span>
+                            )}
+                            {/* シフト変更ボタン */}
+                            <button
+                              type="button"
+                              disabled={!isShiftEditable}
+                              onClick={(e) => {
+                                if (isShiftEditable) {
+                                  e.stopPropagation();
+                                  handleCellClick(e, staff.id, d, 'shift');
+                                }
+                              }}
+                              title={isShiftEditable ? 'クリックしてシフトを変更' : undefined}
+                              className={`relative min-w-[46px] h-7 px-2 rounded border text-xs font-bold flex items-center justify-center gap-1 transition ${
+                                isShiftPopupActive
+                                  ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-400'
+                                  : sDef
+                                    ? 'bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50/40'
+                                    : 'bg-gray-50 border-dashed border-gray-300 text-gray-400 hover:border-blue-400'
+                              } ${!isShiftEditable ? 'opacity-60 cursor-default' : 'cursor-pointer'}`}
+                            >
+                              {teamShiftLock && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500" title="管理者ロック中" />
+                              )}
+                              <span className={sDef ? sDef.text : 'text-gray-400'}>
+                                {sDef ? sDef.label : '未割当'}
+                              </span>
+                            </button>
+
+                            {/* タスク（業務）変更ボタン */}
+                            <button
+                              type="button"
+                              disabled={!isTaskEditable}
+                              onClick={(e) => {
+                                if (isTaskEditable) {
+                                  e.stopPropagation();
+                                  handleCellClick(e, staff.id, d, 'task');
+                                }
+                              }}
+                              title={isTaskEditable ? 'クリックして下段タスク・待機番を変更' : undefined}
+                              className={`min-w-[38px] h-7 px-1.5 rounded border text-[11px] font-bold flex items-center justify-center gap-0.5 transition ${
+                                isTaskPopupActive
+                                  ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-400'
+                                  : hasBell
+                                    ? 'bg-orange-200 border-orange-400 text-gray-800'
+                                    : tDef
+                                      ? 'bg-slate-50 border-gray-300 hover:border-blue-400'
+                                      : 'bg-gray-50/60 border-dashed border-gray-200 text-gray-400 hover:border-blue-300'
+                              } ${!isTaskEditable ? 'opacity-60 cursor-default' : 'cursor-pointer'}`}
+                            >
+                              {hasBell && <Bell size={10} className="text-orange-700 shrink-0" />}
+                              <span className={tDef ? tDef.text : 'text-gray-400 text-[10px]'}>
+                                {tDef ? tDef.label : '+業務'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    };
+
+                    return (
+                      <div className="bg-white rounded-lg shadow border border-gray-200 p-3 sm:p-4 space-y-4">
+                        {/* 日付セレクターヘッダー */}
+                        <div className="space-y-2 border-b border-gray-200 pb-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedDailyViewDay(prev => (prev > 1 ? prev - 1 : daysInMonth))}
+                                className="p-1.5 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-700"
+                                title="前日へ"
+                              >
+                                <ChevronLeft size={16} />
+                              </button>
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-base sm:text-lg font-extrabold ${
+                                    isSun || isHol ? 'text-red-600' : dow === 6 ? 'text-blue-600' : 'text-gray-800'
+                                  }`}
+                                >
+                                  {year}年{month}月{d}日（{dowLabel}）
+                                </span>
+                                {(isSun || isHol) && (
+                                  <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">
+                                    {closedRule ? closedRule.label || '外来休診日' : isSun ? '日曜休診' : '祝日'}
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedDailyViewDay(prev => (prev < daysInMonth ? prev + 1 : 1))}
+                                className="p-1.5 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-700"
+                                title="翌日へ"
+                              >
+                                <ChevronRight size={16} />
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-wrap text-xs">
+                              <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 font-bold border border-blue-200">
+                                出勤合計: {dailyStats[d]?.total || 0}名
+                              </span>
+                              <span className="px-2.5 py-1 rounded-full bg-pink-50 text-pink-700 font-bold border border-pink-200">
+                                休み希望: {offReqCount}名
+                              </span>
+                              <span
+                                className={`px-2.5 py-1 rounded-full font-bold border ${
+                                  unassignedWorkReqStaff.length > 0
+                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                    : 'bg-gray-100 text-gray-600 border-gray-200'
+                                }`}
+                              >
+                                施設未割当(委・日勤・3以外・出勤): {unassignedWorkReqStaff.length}名
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* 1〜末日のクイック日付切替バー */}
+                          <div className="flex items-center gap-1 overflow-x-auto pb-1">
+                            {daysArray.map(dayNum => {
+                              const dSun = isSunday(year, month, dayNum);
+                              const dHol = isHoliday(year, month, dayNum, clinicClosedDays);
+                              const dDow = getDayOfWeek(year, month, dayNum);
+                              const isSelected = dayNum === d;
+                              const unassignedCnt = dailyUnassignedWorkReqCountMap[dayNum] || 0;
+                              return (
+                                <button
+                                  key={dayNum}
+                                  type="button"
+                                  onClick={() => setSelectedDailyViewDay(dayNum)}
+                                  className={`relative min-w-[34px] py-1 px-1 rounded-md border text-center transition shrink-0 ${
+                                    isSelected
+                                      ? 'bg-indigo-600 text-white border-indigo-700 font-bold shadow-xs'
+                                      : dSun || dHol
+                                        ? 'bg-red-50/70 text-red-600 border-red-200 hover:bg-red-100'
+                                        : dDow === 6
+                                          ? 'bg-blue-50/70 text-blue-600 border-blue-200 hover:bg-blue-100'
+                                          : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
+                                  }`}
+                                  title={
+                                    unassignedCnt > 0
+                                      ? `${month}/${dayNum}: 施設未割当の出勤希望(委・日勤・3以外等) ${unassignedCnt}名`
+                                      : `${month}/${dayNum}`
+                                  }
+                                >
+                                  <div className="text-[11px] font-bold leading-none">{dayNum}</div>
+                                  <div className="text-[9px] opacity-80 leading-tight">
+                                    {['日', '月', '火', '水', '木', '金', '土'][dDow]}
+                                  </div>
+                                  {unassignedCnt > 0 && (
+                                    <span
+                                      className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full text-[9px] font-extrabold flex items-center justify-center ${
+                                        isSelected ? 'bg-amber-300 text-amber-950' : 'bg-amber-500 text-white'
+                                      }`}
+                                    >
+                                      {unassignedCnt}
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* セクション1: 施設シフト以外の出勤・出勤希望（委・日勤・3以外・出勤）の確認・施設割り振りエリア */}
+                        <div
+                          className={`rounded-xl border p-3 ${
+                            unassignedWorkReqStaff.length > 0
+                              ? 'bg-amber-50/70 border-amber-300'
+                              : 'bg-gray-50/70 border-gray-200'
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs sm:text-sm font-extrabold text-amber-900 flex items-center gap-1.5">
+                                <AlertTriangle size={15} className={unassignedWorkReqStaff.length > 0 ? 'text-amber-600' : 'text-gray-400'} />
+                                施設シフト以外の出勤・出勤希望（委・日勤・3以外・出勤など）
+                              </span>
+                              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-white border border-amber-300 text-amber-900">
+                                未割当 {unassignedWorkReqStaff.length}名
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-amber-800">
+                              ※右側のシフトボタンをクリックすると、その場で各施設シフト（坂1・君2・木1など）や下段タスクへ変更できます
+                            </span>
+                          </div>
+
+                          {unassignedWorkReqStaff.length > 0 ? (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                              {unassignedWorkReqStaff.map(item => renderStaffActionChip(item, false))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-500 py-1">
+                              現在、この日に施設未割当の「委・日勤・3以外・出勤」の職員はいません。
+                            </div>
+                          )}
+
+                          {assignedFromWorkReqStaff.length > 0 && (
+                            <div className="mt-3 pt-2.5 border-t border-amber-200/80">
+                              <div className="text-[11px] font-bold text-amber-800 mb-1.5">
+                                元の出勤希望（委・日勤・3以外等）から施設シフトへ割り振り済みの職員（{assignedFromWorkReqStaff.length}名）:
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                {assignedFromWorkReqStaff.map(item => renderStaffActionChip(item, true))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* セクション2: 施設別・ME室 割り振り一覧（人員の組み合わせ確認・変更） */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {facilityAndMeGroups.map(group => {
+                            const assignedItems = (byCategoryStaff[group.id] || []).slice().sort((a, b) => {
+                              const idxA = group.items.indexOf(a.sCode);
+                              const idxB = group.items.indexOf(b.sCode);
+                              return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+                            });
+                            const totalActual = group.items.reduce((sum, code) => sum + (dailyStats[d]?.[code] || 0), 0);
+                            const totalTarget = group.items.reduce((sum, code) => sum + getTargetCount(code, d), 0);
+                            const isHeadcountShort = !isSun && totalTarget > 0 && totalActual < totalTarget;
+                            const skillShortages = dailyFacilitySkillSummary[d]?.shortagesByCat?.[group.id] || [];
+                            const skillCounts = dailyFacilitySkillSummary[d]?.skillCountsByCat?.[group.id] || {};
+                            const actualPower = assignedItems.reduce((sum, it) => sum + getStaffPowerScore(it.staff), 0);
+                            const targetPower =
+                              group.kind === 'facility'
+                                ? getFacilityTargetPowerScore(categoryDefs[group.id], adminSettings)
+                                : 0;
+
+                            return (
+                              <div
+                                key={group.id}
+                                className={`rounded-xl border overflow-hidden flex flex-col bg-white ${
+                                  isHeadcountShort
+                                    ? 'border-red-300 ring-1 ring-red-200'
+                                    : skillShortages.length > 0 && !isSun
+                                      ? 'border-amber-300 ring-1 ring-amber-200'
+                                      : 'border-gray-200'
+                                }`}
+                              >
+                                <div className={`px-3 py-2 border-b flex items-center justify-between gap-2 ${group.headerColor}`}>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-extrabold text-sm">{group.name}</span>
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                                        isHeadcountShort
+                                          ? 'bg-red-600 text-white'
+                                          : 'bg-white/90 text-gray-800 border border-black/10'
+                                      }`}
+                                    >
+                                      {totalActual} / {totalTarget}名
+                                    </span>
+                                  </div>
+                                  {appUser.role === 'admin' && group.kind === 'facility' && (
+                                    <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded ${
+                                          targetPower > 0 && actualPower < targetPower && totalActual > 0
+                                            ? 'bg-red-100 text-red-700 border border-red-300'
+                                            : 'bg-white/80 text-gray-700'
+                                        }`}
+                                      >
+                                        スコア: {actualPower}{targetPower > 0 ? `/${targetPower}` : ''}
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded bg-white/80 text-blue-700">
+                                        L:{skillCounts.isLeader || 0} V:{skillCounts.isVeteran || 0}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* シフト内訳バッジ */}
+                                <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1.5">
+                                  {group.items.map(code => {
+                                    const sDef = shiftDefs[code];
+                                    if (!sDef) return null;
+                                    const cnt = dailyStats[d]?.[code] || 0;
+                                    const tgt = getTargetCount(code, d);
+                                    const isShort = !isSun && tgt > 0 && cnt < tgt;
+                                    return (
+                                      <span
+                                        key={code}
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                          isShort
+                                            ? 'bg-red-100 text-red-700 border-red-300'
+                                            : cnt > 0
+                                              ? 'bg-white text-gray-700 border-gray-200'
+                                              : 'bg-gray-100 text-gray-400 border-gray-200'
+                                        }`}
+                                      >
+                                        <span className={sDef.text}>{sDef.label}</span>: {cnt}/{tgt}
+                                      </span>
+                                    );
+                                  })}
+                                  {!isSun && skillShortages.length > 0 && (
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
+                                      ⚠ {skillShortages.map(s => `${s.skillLabel}${s.actual}/${s.target}`).join('・')}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* 割り振られている職員リスト */}
+                                <div className="p-2.5 space-y-1.5 flex-1">
+                                  {assignedItems.length > 0 ? (
+                                    assignedItems.map(item => renderStaffActionChip(item, false))
+                                  ) : (
+                                    <div className="text-xs text-gray-400 text-center py-4">
+                                      割り振られている職員はいません
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* セクション3: 休み・公出・未入力（空欄公休）の職員 */}
+                        <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-bold text-gray-700">
+                              休み・希望休・公出・空欄（未入力）の職員（{offOrBlankStaff.length}名）
+                            </span>
+                            <span className="text-[11px] text-gray-500">
+                              ※人数補充が必要な場合はここから直接シフトを割り当てられます
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                            {offOrBlankStaff.map(item => renderStaffActionChip(item, false))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="bg-white rounded-lg shadow overflow-hidden">
                 <table className="w-full border-collapse select-none">
                   <thead>
                     <tr>
@@ -7839,6 +8739,7 @@ ${messageText}`;
                         const isSun = isSunday(year, month, day);
                         const isHol = isHoliday(year, month, day, clinicClosedDays);
                         const closedRule = getClinicClosedRuleMatch(year, month, day, clinicClosedDays);
+                        const unassignedWorkReqCnt = dailyUnassignedWorkReqCountMap[day] || 0;
                         let bgClass = getDayColor(year, month, day, clinicClosedDays); 
                         let headerBg = 'bg-gray-50';
                         if(isSun || isHol) headerBg = 'bg-red-50'; 
@@ -7846,19 +8747,103 @@ ${messageText}`;
                         return (
                           <th
                             key={day}
-                            title={closedRule ? (closedRule.label || '外来休診日') : undefined}
-                            className={`sticky top-0 z-20 border-b border-r min-w-[36px] px-0.5 py-1 text-center ${headerBg} ${bgClass}`}
+                            onClick={() => {
+                              setSelectedDailyViewDay(day);
+                              setOverallSubViewMode('daily');
+                            }}
+                            title={
+                              (closedRule ? `${closedRule.label || '外来休診日'} / ` : '') +
+                              (unassignedWorkReqCnt > 0
+                                ? `施設未割当(委・日勤・3以外等) ${unassignedWorkReqCnt}名 — クリックで${month}/${day}の施設別1日表示へ`
+                                : `クリックで${month}/${day}の施設別・1日単位表示を開く`)
+                            }
+                            className={`sticky top-0 z-20 border-b border-r min-w-[36px] px-0.5 py-1 text-center cursor-pointer hover:ring-2 hover:ring-inset hover:ring-indigo-400 transition relative ${headerBg} ${bgClass}`}
                           >
+                            {unassignedWorkReqCnt > 0 && (
+                              <span
+                                className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-500"
+                                title={`施設未割当の出勤希望(委・日勤・3以外等): ${unassignedWorkReqCnt}名`}
+                              />
+                            )}
                             <div className="text-xs font-bold leading-tight">{day}</div>
                             <div className="text-[11px] font-normal opacity-80 leading-tight">{['日','月','火','水','木','金','土'][getDayOfWeek(year, month, day)]}</div>
                           </th>
                         );
                       })}
-                      <th className="sticky top-0 z-20 bg-red-50 border-b border-r px-1.5 py-1 min-w-[48px] text-center text-xs font-bold text-red-800">残業</th>
+                      <th
+                        onClick={() => appUser.role === 'admin' && toggleAdminTableSort('overtime')}
+                        title={appUser.role === 'admin' ? 'クリックで残業時間順にソート' : undefined}
+                        className={`sticky top-0 z-20 bg-red-50 border-b border-r px-1.5 py-1 min-w-[48px] text-center text-xs font-bold text-red-800 ${appUser.role === 'admin' ? 'cursor-pointer hover:bg-red-100' : ''}`}
+                      >
+                        <div>残業</div>
+                        {appUser.role === 'admin' && adminTableSort.key === 'overtime' && (
+                          <div className="text-[9px] leading-none mt-0.5">{adminTableSort.dir === 'desc' ? '▼多' : '▲少'}</div>
+                        )}
+                      </th>
+                      {appUser.role === 'admin' && (
+                        <>
+                          <th
+                            onClick={() =>
+                              toggleAdminTableSort(
+                                adminTableSlotFilter === 'all' ? 'slot:cool3' : `slot:${adminTableSlotFilter}`
+                              )
+                            }
+                            title="クリックでこのクール取得数順にソート"
+                            className="sticky top-0 z-20 bg-indigo-50 border-b border-r px-1 py-1 min-w-[42px] text-center text-[10px] font-bold text-indigo-900 cursor-pointer hover:bg-indigo-100"
+                          >
+                            <div className="leading-tight">
+                              {adminTableSlotFilter === 'all'
+                                ? '3ｸｰﾙ'
+                                : adminTableSlotFilter === 'cool3'
+                                  ? '3ｸｰﾙ計'
+                                  : adminTableSlotFilter === 'cool2'
+                                    ? '2ｸｰﾙ計'
+                                    : adminTableSlotFilter === 'day'
+                                      ? '日勤計'
+                                      : '半日他'}
+                            </div>
+                            {adminTableSort.key ===
+                              (adminTableSlotFilter === 'all' ? 'slot:cool3' : `slot:${adminTableSlotFilter}`) && (
+                              <div className="text-[9px] leading-none mt-0.5 text-indigo-700">
+                                {adminTableSort.dir === 'desc' ? '▼多' : '▲少'}
+                              </div>
+                            )}
+                          </th>
+                          {adminRightCountColumns.map(col => {
+                            const isSorted = adminTableSort.key === col.key;
+                            return (
+                              <th
+                                key={col.id}
+                                onClick={() => toggleAdminTableSort(col.key)}
+                                title={`${col.label}のシフト取得数（クリックでソート）`}
+                                className={`sticky top-0 z-20 border-b border-r px-1 py-1 min-w-[42px] text-center text-[10px] font-bold cursor-pointer hover:brightness-95 transition ${col.color}`}
+                              >
+                                <div className="leading-tight">{col.shortLabel}</div>
+                                {col.kind === 'facility' && adminTableSlotFilter !== 'all' && (
+                                  <div className="text-[8px] font-normal opacity-75 leading-none">
+                                    {adminTableSlotFilter === 'cool3'
+                                      ? '3ｸｰﾙ'
+                                      : adminTableSlotFilter === 'cool2'
+                                        ? '2ｸｰﾙ'
+                                        : adminTableSlotFilter === 'day'
+                                          ? '日勤'
+                                          : '半他'}
+                                  </div>
+                                )}
+                                {isSorted && (
+                                  <div className="text-[9px] leading-none mt-0.5">
+                                    {adminTableSort.dir === 'desc' ? '▼多' : '▲少'}
+                                  </div>
+                                )}
+                              </th>
+                            );
+                          })}
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="bg-white">
-                    {displayStaffList.map((staff) => {
+                    {sortedOverallStaffList.map((staff) => {
                       const overtime = staffOvertimeStats[staff.id] || 0;
                       const carry = isMasterAdmin ? prevMonthCarryOver.byStaff[staff.id] : null;
                       const maxStreakLimit = Number(adminSettings.maxConsecutiveWorkDays) || 5;
@@ -7878,12 +8863,16 @@ ${messageText}`;
                         <tr 
                           key={staff.id} 
                           className="group hover:bg-gray-50"
-                          draggable={isMasterAdmin}
-                          onDragStart={(e) => e.dataTransfer.setData('text/plain', staff.id)}
+                          draggable={isMasterAdmin && !adminTableSort.key}
+                          onDragStart={(e) => {
+                            if (!adminTableSort.key) e.dataTransfer.setData('text/plain', staff.id);
+                          }}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={(e) => { 
                             e.preventDefault(); 
-                            if(isMasterAdmin) handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id); 
+                            if (isMasterAdmin && !adminTableSort.key) {
+                              handleSortStaff(e.dataTransfer.getData('text/plain'), staff.id);
+                            }
                           }}
                         >
                           <td className="sticky left-0 z-10 bg-white group-hover:bg-gray-50 border-b border-r px-2 py-1 font-medium text-gray-700 whitespace-nowrap">
@@ -8139,6 +9128,84 @@ ${messageText}`;
                           <td className={`border-b border-r text-center px-1 py-0.5 font-bold text-xs ${overtime > 60 ? 'bg-red-100 text-red-600' : 'bg-gray-50 text-gray-600'}`}>
                             <div className="flex flex-col items-center justify-center h-full"><span>{overtime > 0 ? overtime : '-'}</span>{overtime > 60 && <AlertTriangle size={11} className="text-red-500 mt-0.5" />}</div>
                           </td>
+                          {appUser.role === 'admin' && (() => {
+                            const stStats = staffCategoryAndCoolStats[staff.id] || {
+                              byCatAll: {},
+                              byCatSlot: {},
+                              bySlot: {},
+                              offEnteredCount: 0,
+                              offBlankCount: 0,
+                              koushutsuCount: 0,
+                              workRequestCount: 0,
+                            };
+                            const slotTargetKey = adminTableSlotFilter === 'all' ? 'cool3' : adminTableSlotFilter;
+                            const slotTotalVal =
+                              slotTargetKey === 'half'
+                                ? (stStats.bySlot.half || 0) + (stStats.bySlot.other || 0)
+                                : stStats.bySlot[slotTargetKey] || 0;
+                            const minC3 = Number(staff.minCool3 ?? 0);
+                            const maxC3 = Number(staff.maxCool3 ?? 5);
+                            const c3Val = stStats.bySlot.cool3 || 0;
+                            const isC3Over = slotTargetKey === 'cool3' && c3Val > maxC3;
+                            const isC3Under = slotTargetKey === 'cool3' && minC3 > 0 && c3Val < minC3;
+
+                            return (
+                              <>
+                                <td
+                                  title={
+                                    slotTargetKey === 'cool3'
+                                      ? `${staff.name} の3クール回数: ${c3Val}回（下限${minC3}〜上限${maxC3}回）\n内訳 — 2クール:${stStats.bySlot.cool2 || 0}回 / 日勤:${stStats.bySlot.day || 0}回 / 半日・他:${(stStats.bySlot.half || 0) + (stStats.bySlot.other || 0)}回`
+                                      : `${staff.name} のクール別合計: ${slotTotalVal}回`
+                                  }
+                                  className={`border-b border-r text-center px-1 py-0.5 font-bold text-xs ${
+                                    isC3Over
+                                      ? 'bg-red-100 text-red-700'
+                                      : isC3Under
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-indigo-50/40 text-indigo-900'
+                                  }`}
+                                >
+                                  <div>{slotTotalVal > 0 ? slotTotalVal : '-'}</div>
+                                  {slotTargetKey === 'cool3' && (minC3 > 0 || maxC3 !== 5) && (
+                                    <div className="text-[8px] font-normal text-gray-400 leading-none">
+                                      {minC3}〜{maxC3}
+                                    </div>
+                                  )}
+                                </td>
+                                {adminRightCountColumns.map(col => {
+                                  if (col.kind === 'off') {
+                                    const offVal =
+                                      stStats.offEnteredCount + (adminCountIncludeBlankOff ? stStats.offBlankCount : 0);
+                                    return (
+                                      <td
+                                        key={col.id}
+                                        title={`${staff.name} の休み内訳:\n・休みシフト入力数: ${stStats.offEnteredCount}回\n・未入力(空欄休): ${stStats.offBlankCount}日\n・公出: ${stStats.koushutsuCount}回\n※委・日勤・3以外（計${stStats.workRequestCount}回）は出勤希望扱いのため除外`}
+                                        className="border-b border-r text-center px-1 py-0.5 font-bold text-xs bg-pink-50/30 text-pink-700"
+                                      >
+                                        {offVal > 0 ? offVal : '-'}
+                                      </td>
+                                    );
+                                  }
+                                  const catVal =
+                                    adminTableSlotFilter === 'all'
+                                      ? stStats.byCatAll[col.id] || 0
+                                      : adminTableSlotFilter === 'half'
+                                        ? (stStats.byCatSlot[col.id]?.half || 0) + (stStats.byCatSlot[col.id]?.other || 0)
+                                        : stStats.byCatSlot[col.id]?.[adminTableSlotFilter] || 0;
+                                  const catSlots = stStats.byCatSlot[col.id] || {};
+                                  return (
+                                    <td
+                                      key={col.id}
+                                      title={`${staff.name} — ${col.label}: 計${stStats.byCatAll[col.id] || 0}回\n(3クール:${catSlots.cool3 || 0} / 2クール:${catSlots.cool2 || 0} / 日勤:${catSlots.day || 0} / 半日他:${(catSlots.half || 0) + (catSlots.other || 0)})`}
+                                      className="border-b border-r text-center px-1 py-0.5 font-bold text-xs bg-gray-50/50 text-gray-700"
+                                    >
+                                      {catVal > 0 ? catVal : '-'}
+                                    </td>
+                                  );
+                                })}
+                              </>
+                            );
+                          })()}
                         </tr>
                       );
                     })}
@@ -8153,9 +9220,9 @@ ${messageText}`;
                             )}
                             <span>集計</span>
                           </td>
-                          <td colSpan={daysInMonth+1} className="bg-gray-100 border-b"></td>
+                          <td colSpan={daysInMonth + 2 + adminRightCountColumns.length} className="bg-gray-100 border-b"></td>
                         </tr>
-                        <tr><td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>{daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}<td className="bg-gray-50 border-b"></td></tr>
+                        <tr><td className="sticky left-0 bg-gray-50 border-r border-b p-2 text-xs font-bold text-right">出勤人数</td>{daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}<td colSpan={2 + adminRightCountColumns.length} className="bg-gray-50 border-b"></td></tr>
                         <tr>
                           <td className="sticky left-0 bg-pink-50 border-r border-b p-2 text-xs font-bold text-right text-pink-700">休み希望数</td>
                           {daysArray.map(day => {
@@ -8168,7 +9235,7 @@ ${messageText}`;
                               </td>
                             );
                           })}
-                          <td className="bg-gray-50 border-b"></td>
+                          <td colSpan={2 + adminRightCountColumns.length} className="bg-gray-50 border-b"></td>
                         </tr>
                         {dynamicSummaryGroups.map(group => (
                           <React.Fragment key={group.name}>
@@ -8210,7 +9277,7 @@ ${messageText}`;
                                     </td>
                                   );
                                 })}
-                                <td className="bg-gray-50 border-b"></td>
+                                <td colSpan={2 + adminRightCountColumns.length} className="bg-gray-50 border-b"></td>
                               </tr>
                             )}
                             {group.items.map(code => {
@@ -8225,7 +9292,7 @@ ${messageText}`;
                                     if (target > 0) isAlert = count < target;
                                     return <td key={day} className={`border-r border-b text-center text-xs ${isAlert ? 'bg-red-100 text-red-600 font-bold' : 'text-gray-400'}`}>{count > 0 ? count : '-'}</td>;
                                   })}
-                                  <td className="bg-gray-50 border-b"></td>
+                                  <td colSpan={2 + adminRightCountColumns.length} className="bg-gray-50 border-b"></td>
                                 </tr>
                               );
                             })}
@@ -8235,6 +9302,8 @@ ${messageText}`;
                     )}
                   </tbody>
                 </table>
+              </div>
+                )}
               </div>
             )}
           </div>
@@ -9258,7 +10327,7 @@ ${messageText}`;
                               <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
                               <th className="p-2 border text-center w-14">編集</th>
                               <th className="p-2 border text-center w-16">AI除外</th>
-                              <th className="p-2 border text-center w-20">3クール上限</th>
+                              <th className="p-2 border text-center w-28">3クール(下限〜上限)</th>
                               <th className="p-2 border text-left min-w-[210px]">AI配置可能施設 / 制限</th>
                               {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-16"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
                             </tr>
@@ -9287,7 +10356,45 @@ ${messageText}`;
                                   <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
                                   <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="詳細・個別シフト制限を編集"><Edit2 size={14}/></button></td>
                                   <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
-                                  <td className="p-2 border text-center"><input type="number" min="0" className="w-12 p-1 border rounded text-center" value={staff.maxCool3 ?? 5} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, maxCool3: parseInt(e.target.value) || 0 }; setStaffList(newList); }}/></td>
+                                  <td className="p-2 border text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        title="3クール月間下限回数"
+                                        className="w-11 p-1 border rounded text-center text-xs"
+                                        value={staff.minCool3 ?? 0}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            minCool3: val,
+                                            maxCool3: Math.max(val, staff.maxCool3 ?? 5),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      />
+                                      <span className="text-gray-400 text-xs">〜</span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        title="3クール月間上限回数"
+                                        className="w-11 p-1 border rounded text-center text-xs"
+                                        value={staff.maxCool3 ?? 5}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            maxCool3: val,
+                                            minCool3: Math.min(staff.minCool3 ?? 0, val),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      />
+                                    </div>
+                                  </td>
                                   <td className="p-2 border">
                                     <div className="flex flex-wrap items-center gap-1">
                                       {dynamicSummaryGroups.filter(g => g.items.length > 0 && g.kind === 'facility').map(group => {
@@ -10221,6 +11328,43 @@ ${messageText}`;
                 </div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
+
+                <div className="grid grid-cols-2 gap-3 bg-indigo-50/50 border border-indigo-100 rounded-lg p-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-indigo-800 mb-1">3クール下限（回/月）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
+                      value={targetStaff.minCool3 ?? 0}
+                      onChange={e => {
+                        const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                        setTargetStaff({
+                          ...targetStaff,
+                          minCool3: val,
+                          maxCool3: Math.max(val, targetStaff.maxCool3 ?? 5),
+                        });
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-indigo-800 mb-1">3クール上限（回/月）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
+                      value={targetStaff.maxCool3 ?? 5}
+                      onChange={e => {
+                        const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                        setTargetStaff({
+                          ...targetStaff,
+                          maxCool3: val,
+                          minCool3: Math.min(targetStaff.minCool3 ?? 0, val),
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
 
                 {/* Step 1: AI配置可能な施設・個別シフト制限（B案） */}
                 <div className="border-t pt-4">
