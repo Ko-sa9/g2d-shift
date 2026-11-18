@@ -9705,12 +9705,13 @@ ${messageText}`;
             appUser.role === 'admin' && !isMasterAdmin
               ? canTeamAdminClearCell(activePopup.staffId, activePopup.day, activePopup.type)
               : { allowed: true, reason: '' };
+          const showPopupScheduleSummary = !(viewMode === 'personal' && appUser.role === 'staff') && Boolean(popupStaff);
 
           return (
             <div 
               ref={popupRef}
               className={`z-[80] bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full max-h-[85vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
-                ${overallSubViewMode === 'daily' ? 'md:w-96' : 'md:w-80'} md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
+                ${showPopupScheduleSummary ? 'md:w-96' : 'md:w-80'} md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-center mb-2 pb-2 border-b shrink-0">
@@ -9719,8 +9720,8 @@ ${messageText}`;
                 </div>
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
-              {overallSubViewMode === 'daily' && popupStaff && (() => {
-                // 案A: 「施設別」画面でのシフト変更時に、対象人物のその週のミニシフト帯（前月末またぎ含む） ＋ 3クール・有休(残数/可能数) ＋ 1ヶ月展開を表示
+              {showPopupScheduleSummary && (() => {
+                // 案A: 「月間全体表」「施設別」画面でのシフト変更時に、対象人物のその週のミニシフト帯（前月末またぎ含む） ＋ 3クール・有休(残数/可能数) ＋ 1ヶ月展開を表示
                 const curDay = activePopup.day;
                 const curDow = getDayOfWeek(year, month, curDay);
                 const weekStartDay = curDay - curDow; // 日曜始まり (0..6)
