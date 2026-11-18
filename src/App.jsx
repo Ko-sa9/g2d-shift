@@ -484,6 +484,14 @@ const isMeShiftDef = (code, shiftDefs = {}, categoryDefs = {}) => {
   );
 };
 
+// スタッフがME班（オペ班）に所属しているかどうかを判定
+const isMeTeamMember = (staff) =>
+  Boolean(
+    staff &&
+    Array.isArray(staff.roles) &&
+    (staff.roles.includes('オペ班') || staff.roles.includes('ME班'))
+  );
+
 const LIGHT_BG_CLASS_BY_HUE = {
   blue: 'bg-blue-100',
   green: 'bg-green-100',
@@ -3078,6 +3086,13 @@ export default function WorkScheduleApp() {
   };
 
 const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOverride = undefined) => {
+    if (type === 'shift' && toolCode && isMeShiftDef(toolCode, shiftDefs, categoryDefs)) {
+      const targetSt = staffList.find(s => s.id === staffId);
+      if (targetSt && !isMeTeamMember(targetSt)) {
+        alert('L・G（ME室）シフトはME班（オペ班）のスタッフのみ設定可能です。');
+        return;
+      }
+    }
     if (isSunday(year, month, day)) {
       if (type !== 'shift') return;
       if (toolCode && (!shiftDefs[toolCode] || !isKoushutsuShiftDef(shiftDefs[toolCode], categoryDefs))) {
@@ -8570,10 +8585,11 @@ ${messageText}`;
                     const isDailyFirstWeek = d <= 7 - getDayOfWeek(year, month, 1);
                     const maxStreakLimitDaily = Number(adminSettings.maxConsecutiveWorkDays) || 5;
 
-                    // 当日の職員を「①施設未割当の出勤・出勤希望(委・日勤・3以外・出勤)」「②元希望が委・日勤・3以外で施設割当済」「③各施設・ME室」「④休み・公出・空欄」に仕分け
+                    // 当日の職員を「①施設未割当の出勤・出勤希望(委・日勤・3以外・出勤)」「②元希望が委・日勤・3以外で施設割当済」「③各施設・ME室」「④休み・公出」「⑤空欄」に仕分け
                     const unassignedWorkReqStaff = [];
                     const assignedFromWorkReqStaff = [];
-                    const offOrBlankStaff = [];
+                    const offAndKoushutsuStaff = [];
+                    const blankStaff = [];
                     const byCategoryStaff = {};
                     Object.keys(categoryDefs).forEach(cid => {
                       byCategoryStaff[cid] = [];
@@ -8632,8 +8648,10 @@ ${messageText}`;
                         if (reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
                           assignedFromWorkReqStaff.push(item);
                         }
+                      } else if (sDef) {
+                        offAndKoushutsuStaff.push(item);
                       } else {
-                        offOrBlankStaff.push(item);
+                        blankStaff.push(item);
                       }
                     });
 
@@ -9159,13 +9177,67 @@ ${messageText}`;
                               </div>
                             );
                           })}
+
+                          {/* 休み・公出カード（ME室の隣・次に配置） */}
+                          {(() => {
+                            const offKoushutsuCounts = {};
+                            offAndKoushutsuStaff.forEach(item => {
+                              if (!item.sCode) return;
+                              offKoushutsuCounts[item.sCode] = (offKoushutsuCounts[item.sCode] || 0) + 1;
+                            });
+                            const orderedOffCodes = dynamicPaletteGroups
+                              .flatMap(g => g.items)
+                              .filter(code => offKoushutsuCounts[code] > 0);
+                            Object.keys(offKoushutsuCounts).forEach(code => {
+                              if (!orderedOffCodes.includes(code)) orderedOffCodes.push(code);
+                            });
+                            return (
+                              <div className="rounded-xl border border-gray-200 overflow-hidden flex flex-col bg-white">
+                                <div className="px-3 py-2 border-b flex items-center justify-between gap-2 bg-gray-100 text-gray-700">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-extrabold text-sm">休み・公出</span>
+                                    <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-white/90 text-gray-800 border border-black/10">
+                                      {offAndKoushutsuStaff.length}名
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="px-2.5 sm:px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1 min-h-[29px]">
+                                  {orderedOffCodes.length > 0 ? (
+                                    orderedOffCodes.map(code => {
+                                      const sDef = shiftDefs[code];
+                                      return (
+                                        <span
+                                          key={code}
+                                          className="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-white text-gray-700 border-gray-200"
+                                        >
+                                          <span className={sDef?.text || 'text-gray-700'}>{sDef?.label || code}</span>:{' '}
+                                          {offKoushutsuCounts[code]}名
+                                        </span>
+                                      );
+                                    })
+                                  ) : (
+                                    <span className="text-[10px] text-gray-400">内訳なし</span>
+                                  )}
+                                </div>
+                                <div className="p-2 sm:p-2.5 space-y-1.5 flex-1">
+                                  {offAndKoushutsuStaff.length > 0 ? (
+                                    offAndKoushutsuStaff.map(item => renderStaffActionChip(item, false))
+                                  ) : (
+                                    <div className="text-xs text-gray-400 text-center py-3">
+                                      休み・公出の職員はいません
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
 
-                        {/* セクション3: 休み・公出・未入力（空欄公休）の職員 */}
+                        {/* セクション3: 空欄（未入力）の職員（上から下方向・最大縦11×横4で表示） */}
                         <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-2.5 sm:p-3">
                           <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
                             <span className="text-xs font-bold text-gray-700">
-                              休み・公出・空欄（{offOrBlankStaff.length}名）
+                              空欄（{blankStaff.length}名）
                             </span>
                             {appUser.role === 'admin' && (
                               <span className="text-[11px] text-gray-500">
@@ -9173,9 +9245,30 @@ ${messageText}`;
                               </span>
                             )}
                           </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
-                            {offOrBlankStaff.map(item => renderStaffActionChip(item, false))}
-                          </div>
+                          {blankStaff.length > 0 ? (
+                            (() => {
+                              const rowsPerCol = blankStaff.length > 44 ? Math.ceil(blankStaff.length / 4) : 11;
+                              const blankCols = [0, 1, 2, 3].map(colIdx =>
+                                blankStaff.slice(colIdx * rowsPerCol, (colIdx + 1) * rowsPerCol)
+                              );
+                              return (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
+                                  {blankCols.map((colItems, colIdx) => (
+                                    <div
+                                      key={colIdx}
+                                      className={`space-y-1.5 min-w-0 ${colItems.length === 0 ? 'hidden lg:block' : ''}`}
+                                    >
+                                      {colItems.map(item => renderStaffActionChip(item, false))}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()
+                          ) : (
+                            <div className="text-xs text-gray-400 text-center py-2">
+                              空欄の職員はいません
+                            </div>
+                          )}
                         </div>
                           </div>
                         </main>
@@ -10258,7 +10351,7 @@ ${messageText}`;
                       </span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {popupCurrentCode !== popupReqCode && popupReqDef && (isMasterAdmin || teamClearPerm.allowed || popupOptions.some(o => o.code === popupReqCode)) && (
+                      {popupCurrentCode !== popupReqCode && popupReqDef && !(activePopup.type === 'shift' && popupStaff && isMeShiftDef(popupReqCode, shiftDefs, categoryDefs) && !isMeTeamMember(popupStaff)) && (isMasterAdmin || teamClearPerm.allowed || popupOptions.some(o => o.code === popupReqCode)) && (
                         <button
                           onClick={() => {
                             if (!isMasterAdmin && teamClearPerm.allowed && !popupOptions.some(o => o.code === popupReqCode)) {
@@ -10422,7 +10515,13 @@ ${messageText}`;
                       </button>
                     )}
                     {popupOptions.map(shift => {
+                      const isMeLockedShiftOption =
+                        activePopup.type === 'shift' &&
+                        Boolean(popupStaff) &&
+                        isMeShiftDef(shift.code, shiftDefs, categoryDefs) &&
+                        !isMeTeamMember(popupStaff);
                       const isRestrictedShiftOption =
+                        !isMeLockedShiftOption &&
                         appUser.role === 'admin' &&
                         activePopup.type === 'shift' &&
                         Boolean(popupStaff) &&
@@ -10434,7 +10533,10 @@ ${messageText}`;
                       return (
                         <button
                           key={shift.code}
+                          type="button"
+                          disabled={isMeLockedShiftOption}
                           onClick={() => {
+                            if (isMeLockedShiftOption) return;
                             handleUpdateCell(
                               activePopup.staffId,
                               activePopup.day,
@@ -10445,11 +10547,19 @@ ${messageText}`;
                             setActivePopup(null);
                           }}
                           className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${
-                            isRestrictedShiftOption
-                              ? 'bg-gray-100 border-gray-200 text-gray-400 hover:bg-gray-200/70'
-                              : `${shift.text} hover:bg-gray-50`
+                            isMeLockedShiftOption
+                              ? 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed opacity-75'
+                              : isRestrictedShiftOption
+                                ? 'bg-gray-100 border-gray-200 text-gray-400 hover:bg-gray-200/70'
+                                : `${shift.text} hover:bg-gray-50`
                           }`}
-                          title={isRestrictedShiftOption ? `${shift.label}（制限・除外対象 / クリックで設定可能）` : shift.label}
+                          title={
+                            isMeLockedShiftOption
+                              ? `${shift.label}（ME班（オペ班）のみ設定可能）`
+                              : isRestrictedShiftOption
+                                ? `${shift.label}（制限・除外対象 / クリックで設定可能）`
+                                : shift.label
+                          }
                         >
                           {shift.label}
                         </button>
