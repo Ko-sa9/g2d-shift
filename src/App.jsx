@@ -721,8 +721,11 @@ const evaluateScheduleValidation = ({
   shiftsMap = {},
   lockedBaselineShifts = null,
   includeEmptyDays = false,
+  scopeDaysSet = null,
 }) => {
   const daysInMonth = getDaysInMonth(year, month);
+  const hasScope = scopeDaysSet instanceof Set && scopeDaysSet.size > 0;
+  const isDayInScope = (dayNum) => !hasScope || scopeDaysSet.has(dayNum);
   const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
   const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
   const dynamicCool3Codes =
@@ -854,8 +857,12 @@ const evaluateScheduleValidation = ({
     const editableBlankDays = [];
 
     const flushStreakRun = (endDay) => {
-      if (streakLen > maxStreak && currentRunDays.length > 0) {
-        const editableDays = currentRunDays.filter(dayNum => isCellAiEditable(s, dayNum));
+      if (
+        streakLen > maxStreak &&
+        currentRunDays.length > 0 &&
+        (!hasScope || currentRunDays.some(dayNum => isDayInScope(dayNum)))
+      ) {
+        const editableDays = currentRunDays.filter(dayNum => isDayInScope(dayNum) && isCellAiEditable(s, dayNum));
         const isAiFixable = !s.excludeFromAi && editableDays.length > 0;
         const rangeText = runStartDay === 0
           ? `前月末(${carry.trailingWorkStreak}連勤)〜${month}/${endDay}`
@@ -924,7 +931,7 @@ const evaluateScheduleValidation = ({
       if (cool3Set.has(code)) {
         cool3Days.push(d);
         // 月またぎ1日の3クール連続チェック
-        if (d === 1 && carry.prevLastDayWasCool3) {
+        if (d === 1 && carry.prevLastDayWasCool3 && isDayInScope(1)) {
           const isAiFixable = isCellAiEditable(s, 1);
           staffViolations.push({
             type: 'consecutive_cool3',
@@ -942,11 +949,11 @@ const evaluateScheduleValidation = ({
           }
         }
         // 月内の連続営業日3クール連続チェック
-        if (d > 1 && !isSunday(year, month, d - 1)) {
+        if (d > 1 && !isSunday(year, month, d - 1) && (isDayInScope(d) || isDayInScope(d - 1))) {
           const prevCode = shiftsMap?.[s.id]?.[d - 1];
           if (prevCode && cool3Set.has(prevCode)) {
             const prevLabel = shiftDefs[prevCode]?.label || prevCode;
-            const editablePair = [d - 1, d].filter(dayNum => isCellAiEditable(s, dayNum));
+            const editablePair = [d - 1, d].filter(dayNum => isDayInScope(dayNum) && isCellAiEditable(s, dayNum));
             const isAiFixable = !s.excludeFromAi && editablePair.length > 0;
             staffViolations.push({
               type: 'consecutive_cool3',
@@ -969,7 +976,7 @@ const evaluateScheduleValidation = ({
       // 配置制限外シフトのチェック（勤務施設カテゴリのシフトのみ対象。ME室・その他・個人希望・班管理ロックは除外）
       const isPersonalSame = reqShift === code;
       const isTeamLocked = !!getTeamShiftLock(s.id, d, shiftsMap);
-      if (isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs) && !isPersonalSame && !isTeamLocked && !isShiftAllowed(s, code)) {
+      if (isDayInScope(d) && isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs) && !isPersonalSame && !isTeamLocked && !isShiftAllowed(s, code)) {
         const isAiFixable = isCellAiEditable(s, d);
         staffViolations.push({
           type: 'restricted_shift',
@@ -990,8 +997,13 @@ const evaluateScheduleValidation = ({
     flushStreakRun(daysInMonth);
 
     // 3クール月間上限超過チェック
-    if (s.maxCool3 !== undefined && s.maxCool3 !== null && cool3Days.length > s.maxCool3) {
-      const editableCool3 = cool3Days.filter(dayNum => isCellAiEditable(s, dayNum));
+    if (
+      s.maxCool3 !== undefined &&
+      s.maxCool3 !== null &&
+      cool3Days.length > s.maxCool3 &&
+      (!hasScope || cool3Days.some(dayNum => isDayInScope(dayNum)))
+    ) {
+      const editableCool3 = cool3Days.filter(dayNum => isDayInScope(dayNum) && isCellAiEditable(s, dayNum));
       const isAiFixable = !s.excludeFromAi && editableCool3.length > 0;
       const overBy = cool3Days.length - s.maxCool3;
       staffViolations.push({
@@ -1023,8 +1035,8 @@ const evaluateScheduleValidation = ({
       workDaySet,
     };
 
-    // 1ヶ月分が作成済みの場合のみ、常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック
-    if ((isFullMonthCreated || includeEmptyDays) && filledOperatingDaysCount > 0 && !s.excludeFromAi && s.jobTitle !== 'パート') {
+    // 1ヶ月分が作成済みの場合のみ、常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック（ピンポイント週検算時は対象外）
+    if (!hasScope && (isFullMonthCreated || includeEmptyDays) && filledOperatingDaysCount > 0 && !s.excludeFromAi && s.jobTitle !== 'パート') {
       if (workDays < targetMin && editableBlankDays.length > 0) {
         staffViolations.push({
           type: 'underwork_excess_blank',
@@ -1127,6 +1139,7 @@ const evaluateScheduleValidation = ({
   let omittedEmptyDaysCount = 0;
 
   operatingDays.forEach(d => {
+    if (!isDayInScope(d)) return;
     const dow = getDayOfWeek(year, month, d);
     const dowLabel = ['日', '月', '火', '水', '木', '金', '土'][dow];
 
@@ -1682,6 +1695,8 @@ export default function WorkScheduleApp() {
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
   const [autoFillTargetMode, setAutoFillTargetMode] = useState('all'); // 'all' | 'weeks'
   const [selectedAutoFillWeeks, setSelectedAutoFillWeeks] = useState([]);
+  const [validationScopeDays, setValidationScopeDays] = useState(null);
+  const [validationScopeLabel, setValidationScopeLabel] = useState('');
   const [showValidationModal, setShowValidationModal] = useState(false); // Step 6: 検算チェック結果モーダル
   const [showUncreatedDaysInValidation, setShowUncreatedDaysInValidation] = useState(false);
   const [autoFillValidationSummary, setAutoFillValidationSummary] = useState(null);
@@ -4938,6 +4953,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
   useEffect(() => {
     setSelectedAutoFillWeeks(currentMonthCalendarWeeks.map(w => w.weekIndex));
     setAutoFillTargetMode('all');
+    setValidationScopeDays(null);
+    setValidationScopeLabel('');
   }, [currentMonthCalendarWeeks]);
 
   const toggleAutoFillWeekSelection = (weekIndex) => {
@@ -5178,6 +5195,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               .filter(w => targetWeekIndexSet.has(w.weekIndex))
               .flatMap(w => w.days)
           );
+      const targetScopeLabel = isFullMonthTarget
+        ? ''
+        : selectedAutoFillWeeks.map(w => `第${w}週`).join('・');
 
       const weeksToBuild = calendarWeeks.filter(w => {
         if (!targetWeekIndexSet.has(w.weekIndex)) return false;
@@ -5237,7 +5257,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         })),
         {
           id: 'validate',
-          label: '1ヶ月通し検算（連勤・週休・リーダー・人数チェック）',
+          label: isFullMonthTarget
+            ? '1ヶ月通し検算（連勤・週休・リーダー・人数チェック）'
+            : `作成週（${targetScopeLabel}）の検算チェック`,
           status: 'pending',
           detail: '待機中',
         },
@@ -5798,8 +5820,10 @@ ${dailyCheckExampleLines}
       setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
       progressCeiling = 86;
       setAiProgress(prev => Math.max(prev, 82));
-      setAiLoadingMessage('1ヶ月分の通し検算を実施中...');
-      setAiLoadingSubDetail('全スタッフの最大連勤・週休ペース・3クール連続禁止・各施設リーダー配置・必要人数を検証しています');
+      setAiLoadingMessage(
+        isFullMonthTarget ? '1ヶ月分の通し検算を実施中...' : `作成した週（${targetScopeLabel}）の検算を実施中...`
+      );
+      setAiLoadingSubDetail('最大連勤・週休ペース・3クール連続禁止・各施設リーダー配置・必要人数を検証しています');
       updateStepItem('validate', { status: 'active', detail: '検算中...' });
 
       const pass1Report = evaluateScheduleValidation({
@@ -5814,7 +5838,8 @@ ${dailyCheckExampleLines}
         prevMonthCarryOver,
         shiftsMap: workingShifts,
         lockedBaselineShifts: originalShifts,
-        includeEmptyDays: isFullMonthTarget,
+        includeEmptyDays: true,
+        scopeDaysSet: targetScopeDaysSet,
       });
 
       if (totalUpdatedCells === 0 && pass1Report.aiRepairableItems.length === 0) {
@@ -5942,7 +5967,8 @@ ${dailyCheckExampleLines}
               prevMonthCarryOver,
               shiftsMap: pass2.nextShifts,
               lockedBaselineShifts: originalShifts,
-              includeEmptyDays: isFullMonthTarget,
+              includeEmptyDays: true,
+              scopeDaysSet: targetScopeDaysSet,
             });
 
             // 重大度スコアが改善（または同等で件数減）し、かつ個人の連勤・制限違反が増えていない場合のみ手直し版を採用
@@ -6019,13 +6045,24 @@ ${dailyCheckExampleLines}
         setIsMonitorMinimized(false);
         setConfirmingCancelAutoFill(false);
 
+        if (isFullMonthTarget) {
+          setValidationScopeDays(null);
+          setValidationScopeLabel('');
+        } else {
+          setValidationScopeDays(Array.from(targetScopeDaysSet));
+          setValidationScopeLabel(targetScopeLabel);
+        }
+
         // 手直し後も解消しきれなかった違反・人数不足・必須スキル不足が残っている場合は検算レポートモーダルを開いて案内
         if (finalReport.totalActionableCount > 0) {
-          setShowUncreatedDaysInValidation(true);
+          if (isFullMonthTarget) {
+            setShowUncreatedDaysInValidation(true);
+          }
           setAutoFillValidationSummary({
             didAutoRepair,
             repairedIssueCount,
             remainingCount: finalReport.totalActionableCount,
+            scopeLabel: targetScopeLabel,
           });
           setShowValidationModal(true);
         }
@@ -6498,6 +6535,10 @@ ${messageText}`;
 
   // Step 6: 現在の勤務表に対するリアルタイム検算レポート（ヘッダーバッジ＆検算モーダル用）
   const liveValidationReport = useMemo(() => {
+    const activeScopeSet =
+      Array.isArray(validationScopeDays) && validationScopeDays.length > 0
+        ? new Set(validationScopeDays)
+        : null;
     return evaluateScheduleValidation({
       year,
       month,
@@ -6510,7 +6551,8 @@ ${messageText}`;
       prevMonthCarryOver,
       shiftsMap: shiftData,
       lockedBaselineShifts: shiftData,
-      includeEmptyDays: showUncreatedDaysInValidation,
+      includeEmptyDays: activeScopeSet ? true : showUncreatedDaysInValidation,
+      scopeDaysSet: activeScopeSet,
     });
   }, [
     year,
@@ -6524,6 +6566,7 @@ ${messageText}`;
     prevMonthCarryOver,
     shiftData,
     showUncreatedDaysInValidation,
+    validationScopeDays,
   ]);
 
   const handleOpenValidationModal = () => {
@@ -10696,6 +10739,23 @@ ${messageText}`;
               </div>
 
               <div className="p-4 flex-1 overflow-y-auto space-y-4">
+                {validationScopeLabel && (
+                  <div className="px-3 py-2 rounded-lg bg-teal-50 border border-teal-200 flex items-center justify-between gap-2 text-xs text-teal-900">
+                    <span>
+                      検算対象：作成した週（<strong>{validationScopeLabel}</strong>）のみを表示中
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setValidationScopeDays(null);
+                        setValidationScopeLabel('');
+                      }}
+                      className="px-2 py-0.5 rounded bg-white hover:bg-teal-100 text-teal-700 border border-teal-300 font-bold text-[11px] shrink-0 transition"
+                    >
+                      月全体の検算に切替
+                    </button>
+                  </div>
+                )}
                 {autoFillValidationSummary && (
                   <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-xs text-amber-900 space-y-1 leading-relaxed">
                     <div className="font-bold flex items-center gap-1.5 text-amber-800">
