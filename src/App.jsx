@@ -3496,10 +3496,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     return () => window.removeEventListener('resize', updatePosition);
   }, [activePopup, popupReasonText, showPopupFullMonthCal]);
 
-  // ポップアップヘッダーのドラッグ移動ハンドラ（PC・タブレット幅で有効）
+  // ポップアップヘッダーのドラッグ移動ハンドラ（PC・タブレット幅で有効：GPU transformでマウス移動へ1:1連動）
   const handlePopupDragStart = useCallback((e) => {
     if (window.innerWidth < 768) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target instanceof Element && e.target.closest('button')) return;
     const popupEl = popupRef.current;
     if (!popupEl) return;
 
@@ -3510,45 +3511,82 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       popupDragCleanupRef.current();
     }
 
+    const handleEl = e.currentTarget;
+    const pointerId = e.pointerId;
+    try {
+      handleEl.setPointerCapture?.(pointerId);
+    } catch {
+      // ignore if capture is unsupported
+    }
+
     const rect = popupEl.getBoundingClientRect();
-    const startX = e.clientX;
-    const startY = e.clientY;
     const originLeft = rect.left;
     const originTop = rect.top;
+    const pw = rect.width;
+    const ph = rect.height;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 12;
+    const minLeft = margin;
+    const maxLeft = Math.max(margin, vw - pw - margin);
+    const minTop = margin;
+    const maxTop = Math.max(margin, vh - ph - margin);
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let lastDx = 0;
+    let lastDy = 0;
     let hasMoved = false;
 
     const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
     document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grabbing';
+    popupEl.style.left = `${originLeft}px`;
+    popupEl.style.top = `${originTop}px`;
+    popupEl.style.willChange = 'transform';
 
     const onPointerMove = (moveEvent) => {
-      const dx = moveEvent.clientX - startX;
-      const dy = moveEvent.clientY - startY;
-      if (!hasMoved && Math.hypot(dx, dy) < 3) return;
+      if (moveEvent.pointerId !== pointerId) return;
+      const rawDx = moveEvent.clientX - startX;
+      const rawDy = moveEvent.clientY - startY;
+      if (!hasMoved && Math.abs(rawDx) + Math.abs(rawDy) < 1) return;
       hasMoved = true;
 
-      const margin = 8;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const pw = popupEl.offsetWidth;
-      const ph = popupEl.offsetHeight;
-
-      const nextLeft = Math.max(margin, Math.min(originLeft + dx, vw - pw - margin));
-      const nextTop = Math.max(margin, Math.min(originTop + dy, vh - ph - margin));
-
-      popupManualPosRef.current = { left: nextLeft, top: nextTop };
-      popupEl.style.left = `${Math.round(nextLeft)}px`;
-      popupEl.style.top = `${Math.round(nextTop)}px`;
+      const targetLeft = Math.max(minLeft, Math.min(originLeft + rawDx, maxLeft));
+      const targetTop = Math.max(minTop, Math.min(originTop + rawDy, maxTop));
+      lastDx = targetLeft - originLeft;
+      lastDy = targetTop - originTop;
+      popupEl.style.transform = `translate3d(${lastDx}px, ${lastDy}px, 0)`;
     };
 
-    const cleanup = () => {
+    const cleanup = (endEvent) => {
+      if (endEvent && endEvent.pointerId !== undefined && endEvent.pointerId !== pointerId) return;
+      try {
+        if (handleEl.hasPointerCapture?.(pointerId)) {
+          handleEl.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // ignore
+      }
       document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', cleanup);
       window.removeEventListener('pointercancel', cleanup);
+      handleEl.removeEventListener('lostpointercapture', cleanup);
       if (popupDragCleanupRef.current === cleanup) {
         popupDragCleanupRef.current = null;
       }
+
+      popupEl.style.transform = '';
+      popupEl.style.willChange = '';
       if (hasMoved) {
+        const finalLeft = originLeft + lastDx;
+        const finalTop = originTop + lastDy;
+        popupManualPosRef.current = { left: finalLeft, top: finalTop };
+        popupEl.style.left = `${finalLeft}px`;
+        popupEl.style.top = `${finalTop}px`;
         popupJustDraggedRef.current = true;
         setTimeout(() => {
           popupJustDraggedRef.current = false;
@@ -3560,6 +3598,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', cleanup);
     window.addEventListener('pointercancel', cleanup);
+    handleEl.addEventListener('lostpointercapture', cleanup);
   }, []);
 
   const handleChangePassword = () => {
@@ -8690,8 +8729,11 @@ ${messageText}`;
                                 </span>
                               )}
                               {restrictionText && appUser.role === 'admin' && (
-                                <span className="hidden sm:inline text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded truncate max-w-[110px]" title={`AI配置制限: ${restrictionText}`}>
-                                  制限:{restrictionText}
+                                <span
+                                  className="hidden sm:inline px-1 py-[1px] rounded bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold leading-tight shrink-0"
+                                  title={`AI配置制限: ${restrictionText}`}
+                                >
+                                  制限あり
                                 </span>
                               )}
                             </div>
@@ -8902,7 +8944,7 @@ ${messageText}`;
                             </div>
 
                             {/* 1〜末日のクイック日付切替バー */}
-                            <div className="flex items-center gap-1 overflow-x-auto pb-0.5 max-w-full">
+                            <div className="flex items-center gap-1 overflow-x-auto pt-2 pb-0.5 pr-1.5 max-w-full">
                               {daysArray.map(dayNum => {
                                 const dSun = isSunday(year, month, dayNum);
                                 const dHol = isHoliday(year, month, dayNum, clinicClosedDays);
@@ -9803,13 +9845,14 @@ ${messageText}`;
           return (
             <div 
               ref={popupRef}
-              className={`z-[80] bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full max-h-[85vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
+              className={`z-[80] bg-white border p-3 fixed bottom-0 left-0 right-0 w-full max-h-[85vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
                 ${showPopupScheduleSummary ? 'md:w-96' : 'md:w-80'} md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
               onClick={e => e.stopPropagation()}
             >
               <div
                 onPointerDown={handlePopupDragStart}
-                className="flex justify-between items-center mb-2 pb-2 border-b shrink-0 md:cursor-move md:touch-none select-none"
+                onDragStart={(e) => e.preventDefault()}
+                className="flex justify-between items-center mb-2 pb-2 border-b shrink-0 md:cursor-grab md:active:cursor-grabbing md:touch-none select-none"
                 title="ドラッグして移動"
               >
                 <div className="flex items-center gap-1 text-sm font-bold text-gray-700 truncate pr-2 min-w-0">
@@ -10040,36 +10083,6 @@ ${messageText}`;
                                     <span className={wc.sDef.text || 'text-gray-800'}>{wc.sDef.label}</span>
                                   ) : wc.reqDef ? (
                                     <span className="text-[9px] text-pink-500">希:{wc.reqDef.label}</span>
-                                  ) : (
-                                    <span className="text-gray-300 font-normal text-[10px]">-</span>
-                                  )}
-                                </div>
-                                <div
-                                  className={`w-full text-[9px] leading-none rounded px-0.5 truncate ${
-                                    wc.hasBell ? 'bg-orange-200 text-orange-900 font-bold' : 'text-gray-500'
-                                  }`}
-                                >
-                                  {wc.tDef ? wc.tDef.label : wc.hasBell ? '🔔' : wc.isPrevMonthStraddle ? '前月' : ''}
-                                </div>
-                              </>
-                            ) : (
-                              <div className="text-[10px] text-gray-300">-</div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* 1ヶ月全体の展開ミニカレンダー（前月末の同じ週にかかる日も表示＋管理固定・本人入力アイコン付き） */}
-                    {showPopupFullMonthCal && (
-                      <div className="pt-1.5 border-t border-slate-200">
-                        <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-bold text-gray-500 mb-0.5">
-                          <span className="text-red-500">日</span>
-                          <span>月</span>
-                          <span>火</span>
-                          <span>水</span>
-                          <span>木</span>
-                          <span>金</span>
                           <span className="text-blue-500">土</span>
                         </div>
                         <div className="grid grid-cols-7 gap-0.5">
@@ -10378,25 +10391,40 @@ ${messageText}`;
                         クリア
                       </button>
                     )}
-                    {popupOptions.map(shift => (
-                      <button
-                        key={shift.code}
-                        onClick={() => {
-                          handleUpdateCell(
-                            activePopup.staffId,
-                            activePopup.day,
-                            shift.code,
-                            activePopup.type,
-                            appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
-                          );
-                          setActivePopup(null);
-                        }}
-                        className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${shift.text} hover:bg-gray-50`}
-                        title={shift.label}
-                      >
-                        {shift.label}
-                      </button>
-                    ))}
+                    {popupOptions.map(shift => {
+                      const isRestrictedShiftOption =
+                        appUser.role === 'admin' &&
+                        activePopup.type === 'shift' &&
+                        Boolean(popupStaff) &&
+                        (
+                          (Array.isArray(popupStaff.excludedCategories) && popupStaff.excludedCategories.includes(shift.category)) ||
+                          (Array.isArray(popupStaff.excludedShifts) && popupStaff.excludedShifts.includes(shift.code)) ||
+                          (isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(popupStaff, shift.code))
+                        );
+                      return (
+                        <button
+                          key={shift.code}
+                          onClick={() => {
+                            handleUpdateCell(
+                              activePopup.staffId,
+                              activePopup.day,
+                              shift.code,
+                              activePopup.type,
+                              appUser.role === 'staff' && activePopup.type === 'shift' ? popupReasonText : undefined
+                            );
+                            setActivePopup(null);
+                          }}
+                          className={`h-12 md:h-9 w-full rounded flex items-center justify-center font-bold text-xs border transition ${
+                            isRestrictedShiftOption
+                              ? 'bg-gray-100 border-gray-200 text-gray-400 hover:bg-gray-200/70'
+                              : `${shift.text} hover:bg-gray-50`
+                          }`}
+                          title={isRestrictedShiftOption ? `${shift.label}（制限・除外対象 / クリックで設定可能）` : shift.label}
+                        >
+                          {shift.label}
+                        </button>
+                      );
+                    })}
                   </div>
                   {popupOptions.length === 0 && (
                     <p className="text-[11px] text-gray-400 text-center py-2 shrink-0">
