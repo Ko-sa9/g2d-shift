@@ -12,16 +12,16 @@ exports.callGeminiAPI = functions.https.onCall(
     const systemInstruction = String(requestData.systemInstruction || "").trim();
     const responseMimeType = requestData.responseMimeType || null;
 
-    // デフォルトは最新の高速・高精度GAモデル（gemini-3.8-flash）を使用します
+    // デフォルトは最高性能モデル（gemini-4-argon）を使用します
     const ALLOWED_MODELS = new Set([
-      "gemini-3.8-flash",
       "gemini-4-argon",
+      "gemini-3.8-flash",
       "gemini-3.5-flash-lite",
       "gemini-2.5-flash",
       "gemini-2.5-pro",
     ]);
     const requestedModel = String(requestData.model || "").trim();
-    const primaryModel = ALLOWED_MODELS.has(requestedModel) ? requestedModel : "gemini-3.8-flash";
+    const primaryModel = ALLOWED_MODELS.has(requestedModel) ? requestedModel : "gemini-4-argon";
 
     const apiKey = process.env.GEMINI_API_KEY;
 
