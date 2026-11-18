@@ -525,6 +525,42 @@ const getStaffPowerScore = (staff) => {
   return Object.keys(pts).reduce((sum, k) => sum + (staff.skills[k] ? pts[k] : 0), 0);
 };
 
+// パート職員の週単位契約出勤日数（下限〜上限）を取得（パート以外または未設定時は null）
+const getPartTimeWeeklyContractRange = (staff) => {
+  if (!staff || staff.jobTitle !== 'パート') return null;
+  const rawMin =
+    staff.contractWorkDaysMin !== undefined && staff.contractWorkDaysMin !== ''
+      ? staff.contractWorkDaysMin
+      : staff.contractWorkDays;
+  const rawMax =
+    staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== ''
+      ? staff.contractWorkDaysMax
+      : staff.contractWorkDays;
+  const numMin = rawMin !== undefined && rawMin !== null && rawMin !== '' ? Number(rawMin) : 0;
+  const numMax = rawMax !== undefined && rawMax !== null && rawMax !== '' ? Number(rawMax) : 0;
+  if (numMin <= 0 && numMax <= 0) return null;
+  const effMin = numMin > 0 ? numMin : numMax;
+  const effMax = numMax > 0 ? numMax : numMin;
+  return {
+    min: Math.max(1, Math.min(6, Math.min(effMin, effMax))),
+    max: Math.max(1, Math.min(6, Math.max(effMin, effMax))),
+  };
+};
+
+// 年間の有休（年休・有給）に該当するシフト定義かどうかを判定
+const isAnnualPaidLeaveShiftDef = (def, categoryDefs = {}) => {
+  if (!def) return false;
+  if (getEffectiveShiftType(def, categoryDefs) !== 'shift') return false;
+  const lbl = String(def.label || '').trim();
+  if (lbl.includes('年休') || lbl.includes('有休') || lbl.includes('有給') || lbl === '有' || lbl === '年') {
+    return true;
+  }
+  if (def.code === 'Y' && getCategoryKindById(def.category, categoryDefs) === 'off') {
+    return true;
+  }
+  return false;
+};
+
 const isLeaderHighlightTargetFacility = (cat) => {
   if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
   const id = String(cat.id || '').trim();
@@ -1118,27 +1154,27 @@ const evaluateScheduleValidation = ({
       const cnt = wDays.filter(wd => regOffDaySet.has(wd)).length;
       return acc + Math.max(0, cnt - 1);
     }, 0);
-    const hasContractDays =
-      s.contractWorkDays !== undefined &&
-      s.contractWorkDays !== null &&
-      s.contractWorkDays !== '' &&
-      Number(s.contractWorkDays) > 0;
-    const contractDaysNum = hasContractDays ? Number(s.contractWorkDays) : null;
-    const contractType = s.contractWorkDaysType === 'week' ? 'week' : 'month';
+    const partContractRange = getPartTimeWeeklyContractRange(s);
+    const hasContractDays = Boolean(partContractRange);
+    const contractMin = partContractRange ? partContractRange.min : null;
+    const contractMax = partContractRange ? partContractRange.max : null;
+    const contractRangeLabel = partContractRange
+      ? contractMin === contractMax
+        ? `週${contractMin}日`
+        : `週${contractMin}〜${contractMax}日`
+      : null;
 
     let targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
     let targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
     if (hasContractDays) {
-      if (contractType === 'week') {
-        const weeklyTargetSum = operatingWeeks.reduce((sum, wDays) => {
-          return sum + Math.min(wDays.length, contractDaysNum);
-        }, 0);
-        targetMin = Math.max(0, weeklyTargetSum - paidLeaveDays);
-        targetMax = targetMin;
-      } else {
-        targetMin = Math.max(0, contractDaysNum - paidLeaveDays);
-        targetMax = targetMin;
-      }
+      const weeklyMinSum = operatingWeeks.reduce((sum, wDays) => {
+        return sum + (wDays.length === 6 ? Math.min(wDays.length, contractMin) : 0);
+      }, 0);
+      const weeklyMaxSum = operatingWeeks.reduce((sum, wDays) => {
+        return sum + Math.min(wDays.length, contractMax);
+      }, 0);
+      targetMin = Math.max(0, weeklyMinSum - paidLeaveDays);
+      targetMax = Math.max(targetMin, weeklyMaxSum - paidLeaveDays);
     }
 
     staffEvalMap[s.id] = {
@@ -1147,77 +1183,41 @@ const evaluateScheduleValidation = ({
       targetMax,
       workDaySet,
       hasContractDays,
-      contractDaysNum,
-      contractType,
+      contractMin,
+      contractMax,
     };
 
-    // ★契約出勤日数（絶対ルール）のチェック（パート含む）
+    // ★パート職員の週契約出勤日数（下限〜上限：絶対ルール）チェック
     if (hasContractDays && filledOperatingDaysCount > 0) {
-      if (contractType === 'week') {
-        operatingWeeks.forEach((wDays, wIdx) => {
-          if (hasScope && !wDays.some(wd => isDayInScope(wd))) return;
-          if (wDays.length < 6 && contractDaysNum > wDays.length) return;
-          const wWorkDays = wDays.filter(wd => workDaySet.has(wd));
-          const wEditWorkDays = wWorkDays.filter(wd => isCellAiEditable(s, wd));
-          const wEditBlankDays = wDays.filter(wd => !shiftsMap?.[s.id]?.[wd] && isCellAiEditable(s, wd));
-          if (wWorkDays.length > contractDaysNum) {
-            const overBy = wWorkDays.length - contractDaysNum;
-            const isAiFixable = !s.excludeFromAi && wEditWorkDays.length > 0;
-            staffViolations.push({
-              type: 'contract_workdays_over',
-              severity: 'error',
-              staffId: s.id,
-              staffName: s.name,
-              isAiFixable,
-              label: `契約出勤日数超過（第${wIdx + 1}週: ${wWorkDays.length}日 / 契約:週${contractDaysNum}日）`,
-              detail: `出勤日: ${wWorkDays.map(d => `${month}/${d}`).join('・')}`,
-            });
-            if (isAiFixable) {
-              aiRepairableItems.push(
-                `[契約出勤日数超過(絶対ルール)] ${s.name}(ID:${s.id}): 第${wIdx + 1}週の出勤が${wWorkDays.length}日で契約(週${contractDaysNum}日)を${overBy}日超過しています。編集可能な出勤日 [${wEditWorkDays.join(', ')}] のうち${overBy}日分を null(空欄) に戻してください。`
-              );
-            }
-          } else if ((isFullMonthCreated || includeEmptyDays || hasScope) && wWorkDays.length < contractDaysNum && wEditBlankDays.length > 0) {
-            const shortBy = Math.min(wEditBlankDays.length, contractDaysNum - wWorkDays.length);
-            const isAiFixable = !s.excludeFromAi && shortBy > 0;
-            staffViolations.push({
-              type: 'contract_workdays_under',
-              severity: 'error',
-              staffId: s.id,
-              staffName: s.name,
-              isAiFixable,
-              label: `契約出勤日数未達（第${wIdx + 1}週: ${wWorkDays.length}日 / 契約:週${contractDaysNum}日）`,
-              detail: `空き候補日: ${wEditBlankDays.map(d => `${month}/${d}`).join('・')}`,
-            });
-            if (isAiFixable) {
-              aiRepairableItems.push(
-                `[契約出勤日数未達(絶対ルール)] ${s.name}(ID:${s.id}): 第${wIdx + 1}週の出勤が${wWorkDays.length}日で契約(週${contractDaysNum}日)に${shortBy}日不足しています。未ロック空欄日 [${wEditBlankDays.join(', ')}] のうち${shortBy}日分に出勤シフトを割り当ててください。`
-              );
-            }
-          }
-        });
-      } else if (!hasScope) {
-        // 月間契約出勤日数チェック
-        const editableWorkDays = [...workDaySet].filter(dayNum => isCellAiEditable(s, dayNum));
-        if (workDays > targetMax) {
-          const overBy = workDays - targetMax;
-          const isAiFixable = !s.excludeFromAi && editableWorkDays.length > 0;
+      operatingWeeks.forEach((wDays, wIdx) => {
+        if (hasScope && !wDays.some(wd => isDayInScope(wd))) return;
+        const wWorkDays = wDays.filter(wd => workDaySet.has(wd));
+        const wEditWorkDays = wWorkDays.filter(wd => isCellAiEditable(s, wd));
+        const wEditBlankDays = wDays.filter(wd => !shiftsMap?.[s.id]?.[wd] && isCellAiEditable(s, wd));
+        if (wWorkDays.length > contractMax) {
+          const overBy = wWorkDays.length - contractMax;
+          const isAiFixable = !s.excludeFromAi && wEditWorkDays.length > 0;
           staffViolations.push({
             type: 'contract_workdays_over',
             severity: 'error',
             staffId: s.id,
             staffName: s.name,
             isAiFixable,
-            label: `契約出勤日数超過（${workDays}日 / 契約:月${targetMax}日）`,
-            detail: `${overBy}日超過しています`,
+            label: `契約出勤日数超過（第${wIdx + 1}週: ${wWorkDays.length}日 / 契約:${contractRangeLabel}）`,
+            detail: `出勤日: ${wWorkDays.map(d => `${month}/${d}`).join('・')}`,
           });
           if (isAiFixable) {
             aiRepairableItems.push(
-              `[契約出勤日数超過(絶対ルール)] ${s.name}(ID:${s.id}): 月間出勤が${workDays}日で契約(月${targetMax}日)を${overBy}日超過しています。編集可能な出勤日 [${editableWorkDays.join(', ')}] のうち${overBy}日分を null(空欄) に戻してください。`
+              `[契約出勤日数超過] ${s.name}(ID:${s.id}): 第${wIdx + 1}週の出勤が${wWorkDays.length}日で契約(${contractRangeLabel})の上限${contractMax}日を${overBy}日超過しています。編集可能な出勤日 [${wEditWorkDays.join(', ')}] のうち${overBy}日分を null(空欄) に戻してください。`
             );
           }
-        } else if ((isFullMonthCreated || includeEmptyDays) && workDays < targetMin && editableBlankDays.length > 0) {
-          const shortBy = Math.min(editableBlankDays.length, targetMin - workDays);
+        } else if (
+          wDays.length === 6 &&
+          (isFullMonthCreated || includeEmptyDays || hasScope) &&
+          wWorkDays.length < contractMin &&
+          wEditBlankDays.length > 0
+        ) {
+          const shortBy = Math.min(wEditBlankDays.length, contractMin - wWorkDays.length);
           const isAiFixable = !s.excludeFromAi && shortBy > 0;
           staffViolations.push({
             type: 'contract_workdays_under',
@@ -1225,18 +1225,18 @@ const evaluateScheduleValidation = ({
             staffId: s.id,
             staffName: s.name,
             isAiFixable,
-            label: `契約出勤日数未達（${workDays}日 / 契約:月${targetMin}日）`,
-            detail: `未ロックの空欄日: ${editableBlankDays.map(d => `${month}/${d}`).join('・')}（あと${shortBy}日必要）`,
+            label: `契約出勤日数未達（第${wIdx + 1}週: ${wWorkDays.length}日 / 契約:${contractRangeLabel}）`,
+            detail: `空き候補日: ${wEditBlankDays.map(d => `${month}/${d}`).join('・')}`,
           });
           if (isAiFixable) {
             aiRepairableItems.push(
-              `[契約出勤日数未達(絶対ルール)] ${s.name}(ID:${s.id}): 月間出勤が${workDays}日で契約(月${targetMin}日)に${shortBy}日不足しています。未ロック空欄日 [${editableBlankDays.join(', ')}] のうち最大連勤を超えない${shortBy}日分に出勤シフトを割り当ててください。`
+              `[契約出勤日数未達] ${s.name}(ID:${s.id}): 第${wIdx + 1}週の出勤が${wWorkDays.length}日で契約(${contractRangeLabel})の下限${contractMin}日に${shortBy}日不足しています。未ロック空欄日 [${wEditBlankDays.join(', ')}] のうち${shortBy}日分に出勤シフトを割り当ててください。`
             );
           }
         }
-      }
+      });
     } else if (!hasScope && (isFullMonthCreated || includeEmptyDays) && filledOperatingDaysCount > 0 && !s.excludeFromAi && s.jobTitle !== 'パート') {
-      // 1ヶ月分が作成済みの場合のみ、契約日数未指定の常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック
+      // 1ヶ月分が作成済みの場合のみ、常勤職員の「空欄残しすぎ（出勤日数不足）」をチェック
       if (workDays < targetMin && editableBlankDays.length > 0) {
         staffViolations.push({
           type: 'underwork_excess_blank',
@@ -1261,18 +1261,15 @@ const evaluateScheduleValidation = ({
     if (!stEval) return false;
     if (staff.jobTitle === 'パート' && !stEval.hasContractDays) return false;
     if (shiftsMap?.[staff.id]?.[dayNum] || !isCellAiEditable(staff, dayNum)) return false;
-    if (stEval.hasContractDays && stEval.contractType === 'month' && stEval.workDays >= stEval.targetMax) {
-      return false;
-    }
     if ((isFullMonthCreated || includeEmptyDays) && stEval.workDays >= stEval.targetMax) {
       return false;
     }
     const weekIdx = operatingWeeks.findIndex(w => w.includes(dayNum));
     if (weekIdx !== -1) {
       const wDays = operatingWeeks[weekIdx];
-      if (stEval.hasContractDays && stEval.contractType === 'week') {
+      if (stEval.hasContractDays) {
         const curWeekWork = wDays.filter(wd => stEval.workDaySet.has(wd)).length;
-        if (curWeekWork >= stEval.contractDaysNum) return false;
+        if (curWeekWork >= stEval.contractMax) return false;
       }
       const otherNonWorkDaysInWeek = wDays.filter(wd => wd !== dayNum && !stEval.workDaySet.has(wd)).length;
       if (wDays.length === 6 && otherNonWorkDaysInWeek === 0) {
@@ -1808,6 +1805,7 @@ export default function WorkScheduleApp() {
   
   const [activePopup, setActivePopup] = useState(null);
   const [popupReasonText, setPopupReasonText] = useState('');
+  const [showPopupFullMonthCal, setShowPopupFullMonthCal] = useState(false);
   const popupRef = useRef(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
@@ -1970,8 +1968,18 @@ export default function WorkScheduleApp() {
           skills: s.skills || {},
           minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
           maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
-          contractWorkDays: s.contractWorkDays !== undefined && s.contractWorkDays !== '' ? s.contractWorkDays : null,
-          contractWorkDaysType: s.contractWorkDaysType === 'week' ? 'week' : 'month',
+          contractWorkDaysMin:
+            s.contractWorkDaysMin !== undefined && s.contractWorkDaysMin !== ''
+              ? s.contractWorkDaysMin
+              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
+                ? s.contractWorkDays
+                : null,
+          contractWorkDaysMax:
+            s.contractWorkDaysMax !== undefined && s.contractWorkDaysMax !== ''
+              ? s.contractWorkDaysMax
+              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
+                ? s.contractWorkDays
+                : null,
           excludeFromAi: s.excludeFromAi || false,
           excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
           excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
@@ -3385,6 +3393,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     } else {
       setPopupReasonText('');
     }
+    setShowPopupFullMonthCal(false);
     setActivePopup({
       staffId,
       day,
@@ -3446,7 +3455,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     updatePosition();
     window.addEventListener('resize', updatePosition);
     return () => window.removeEventListener('resize', updatePosition);
-  }, [activePopup, popupReasonText]);
+  }, [activePopup, popupReasonText, showPopupFullMonthCal]);
 
   const handleChangePassword = () => {
     const trimmedPassword = newPassword.trim();
@@ -3537,8 +3546,8 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       skills: {},
       minCool3: 0,
       maxCool3: 5,
-      contractWorkDays: null,
-      contractWorkDaysType: 'month',
+      contractWorkDaysMin: null,
+      contractWorkDaysMax: null,
       excludeFromAi: false,
       excludedCategories: [],
       excludedShifts: [],
@@ -3557,8 +3566,14 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       skills: staff.skills || {}, 
       minCool3: staff.minCool3 !== undefined ? staff.minCool3 : 0,
       maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
-      contractWorkDays: staff.contractWorkDays !== undefined && staff.contractWorkDays !== '' ? staff.contractWorkDays : null,
-      contractWorkDaysType: staff.contractWorkDaysType === 'week' ? 'week' : 'month',
+      contractWorkDaysMin:
+        staff.contractWorkDaysMin !== undefined && staff.contractWorkDaysMin !== ''
+          ? staff.contractWorkDaysMin
+          : staff.contractWorkDays ?? null,
+      contractWorkDaysMax:
+        staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== ''
+          ? staff.contractWorkDaysMax
+          : staff.contractWorkDays ?? null,
       excludeFromAi: staff.excludeFromAi || false,
       excludedCategories: exCats,
       excludedShifts: exShifts,
@@ -4540,26 +4555,23 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         }
       });
 
-      // 契約出勤日数（contractWorkDays: 絶対厳守ルール）または常勤標準出勤日数を算出
-      const hasContractDays =
-        s.contractWorkDays !== undefined &&
-        s.contractWorkDays !== null &&
-        s.contractWorkDays !== '' &&
-        Number(s.contractWorkDays) > 0;
-      const contractDaysNum = hasContractDays ? Number(s.contractWorkDays) : null;
-      const contractType = s.contractWorkDaysType === 'week' ? 'week' : 'month';
+      // パート週契約出勤日数（下限〜上限：絶対厳守ルール）または常勤標準出勤日数を算出
+      const partContractRange = getPartTimeWeeklyContractRange(s);
+      const hasContractDays = Boolean(partContractRange);
 
       let targetWorkDaysMin;
       let targetWorkDaysMax;
       if (hasContractDays) {
-        if (contractType === 'week') {
-          const weeklySum = calendarWeeks.reduce((sum, w) => sum + Math.min(w.days.length, contractDaysNum), 0);
-          targetWorkDaysMin = Math.max(workDays, weeklySum - paidLeaveDays);
-          targetWorkDaysMax = targetWorkDaysMin;
-        } else {
-          targetWorkDaysMin = Math.max(workDays, contractDaysNum - paidLeaveDays);
-          targetWorkDaysMax = targetWorkDaysMin;
-        }
+        const weeklyMinSum = calendarWeeks.reduce(
+          (sum, w) => sum + (w.isFullWeek ? Math.min(w.days.length, partContractRange.min) : 0),
+          0
+        );
+        const weeklyMaxSum = calendarWeeks.reduce(
+          (sum, w) => sum + Math.min(w.days.length, partContractRange.max),
+          0
+        );
+        targetWorkDaysMin = Math.max(workDays, weeklyMinSum - paidLeaveDays);
+        targetWorkDaysMax = Math.max(targetWorkDaysMin, weeklyMaxSum - paidLeaveDays);
       } else {
         targetWorkDaysMin = Math.max(
           workDays,
@@ -4640,8 +4652,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         powerScore,
         minCool3: s.minCool3 ?? 0,
         maxCool3: s.maxCool3, 
-        contractWorkDays: contractDaysNum,
-        contractWorkDaysType: hasContractDays ? contractType : null,
+        contractWorkDaysMin: partContractRange ? partContractRange.min : null,
+        contractWorkDaysMax: partContractRange ? partContractRange.max : null,
         excludeFromAi: s.excludeFromAi,
         allowedFacilities: allowedFacilityCats.map(fc => ({ id: fc.id, label: fc.label })),
         allowedWorkShifts,
@@ -5015,25 +5027,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               ...rawDays.filter(dNum => !isDayClearOp(dNum)),
             ];
 
-            const hasContractLimit =
-              staffObj.contractWorkDays !== undefined &&
-              staffObj.contractWorkDays !== null &&
-              staffObj.contractWorkDays !== '' &&
-              Number(staffObj.contractWorkDays) > 0;
-            const contractLimitNum = hasContractLimit ? Number(staffObj.contractWorkDays) : null;
-            const contractLimitType = staffObj.contractWorkDaysType === 'week' ? 'week' : 'month';
-
-            const countStaffMonthWorkDays = () => {
-              let cnt = 0;
-              for (let dIdx = 1; dIdx <= maxDay; dIdx++) {
-                if (isSunday(year, month, dIdx)) continue;
-                const sc = ns[staffId]?.[dIdx];
-                if (sc && shiftDefs[sc] && getEffectiveShiftType(shiftDefs[sc], categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(shiftDefs[sc], categoryDefs)) {
-                  cnt++;
-                }
-              }
-              return cnt;
-            };
+            const partContractRange = getPartTimeWeeklyContractRange(staffObj);
+            const hasContractLimit = Boolean(partContractRange);
+            const contractWeeklyMax = partContractRange ? partContractRange.max : null;
 
             const countStaffWeekWorkDays = (targetDay) => {
               const targetWeekObj = currentMonthCalendarWeeks.find(w => w.days.includes(targetDay));
@@ -5132,11 +5128,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                     !isNonWorkOrKoushutsuShiftDef(shiftDefs[existingCodeOnDay], categoryDefs)
                 );
                 if (hasContractLimit && !isReplacingExistingWork) {
-                  if (contractLimitType === 'week') {
-                    if (countStaffWeekWorkDays(dayNum) >= contractLimitNum) return;
-                  } else {
-                    if (countStaffMonthWorkDays() >= contractLimitNum) return;
-                  }
+                  if (countStaffWeekWorkDays(dayNum) >= contractWeeklyMax) return;
                 }
                 if (ns[staffId][dayNum] !== code) {
                   ns[staffId][dayNum] = code;
@@ -5778,51 +5770,25 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           if (st.excludeFromAi || assignableDaysInThisWeek.length === 0) {
             mustKeepBlankDaysMinInThisWeek = 0;
             recommendedNewWorkDaysInThisWeek = '0日（変更不可）';
-          } else if (st.contractWorkDays && Number(st.contractWorkDays) > 0) {
-            // ★契約出勤日数（絶対ルール）が設定されている職員（パート・常勤共通）
-            const cNum = Number(st.contractWorkDays);
-            const cType = st.contractWorkDaysType === 'week' ? 'week' : 'month';
+          } else if (st.jobTitle === 'パート' && (st.contractWorkDaysMin || st.contractWorkDaysMax)) {
+            // ★パート職員の週契約出勤日数（下限〜上限：絶対厳守ルール）
+            const wMin = Number(st.contractWorkDaysMin || st.contractWorkDaysMax);
+            const wMax = Number(st.contractWorkDaysMax || st.contractWorkDaysMin);
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
-
-            if (cType === 'week') {
-              const maxAllowedInWeek = Math.max(0, Math.min(targetWeek.days.length, cNum) - existingWorkInThisWeek);
-              const capByStreak = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
-              const exactNewInWeek = Math.min(assignableDaysInThisWeek.length, capByStreak, maxAllowedInWeek);
-              mustKeepBlankDaysMinInThisWeek = Math.max(0, assignableDaysInThisWeek.length - exactNewInWeek);
-              recommendedNewWorkDaysInThisWeek = `${exactNewInWeek}日（★絶対厳守：週契約${cNum}日・今週残り${exactNewInWeek}日★）`;
-            } else {
-              // 月間契約出勤日数: 今週以降の残り週数と残り割当可能日数から今週の必要出勤日数を算出
-              const remContractTotal = Math.max(0, (st.currentStats.targetWorkDaysMax ?? cNum) - st.currentStats.workDays);
-              let futureAssignableDaysCount = 0;
-              let remainingActiveWeeksCount = 1;
-              calendarWeeks.forEach(fw => {
-                if (fw.weekIndex <= targetWeek.weekIndex) return;
-                let fwAssignable = 0;
-                fw.days.forEach(fd => {
-                  if (!workingShifts[st.id]?.[fd] && !getUserRequestedShift(st.id, fd) && !getTeamLockedShiftSource(st.id, fd, originalShifts)) {
-                    fwAssignable++;
-                  }
-                });
-                if (fwAssignable > 0) {
-                  futureAssignableDaysCount += fwAssignable;
-                  remainingActiveWeeksCount++;
-                }
-              });
-              const capByStreak = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
-              const minNeededThisWeek = Math.min(capByStreak, Math.max(0, remContractTotal - futureAssignableDaysCount));
-              const evenPaceMaxThisWeek = Math.min(
-                capByStreak,
-                remContractTotal,
-                Math.ceil(remContractTotal / Math.max(1, remainingActiveWeeksCount))
-              );
-              const recMax = Math.max(minNeededThisWeek, evenPaceMaxThisWeek);
-              mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
-              recommendedNewWorkDaysInThisWeek =
-                minNeededThisWeek === recMax
-                  ? `${recMax}日（★絶対厳守：月間契約${cNum}日・残りあと${remContractTotal}日★）`
-                  : `${minNeededThisWeek}〜${recMax}日（★絶対厳守：月間契約${cNum}日・残りあと${remContractTotal}日★）`;
-            }
+            const capByStreak = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
+            const maxAllowedNew = Math.max(0, Math.min(targetWeek.days.length, wMax) - existingWorkInThisWeek);
+            const minRequiredNew = targetWeek.isFullWeek
+              ? Math.max(0, Math.min(targetWeek.days.length, wMin) - existingWorkInThisWeek)
+              : 0;
+            const recMax = Math.min(assignableDaysInThisWeek.length, capByStreak, maxAllowedNew);
+            const recMin = Math.min(recMax, minRequiredNew);
+            mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
+            const rangeLbl = wMin === wMax ? `週${wMin}日` : `週${wMin}〜${wMax}日`;
+            recommendedNewWorkDaysInThisWeek =
+              recMin === recMax
+                ? `${recMax}日（★絶対厳守：パート契約 ${rangeLbl}★）`
+                : `${recMin}〜${recMax}日（★絶対厳守：パート契約 ${rangeLbl}★）`;
           } else if (st.jobTitle === 'パート') {
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
@@ -5967,7 +5933,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             powerScore: st.powerScore,
             minCool3: st.minCool3 ?? 0,
             maxCool3: st.maxCool3,
-            ...(st.contractWorkDays ? { contractWorkDays: st.contractWorkDays, contractWorkDaysType: st.contractWorkDaysType || 'month' } : {}),
+            ...(st.contractWorkDaysMin || st.contractWorkDaysMax
+              ? {
+                  contractWorkDaysMin: st.contractWorkDaysMin ?? st.contractWorkDaysMax,
+                  contractWorkDaysMax: st.contractWorkDaysMax ?? st.contractWorkDaysMin,
+                }
+              : {}),
             excludeFromAi: st.excludeFromAi,
             allowedWorkShifts: st.allowedWorkShifts,
             ...(allowedWeekDaysSet.has(1) ? { day1AllowedWorkShifts: st.day1AllowedWorkShifts } : {}),
@@ -9499,8 +9470,8 @@ ${messageText}`;
           return (
             <div 
               ref={popupRef}
-              className={`z-[80] bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full max-h-[80vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
-                md:w-80 md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
+              className={`z-[80] bg-white border p-3 animate-in duration-200 fixed bottom-0 left-0 right-0 w-full max-h-[85vh] flex flex-col rounded-t-xl shadow-[0_-4px_10px_rgba(0,0,0,0.1)] shrink-0 
+                ${overallSubViewMode === 'daily' ? 'md:w-96' : 'md:w-80'} md:max-h-[calc(100vh-24px)] md:rounded-xl md:bottom-auto md:left-auto md:right-auto md:shadow-2xl md:border-gray-300`}
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-center mb-2 pb-2 border-b shrink-0">
@@ -9509,6 +9480,226 @@ ${messageText}`;
                 </div>
                 <button onClick={() => setActivePopup(null)} className="p-1 bg-gray-100 text-gray-600 rounded-md font-bold hover:bg-gray-200 transition shrink-0"><X size={18} /></button>
               </div>
+              {overallSubViewMode === 'daily' && popupStaff && (() => {
+                // 案A: 「施設別」画面でのシフト変更時に、対象人物のその週のミニシフト帯 ＋ 3クール・有休(残数/可能数) ＋ 1ヶ月展開を表示
+                const curDay = activePopup.day;
+                const curDow = getDayOfWeek(year, month, curDay);
+                const weekStartDay = curDay - curDow; // 日曜始まり (0..6)
+                const weekCells = [];
+                for (let i = 0; i < 7; i++) {
+                  const dNum = weekStartDay + i;
+                  const inMonth = dNum >= 1 && dNum <= daysInMonth;
+                  const sCode = inMonth ? shiftData[popupStaff.id]?.[dNum] : null;
+                  const tCode = inMonth ? taskData[popupStaff.id]?.[dNum] : null;
+                  const sDef = sCode ? shiftDefs[sCode] : null;
+                  const tDef = tCode ? shiftDefs[tCode] : null;
+                  const reqCode = inMonth ? getUserRequestedShift(popupStaff.id, dNum) : null;
+                  const reqDef = reqCode ? shiftDefs[reqCode] : null;
+                  const hasBell = inMonth ? Boolean(bellData[popupStaff.id]?.[dNum]) : false;
+                  weekCells.push({
+                    dowIdx: i,
+                    dowLbl: ['日', '月', '火', '水', '木', '金', '土'][i],
+                    dNum,
+                    inMonth,
+                    sCode,
+                    sDef,
+                    tDef,
+                    reqCode,
+                    reqDef,
+                    hasBell,
+                    isHol: inMonth && isHoliday(year, month, dNum, clinicClosedDays),
+                  });
+                }
+
+                // 3クール残数/可能数 ＆ 年間有休残数/可能数（※有休管理機能未実装のためデフォルト20日ベース）
+                let usedCool3 = 0;
+                let usedPaidLeaveInMonth = 0;
+                daysArray.forEach(dIdx => {
+                  if (isSunday(year, month, dIdx)) return;
+                  const c = shiftData[popupStaff.id]?.[dIdx];
+                  const def = c ? shiftDefs[c] : null;
+                  if (!def) return;
+                  if (isCool3ShiftDef(def, categoryDefs)) usedCool3++;
+                  if (isAnnualPaidLeaveShiftDef(def, categoryDefs)) usedPaidLeaveInMonth++;
+                });
+                const maxCool3 = Number(popupStaff.maxCool3 ?? 5);
+                const minCool3 = Number(popupStaff.minCool3 ?? 0);
+                const remCool3 = Math.max(0, maxCool3 - usedCool3);
+                const isCool3Over = usedCool3 > maxCool3;
+
+                const annualPaidLeaveMax = Number(popupStaff.annualPaidLeaveDays ?? 20);
+                const remPaidLeave = Math.max(0, annualPaidLeaveMax - usedPaidLeaveInMonth);
+
+                return (
+                  <div className="mb-2.5 p-2 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5 shrink-0">
+                    {/* ミニ集計バー（3クール 残数/可能数 ＆ 年間有休 残数/可能数）＋ 1ヶ月全体トグル */}
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                        <span
+                          className={`px-1.5 py-0.5 rounded font-bold border ${
+                            isCool3Over
+                              ? 'bg-red-100 text-red-700 border-red-300'
+                              : 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                          }`}
+                          title={`今月の3クール取得: ${usedCool3}回（下限${minCool3}〜上限${maxCool3}回）`}
+                        >
+                          3クール(残/可能): {remCool3}/{maxCool3}
+                        </span>
+                        <span
+                          className="px-1.5 py-0.5 rounded font-bold bg-emerald-50 text-emerald-900 border border-emerald-200"
+                          title="※有休管理機能は未実装のため仮表示（当月の年休取得数を反映）"
+                        >
+                          有休(残/可能): {remPaidLeave}/{annualPaidLeaveMax}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowPopupFullMonthCal(prev => !prev)}
+                        className="px-1.5 py-0.5 rounded bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[10px] font-bold transition shrink-0"
+                      >
+                        {showPopupFullMonthCal ? '▲ 週表示のみ' : '▼ 1ヶ月全体'}
+                      </button>
+                    </div>
+
+                    {/* 今週（日〜土）の7日間ミニシフト帯 */}
+                    <div className="grid grid-cols-7 gap-1">
+                      {weekCells.map(wc => {
+                        const isTarget = wc.inMonth && wc.dNum === curDay;
+                        const canJump =
+                          wc.inMonth &&
+                          (wc.dowIdx !== 0 || hasKoushutsuShiftDef || activePopup.type === 'task') &&
+                          (appUser.role === 'admin' || popupStaff.id === appUser.id);
+                        return (
+                          <div
+                            key={wc.dowIdx}
+                            onClick={() => {
+                              if (canJump) {
+                                if (activePopup.type === 'shift') {
+                                  setPopupReasonText(getUserRequestedReason(popupStaff.id, wc.dNum));
+                                }
+                                setActivePopup(prev => ({ ...prev, day: wc.dNum }));
+                              }
+                            }}
+                            className={`rounded border p-1 flex flex-col items-center justify-between min-h-[46px] text-center transition ${
+                              !wc.inMonth
+                                ? 'bg-gray-100/60 border-gray-200 opacity-40'
+                                : isTarget
+                                  ? 'bg-blue-50 border-blue-500 ring-2 ring-blue-400 shadow-2xs'
+                                  : wc.dowIdx === 0 || wc.isHol
+                                    ? 'bg-red-50/60 border-red-200 hover:border-blue-300'
+                                    : wc.dowIdx === 6
+                                      ? 'bg-blue-50/40 border-blue-200 hover:border-blue-300'
+                                      : 'bg-white border-gray-200 hover:border-blue-300'
+                            } ${canJump ? 'cursor-pointer' : ''}`}
+                          >
+                            <div
+                              className={`text-[9px] font-bold leading-none ${
+                                wc.dowIdx === 0 || wc.isHol
+                                  ? 'text-red-600'
+                                  : wc.dowIdx === 6
+                                    ? 'text-blue-600'
+                                    : 'text-gray-500'
+                              }`}
+                            >
+                              {wc.inMonth ? `${wc.dNum}(${wc.dowLbl})` : wc.dowLbl}
+                            </div>
+                            {wc.inMonth ? (
+                              <>
+                                <div className="text-[11px] font-extrabold leading-tight mt-0.5">
+                                  {wc.sDef ? (
+                                    <span className={wc.sDef.text || 'text-gray-800'}>{wc.sDef.label}</span>
+                                  ) : wc.reqDef ? (
+                                    <span className="text-[9px] text-pink-500">希:{wc.reqDef.label}</span>
+                                  ) : (
+                                    <span className="text-gray-300 font-normal text-[10px]">-</span>
+                                  )}
+                                </div>
+                                <div
+                                  className={`w-full text-[9px] leading-none rounded px-0.5 truncate ${
+                                    wc.hasBell ? 'bg-orange-200 text-orange-900 font-bold' : 'text-gray-500'
+                                  }`}
+                                >
+                                  {wc.tDef ? wc.tDef.label : wc.hasBell ? '🔔' : ''}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="text-[10px] text-gray-300">-</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* 1ヶ月全体の展開ミニカレンダー */}
+                    {showPopupFullMonthCal && (
+                      <div className="pt-1.5 border-t border-slate-200">
+                        <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-bold text-gray-500 mb-0.5">
+                          <span className="text-red-500">日</span>
+                          <span>月</span>
+                          <span>火</span>
+                          <span>水</span>
+                          <span>木</span>
+                          <span>金</span>
+                          <span className="text-blue-500">土</span>
+                        </div>
+                        <div className="grid grid-cols-7 gap-0.5">
+                          {calendarDays.map((cCell, cIdx) => {
+                            const dNum = cCell.currentMonth ? cCell.day : null;
+                            const sCode = dNum ? shiftData[popupStaff.id]?.[dNum] : null;
+                            const sDef = sCode ? shiftDefs[sCode] : null;
+                            const tCode = dNum ? taskData[popupStaff.id]?.[dNum] : null;
+                            const tDef = tCode ? shiftDefs[tCode] : null;
+                            const isTarget = dNum === curDay;
+                            const isSunCell = cCell.date.getDay() === 0;
+                            const isSatCell = cCell.date.getDay() === 6;
+                            const isHolCell = dNum && isHoliday(year, month, dNum, clinicClosedDays);
+                            return (
+                              <div
+                                key={cIdx}
+                                onClick={() => {
+                                  if (dNum && (!isSunCell || hasKoushutsuShiftDef || activePopup.type === 'task')) {
+                                    if (activePopup.type === 'shift') {
+                                      setPopupReasonText(getUserRequestedReason(popupStaff.id, dNum));
+                                    }
+                                    setActivePopup(prev => ({ ...prev, day: dNum }));
+                                  }
+                                }}
+                                className={`rounded border px-0.5 py-0.5 flex flex-col items-center justify-center min-h-[32px] ${
+                                  !cCell.currentMonth
+                                    ? 'bg-gray-100/40 border-transparent opacity-30'
+                                    : isTarget
+                                      ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-400 font-bold'
+                                      : isSunCell || isHolCell
+                                        ? 'bg-red-50/50 border-red-100 cursor-pointer hover:border-blue-300'
+                                        : isSatCell
+                                          ? 'bg-blue-50/30 border-blue-100 cursor-pointer hover:border-blue-300'
+                                          : 'bg-white border-gray-200 cursor-pointer hover:border-blue-300'
+                                }`}
+                              >
+                                <span
+                                  className={`text-[8px] leading-none ${
+                                    isSunCell || isHolCell ? 'text-red-500' : isSatCell ? 'text-blue-500' : 'text-gray-400'
+                                  }`}
+                                >
+                                  {cCell.date.getDate()}
+                                </span>
+                                {dNum && (
+                                  <span className={`text-[10px] font-bold leading-tight ${sDef ? sDef.text : 'text-gray-300'}`}>
+                                    {sDef ? sDef.label : '-'}
+                                  </span>
+                                )}
+                                {dNum && tDef && (
+                                  <span className="text-[8px] leading-none text-gray-500">{tDef.label}</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {isMasterAdmin && (pendingChangeRequestMapByStaffDay[`${activePopup.staffId}_${activePopup.day}`] || []).length > 0 && (
                 <div className="mb-2 p-2 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-900 shrink-0">
                   <div className="font-bold flex items-center justify-between gap-2">
@@ -10496,7 +10687,7 @@ ${messageText}`;
                               <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
                               <th className="p-2 border text-center w-14">編集</th>
                               <th className="p-2 border text-center w-16">AI除外</th>
-                              <th className="p-2 border text-center w-32">契約出勤日数(絶対)</th>
+                              <th className="p-2 border text-center w-32">契約出勤日数</th>
                               <th className="p-2 border text-center w-28">3クール(下限〜上限)</th>
                               <th className="p-2 border text-left min-w-[210px]">AI配置可能施設 / 制限</th>
                               {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-16"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
@@ -10527,42 +10718,59 @@ ${messageText}`;
                                   <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="詳細・個別シフト制限を編集"><Edit2 size={14}/></button></td>
                                   <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
                                   <td className="p-2 border text-center bg-emerald-50/30">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <select
-                                        className="border rounded px-1 py-1 text-[11px] bg-white font-bold text-emerald-900"
-                                        value={staff.contractWorkDaysType === 'week' ? 'week' : 'month'}
-                                        onChange={(e) => {
-                                          const newList = [...staffList];
-                                          newList[index] = { ...staff, contractWorkDaysType: e.target.value };
-                                          setStaffList(newList);
-                                        }}
-                                        title="月単位または週単位を選択"
-                                      >
-                                        <option value="month">月</option>
-                                        <option value="week">週</option>
-                                      </select>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max="31"
-                                        placeholder="標準"
-                                        title="契約出勤日数（空欄の場合は常勤標準の週休2日ペース）"
-                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
-                                        value={staff.contractWorkDays ?? ''}
-                                        onChange={(e) => {
-                                          const raw = e.target.value;
-                                          const parsed = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
-                                          const newList = [...staffList];
-                                          newList[index] = {
-                                            ...staff,
-                                            contractWorkDays: parsed && parsed > 0 ? parsed : null,
-                                            contractWorkDaysType: staff.contractWorkDaysType === 'week' ? 'week' : 'month',
-                                          };
-                                          setStaffList(newList);
-                                        }}
-                                      />
-                                      <span className="text-[10px] text-gray-500">日</span>
-                                    </div>
+                                    {staff.jobTitle === 'パート' ? (
+                                      <div className="flex items-center justify-center gap-1">
+                                        <span className="text-[10px] font-bold text-emerald-800">週</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max="6"
+                                          placeholder="-"
+                                          title="週あたりの契約出勤日数（下限）"
+                                          className="w-10 p-1 border rounded text-center text-xs bg-white font-bold"
+                                          value={staff.contractWorkDaysMin ?? ''}
+                                          onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? null : Math.max(0, Math.min(6, parseInt(raw, 10) || 0));
+                                            const val = parsed && parsed > 0 ? parsed : null;
+                                            const curMax = staff.contractWorkDaysMax ? Number(staff.contractWorkDaysMax) : null;
+                                            const newList = [...staffList];
+                                            newList[index] = {
+                                              ...staff,
+                                              contractWorkDaysMin: val,
+                                              contractWorkDaysMax: val && curMax && curMax < val ? val : curMax,
+                                            };
+                                            setStaffList(newList);
+                                          }}
+                                        />
+                                        <span className="text-gray-400 text-xs">〜</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          max="6"
+                                          placeholder="-"
+                                          title="週あたりの契約出勤日数（上限）"
+                                          className="w-10 p-1 border rounded text-center text-xs bg-white font-bold"
+                                          value={staff.contractWorkDaysMax ?? ''}
+                                          onChange={(e) => {
+                                            const raw = e.target.value;
+                                            const parsed = raw === '' ? null : Math.max(0, Math.min(6, parseInt(raw, 10) || 0));
+                                            const val = parsed && parsed > 0 ? parsed : null;
+                                            const curMin = staff.contractWorkDaysMin ? Number(staff.contractWorkDaysMin) : null;
+                                            const newList = [...staffList];
+                                            newList[index] = {
+                                              ...staff,
+                                              contractWorkDaysMax: val,
+                                              contractWorkDaysMin: val && curMin && curMin > val ? val : curMin,
+                                            };
+                                            setStaffList(newList);
+                                          }}
+                                        />
+                                        <span className="text-[10px] text-gray-500">日</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-gray-300 text-xs">-</span>
+                                    )}
                                   </td>
                                   <td className="p-2 border text-center">
                                     <div className="flex items-center justify-center gap-1">
@@ -11537,53 +11745,79 @@ ${messageText}`;
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
 
-                <div className="bg-emerald-50/60 border border-emerald-200 rounded-lg p-2.5">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <label className="text-xs font-bold text-emerald-900">
-                      契約出勤日数（パート・個別契約の絶対厳守ルール）
-                    </label>
-                    {targetStaff.contractWorkDays && (
-                      <button
-                        type="button"
-                        onClick={() => setTargetStaff({ ...targetStaff, contractWorkDays: null })}
-                        className="text-[10px] text-emerald-700 hover:underline font-bold"
-                      >
-                        クリア（常勤標準に戻す）
-                      </button>
-                    )}
+                {targetStaff.jobTitle === 'パート' && (
+                  <div className="bg-emerald-50/60 border border-emerald-200 rounded-lg p-2.5">
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <label className="text-xs font-bold text-emerald-900">
+                        契約出勤日数（週単位：下限 〜 上限）
+                      </label>
+                      {(targetStaff.contractWorkDaysMin || targetStaff.contractWorkDaysMax) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setTargetStaff({
+                              ...targetStaff,
+                              contractWorkDaysMin: null,
+                              contractWorkDaysMax: null,
+                            })
+                          }
+                          className="text-[10px] text-emerald-700 hover:underline font-bold"
+                        >
+                          クリア
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-emerald-800 mb-1">週下限（日/週）</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="6"
+                          placeholder="例: 4"
+                          className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
+                          value={targetStaff.contractWorkDaysMin ?? ''}
+                          onChange={e => {
+                            const raw = e.target.value;
+                            const parsed = raw === '' ? null : Math.max(1, Math.min(6, parseInt(raw, 10) || 0));
+                            const val = parsed && parsed > 0 ? parsed : null;
+                            const curMax = targetStaff.contractWorkDaysMax ? Number(targetStaff.contractWorkDaysMax) : null;
+                            setTargetStaff({
+                              ...targetStaff,
+                              contractWorkDaysMin: val,
+                              contractWorkDaysMax: val && curMax && curMax < val ? val : curMax,
+                            });
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-emerald-800 mb-1">週上限（日/週）</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="6"
+                          placeholder="例: 5"
+                          className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
+                          value={targetStaff.contractWorkDaysMax ?? ''}
+                          onChange={e => {
+                            const raw = e.target.value;
+                            const parsed = raw === '' ? null : Math.max(1, Math.min(6, parseInt(raw, 10) || 0));
+                            const val = parsed && parsed > 0 ? parsed : null;
+                            const curMin = targetStaff.contractWorkDaysMin ? Number(targetStaff.contractWorkDaysMin) : null;
+                            setTargetStaff({
+                              ...targetStaff,
+                              contractWorkDaysMax: val,
+                              contractWorkDaysMin: val && curMin && curMin > val ? val : curMin,
+                            });
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-emerald-700 mt-1">
+                      ※固定日数（例: 週3日）の場合は下限・上限に同じ数値（または片方のみ）を入力してください。AI作成・検算で絶対守るルールとして適用されます。
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="border bg-white px-2.5 py-1.5 rounded text-sm font-bold text-emerald-900"
-                      value={targetStaff.contractWorkDaysType === 'week' ? 'week' : 'month'}
-                      onChange={e => setTargetStaff({ ...targetStaff, contractWorkDaysType: e.target.value })}
-                    >
-                      <option value="month">月間（月〇日）</option>
-                      <option value="week">週単位（週〇日）</option>
-                    </select>
-                    <input
-                      type="number"
-                      min="1"
-                      max="31"
-                      placeholder="未設定（常勤標準）"
-                      className="flex-1 border bg-white p-1.5 rounded text-sm text-center font-bold"
-                      value={targetStaff.contractWorkDays ?? ''}
-                      onChange={e => {
-                        const raw = e.target.value;
-                        const parsed = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
-                        setTargetStaff({
-                          ...targetStaff,
-                          contractWorkDays: parsed && parsed > 0 ? parsed : null,
-                          contractWorkDaysType: targetStaff.contractWorkDaysType === 'week' ? 'week' : 'month',
-                        });
-                      }}
-                    />
-                    <span className="text-xs font-bold text-emerald-900">日</span>
-                  </div>
-                  <p className="text-[10px] text-emerald-700 mt-1">
-                    ※パート職員などをAI作成に含める場合に入力してください。入力された日数はAI作成・検算で絶対厳守ルールとして適用されます。
-                  </p>
-                </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3 bg-indigo-50/50 border border-indigo-100 rounded-lg p-2.5">
                   <div>
