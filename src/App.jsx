@@ -6897,82 +6897,6 @@ ${messageText}`;
     return result;
   }, [staffList, shiftData, shiftDefs, categoryDefs, daysArray, year, month]);
 
-  const toggleAdminTableSort = (key) => {
-    setAdminTableSort(prev => {
-      if (prev.key !== key) return { key, dir: 'desc' };
-      if (prev.dir === 'desc') return { key, dir: 'asc' };
-      return { key: null, dir: 'desc' };
-    });
-  };
-
-  const sortedOverallStaffList = useMemo(() => {
-    if (appUser?.role !== 'admin' || !adminTableSort.key) return displayStaffList;
-    const readMetric = (staffId, sortKey) => {
-      const st = staffCategoryAndCoolStats[staffId];
-      if (!st) return 0;
-      if (sortKey === 'overtime') return staffOvertimeStats[staffId] || 0;
-      if (sortKey === 'off') {
-        return st.offEnteredCount + (adminCountIncludeBlankOff ? st.offBlankCount : 0);
-      }
-      if (sortKey.startsWith('slot:')) {
-        const sl = sortKey.slice(5);
-        if (sl === 'half') return (st.bySlot.half || 0) + (st.bySlot.other || 0);
-        return st.bySlot[sl] || 0;
-      }
-      if (sortKey.startsWith('cat:')) {
-        const cid = sortKey.slice(4);
-        if (adminTableSlotFilter === 'all') return st.byCatAll[cid] || 0;
-        if (adminTableSlotFilter === 'half') {
-          return (st.byCatSlot[cid]?.half || 0) + (st.byCatSlot[cid]?.other || 0);
-        }
-        return st.byCatSlot[cid]?.[adminTableSlotFilter] || 0;
-      }
-      return 0;
-    };
-    const copied = [...displayStaffList];
-    const dirMul = adminTableSort.dir === 'asc' ? 1 : -1;
-    copied.sort((a, b) => {
-      const va = readMetric(a.id, adminTableSort.key);
-      const vb = readMetric(b.id, adminTableSort.key);
-      if (va !== vb) return (va - vb) * dirMul;
-      return 0;
-    });
-    return copied;
-  }, [displayStaffList, appUser, adminTableSort, staffCategoryAndCoolStats, staffOvertimeStats, adminTableSlotFilter, adminCountIncludeBlankOff]);
-
-  // #1: 各日の「施設シフト以外（委・日勤・3以外・出勤など）で施設未割当の人数」をカウント
-  const dailyUnassignedWorkReqCountMap = useMemo(() => {
-    const map = {};
-    daysArray.forEach(day => {
-      if (isSunday(year, month, day)) {
-        map[day] = 0;
-        return;
-      }
-      let cnt = 0;
-      displayStaffList.forEach(s => {
-        const sCode = shiftData[s.id]?.[day];
-        const sDef = sCode ? shiftDefs[sCode] : null;
-        const rawReq = userInputs?.[s.id]?.[day];
-        const reqCode =
-          rawReq === true
-            ? sCode || null
-            : typeof rawReq === 'string'
-              ? rawReq
-              : rawReq && typeof rawReq === 'object'
-                ? rawReq.shift || null
-                : null;
-        const reqDef = reqCode ? shiftDefs[reqCode] : null;
-        if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
-          cnt += 1;
-        } else if (!sDef && reqDef && isWorkRequestShiftDef(reqDef, categoryDefs)) {
-          cnt += 1;
-        }
-      });
-      map[day] = cnt;
-    });
-    return map;
-  }, [daysArray, year, month, displayStaffList, shiftData, shiftDefs, categoryDefs, userInputs]);
-
   const dailyStats = useMemo(() => {
     const stats = {};
     daysArray.forEach(day => {
@@ -7093,14 +7017,16 @@ ${messageText}`;
           s =>
             s &&
             getEffectiveShiftType(s, categoryDefs) === 'shift' &&
-            (isOffOrReqCategoryId(s.category, categoryDefs) || isKoushutsuShiftDef(s, categoryDefs))
+            (isTrueOffShiftDef(s, categoryDefs) || isKoushutsuShiftDef(s, categoryDefs))
         )
         .map(s => s.code);
       if (autoCodes.length > 0) return autoCodes;
     }
-    const existingMatched = rawList.filter(c => Boolean(shiftDefs[c]));
+    const existingMatched = rawList.filter(
+      c => Boolean(shiftDefs[c]) && !isWorkRequestShiftDef(shiftDefs[c], categoryDefs)
+    );
     if (existingMatched.length > 0) return existingMatched;
-    return rawList;
+    return rawList.filter(c => !shiftDefs[c] || !isWorkRequestShiftDef(shiftDefs[c], categoryDefs));
   }, [adminSettings.countedOffShifts, shiftDefs, categoryDefs]);
 
   const clinicClosedDays = useMemo(() => {
@@ -7314,6 +7240,82 @@ ${messageText}`;
     if (appUser.role === 'staff' && viewMode === 'personal') list = list.filter(s => s.id === appUser.id);
     return list;
   }, [staffList, currentView, appUser, viewMode]);
+
+  const toggleAdminTableSort = (key) => {
+    setAdminTableSort(prev => {
+      if (prev.key !== key) return { key, dir: 'desc' };
+      if (prev.dir === 'desc') return { key, dir: 'asc' };
+      return { key: null, dir: 'desc' };
+    });
+  };
+
+  const sortedOverallStaffList = useMemo(() => {
+    if (appUser?.role !== 'admin' || !adminTableSort.key) return displayStaffList;
+    const readMetric = (staffId, sortKey) => {
+      const st = staffCategoryAndCoolStats[staffId];
+      if (!st) return 0;
+      if (sortKey === 'overtime') return staffOvertimeStats[staffId] || 0;
+      if (sortKey === 'off') {
+        return st.offEnteredCount + (adminCountIncludeBlankOff ? st.offBlankCount : 0);
+      }
+      if (sortKey.startsWith('slot:')) {
+        const sl = sortKey.slice(5);
+        if (sl === 'half') return (st.bySlot.half || 0) + (st.bySlot.other || 0);
+        return st.bySlot[sl] || 0;
+      }
+      if (sortKey.startsWith('cat:')) {
+        const cid = sortKey.slice(4);
+        if (adminTableSlotFilter === 'all') return st.byCatAll[cid] || 0;
+        if (adminTableSlotFilter === 'half') {
+          return (st.byCatSlot[cid]?.half || 0) + (st.byCatSlot[cid]?.other || 0);
+        }
+        return st.byCatSlot[cid]?.[adminTableSlotFilter] || 0;
+      }
+      return 0;
+    };
+    const copied = [...displayStaffList];
+    const dirMul = adminTableSort.dir === 'asc' ? 1 : -1;
+    copied.sort((a, b) => {
+      const va = readMetric(a.id, adminTableSort.key);
+      const vb = readMetric(b.id, adminTableSort.key);
+      if (va !== vb) return (va - vb) * dirMul;
+      return 0;
+    });
+    return copied;
+  }, [displayStaffList, appUser, adminTableSort, staffCategoryAndCoolStats, staffOvertimeStats, adminTableSlotFilter, adminCountIncludeBlankOff]);
+
+  // #1: 各日の「施設シフト以外（委・日勤・3以外・出勤など）で施設未割当の人数」をカウント
+  const dailyUnassignedWorkReqCountMap = useMemo(() => {
+    const map = {};
+    daysArray.forEach(day => {
+      if (isSunday(year, month, day)) {
+        map[day] = 0;
+        return;
+      }
+      let cnt = 0;
+      displayStaffList.forEach(s => {
+        const sCode = shiftData[s.id]?.[day];
+        const sDef = sCode ? shiftDefs[sCode] : null;
+        const rawReq = userInputs?.[s.id]?.[day];
+        const reqCode =
+          rawReq === true
+            ? sCode || null
+            : typeof rawReq === 'string'
+              ? rawReq
+              : rawReq && typeof rawReq === 'object'
+                ? rawReq.shift || null
+                : null;
+        const reqDef = reqCode ? shiftDefs[reqCode] : null;
+        if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
+          cnt += 1;
+        } else if (!sDef && reqDef && isWorkRequestShiftDef(reqDef, categoryDefs)) {
+          cnt += 1;
+        }
+      });
+      map[day] = cnt;
+    });
+    return map;
+  }, [daysArray, year, month, displayStaffList, shiftData, shiftDefs, categoryDefs, userInputs]);
 
   const applyAuthenticatedUser = useCallback((user, { persist = true } = {}) => {
     if (!user) return;
