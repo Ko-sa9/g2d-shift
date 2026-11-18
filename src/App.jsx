@@ -8168,7 +8168,7 @@ ${messageText}`;
       {/* 以下、メインコンテンツと各モーダル */}
       <div className="flex flex-col flex-1 overflow-hidden relative">
         <main className="flex-1 overflow-auto bg-gray-100 relative">
-          <div className="inline-block min-w-full align-middle p-4">
+          <div className={`${(viewMode === 'personal' && appUser.role === 'staff') || overallSubViewMode === 'daily' ? 'w-full max-w-full p-2 sm:p-4' : 'inline-block min-w-full align-middle p-4'}`}>
             {viewMode === 'personal' && appUser.role === 'staff' ? (
               <div className="bg-white rounded-lg shadow max-w-lg mx-auto overflow-hidden border">
                 <div className="bg-gray-50 px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
@@ -8451,22 +8451,28 @@ ${messageText}`;
                         isShiftEditable,
                         isTaskEditable,
                       } = item;
-                      const pScore = getStaffPowerScore(staff);
                       const restrictionText = getStaffRestrictionSummaryText(staff);
+                      const autoShiftHighlight = autoShiftHighlightMap[`${staff.id}_${d}`];
                       const isShiftPopupActive =
                         activePopup?.day === d && activePopup?.staffId === staff.id && activePopup?.type === 'shift';
                       const isTaskPopupActive =
                         activePopup?.day === d && activePopup?.staffId === staff.id && activePopup?.type === 'task';
+                      const isMeRow = appUser.role === 'staff' && staff.id === appUser.id;
+                      const hasTaskOrBell = Boolean(tDef || hasBell);
 
                       return (
                         <div
                           key={staff.id}
-                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white hover:border-indigo-300 shadow-2xs transition"
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border transition min-w-0 ${
+                            isMeRow
+                              ? 'border-blue-300 bg-blue-50/40'
+                              : 'border-gray-200 bg-white hover:border-indigo-300'
+                          }`}
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1 min-w-0">
                               <span
-                                className={`text-xs font-bold text-gray-800 ${isMasterAdmin ? 'cursor-pointer hover:text-indigo-600' : ''}`}
+                                className={`text-xs sm:text-sm font-bold text-gray-900 truncate ${isMasterAdmin ? 'cursor-pointer hover:text-indigo-600' : ''}`}
                                 onClick={(e) => {
                                   if (isMasterAdmin) {
                                     e.stopPropagation();
@@ -8476,43 +8482,35 @@ ${messageText}`;
                               >
                                 {staff.name}
                               </span>
-                              <span className="text-[10px] text-gray-400">{staff.jobTitle}</span>
-                              {staff.skills?.isLeader && (
-                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[9px] font-bold" title="リーダー可">
-                                  <ShieldCheck size={10} className="text-blue-600" />L
-                                </span>
-                              )}
-                              {staff.skills?.isVeteran && (
-                                <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-yellow-50 text-yellow-700 border border-yellow-200 text-[9px] font-bold" title="ベテラン">
-                                  <Star size={10} className="text-yellow-500" />V
-                                </span>
-                              )}
-                              {STAFF_SKILLS.filter(sk => sk.key !== 'isLeader' && sk.key !== 'isVeteran' && staff.skills?.[sk.key]).map(sk => (
-                                <span key={sk.key} className="px-1 py-0.2 rounded bg-slate-100 text-slate-700 text-[9px] font-bold">
-                                  {sk.label}
-                                </span>
-                              ))}
                               {appUser.role === 'admin' && (
-                                <span className="text-[9px] text-gray-400 font-mono" title="パワースコア">
-                                  P:{pScore}
+                                <span className="text-[10px] text-gray-400 shrink-0">{staff.jobTitle}</span>
+                              )}
+                              {isMeRow && (
+                                <span className="px-1 py-0.2 rounded bg-blue-600 text-white text-[9px] font-bold shrink-0">
+                                  自分
+                                </span>
+                              )}
+                              {autoShiftHighlight?.label && (
+                                <span className={`px-1 py-0.2 rounded text-[9px] font-bold border border-black/10 shrink-0 ${autoShiftHighlight.bgClass || 'bg-indigo-50 text-indigo-800'}`}>
+                                  {autoShiftHighlight.label}
                                 </span>
                               )}
                               {restrictionText && appUser.role === 'admin' && (
-                                <span className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded" title={`AI配置制限: ${restrictionText}`}>
+                                <span className="hidden sm:inline text-[9px] text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded truncate max-w-[110px]" title={`AI配置制限: ${restrictionText}`}>
                                   制限:{restrictionText}
                                 </span>
                               )}
                             </div>
                             {(appUser.role === 'admin' || staff.id === appUser.id) && (reqSCode || reqReason) && (
-                              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <div className="flex items-center gap-1 mt-0.5 flex-wrap">
                                 {reqSCode && (
-                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-pink-50 text-pink-700 border border-pink-200 text-[10px] font-bold">
-                                    <span>元希望: {reqSDef?.label || reqSCode}</span>
+                                  <span className="inline-flex items-center px-1 py-0.2 rounded bg-pink-50 text-pink-700 border border-pink-200 text-[9px] font-bold">
+                                    元希:{reqSDef?.label || reqSCode}
                                   </span>
                                 )}
                                 {reqReason && (
-                                  <span className="text-[10px] text-pink-600 bg-pink-50/60 px-1.5 py-0.2 rounded border border-pink-100">
-                                    理由: {reqReason}
+                                  <span className="text-[9px] text-pink-600 bg-pink-50/60 px-1 py-0.2 rounded border border-pink-100 truncate max-w-[140px]">
+                                    {reqReason}
                                   </span>
                                 )}
                               </div>
@@ -8521,11 +8519,11 @@ ${messageText}`;
 
                           <div className="flex items-center gap-1 shrink-0">
                             {showCategoryBadge && sDef?.category && categoryDefs[sDef.category] && (
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-bold">
+                              <span className="text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-600 font-bold">
                                 {categoryDefs[sDef.category].label}
                               </span>
                             )}
-                            {/* シフト変更ボタン */}
+                            {/* シフト表示・変更ボタン */}
                             <button
                               type="button"
                               disabled={!isShiftEditable}
@@ -8536,59 +8534,73 @@ ${messageText}`;
                                 }
                               }}
                               title={isShiftEditable ? 'クリックしてシフトを変更' : undefined}
-                              className={`relative min-w-[46px] h-7 px-2 rounded border text-xs font-bold flex items-center justify-center gap-1 transition ${
+                              className={`relative min-w-[42px] sm:min-w-[46px] h-7 px-1.5 sm:px-2 rounded-md border text-xs font-extrabold flex items-center justify-center gap-0.5 transition ${
                                 isShiftPopupActive
                                   ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-400'
-                                  : sDef
-                                    ? 'bg-white border-gray-300 hover:border-blue-400 hover:bg-blue-50/40'
-                                    : 'bg-gray-50 border-dashed border-gray-300 text-gray-400 hover:border-blue-400'
-                              } ${!isShiftEditable ? 'opacity-60 cursor-default' : 'cursor-pointer'}`}
+                                  : autoShiftHighlight?.bgClass
+                                    ? `${autoShiftHighlight.bgClass} border-black/15`
+                                    : sDef
+                                      ? 'bg-slate-50 border-gray-300'
+                                      : 'bg-gray-50 border-dashed border-gray-300 text-gray-400'
+                              } ${isShiftEditable ? 'hover:border-blue-400 cursor-pointer' : 'cursor-default'}`}
                             >
                               {teamShiftLock && (
-                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500" title="管理者ロック中" />
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0" title="管理者ロック中" />
                               )}
-                              <span className={sDef ? sDef.text : 'text-gray-400'}>
-                                {sDef ? sDef.label : '未割当'}
+                              <span className={sDef ? sDef.text : 'text-gray-400 font-normal text-[10px]'}>
+                                {sDef ? sDef.label : appUser.role === 'admin' ? '未割当' : '-'}
                               </span>
                             </button>
 
-                            {/* タスク（業務）変更ボタン */}
-                            <button
-                              type="button"
-                              disabled={!isTaskEditable}
-                              onClick={(e) => {
-                                if (isTaskEditable) {
-                                  e.stopPropagation();
-                                  handleCellClick(e, staff.id, d, 'task');
+                            {/* タスク（業務）表示・変更ボタン：業務または待機番がある場合、もしくは編集可能な場合に見やすく表示 */}
+                            {(hasTaskOrBell || isTaskEditable) ? (
+                              <button
+                                type="button"
+                                disabled={!isTaskEditable}
+                                onClick={(e) => {
+                                  if (isTaskEditable) {
+                                    e.stopPropagation();
+                                    handleCellClick(e, staff.id, d, 'task');
+                                  }
+                                }}
+                                title={
+                                  isTaskEditable
+                                    ? 'クリックして下段タスク・待機番を変更'
+                                    : hasBell
+                                      ? `${tDef ? tDef.label + ' / ' : ''}緊急待機番`
+                                      : tDef?.label
                                 }
-                              }}
-                              title={isTaskEditable ? 'クリックして下段タスク・待機番を変更' : undefined}
-                              className={`min-w-[38px] h-7 px-1.5 rounded border text-[11px] font-bold flex items-center justify-center gap-0.5 transition ${
-                                isTaskPopupActive
-                                  ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-400'
-                                  : hasBell
-                                    ? 'bg-orange-200 border-orange-400 text-gray-800'
-                                    : tDef
-                                      ? 'bg-slate-50 border-gray-300 hover:border-blue-400'
-                                      : 'bg-gray-50/60 border-dashed border-gray-200 text-gray-400 hover:border-blue-300'
-                              } ${!isTaskEditable ? 'opacity-60 cursor-default' : 'cursor-pointer'}`}
-                            >
-                              {hasBell && <Bell size={10} className="text-orange-700 shrink-0" />}
-                              <span className={tDef ? tDef.text : 'text-gray-400 text-[10px]'}>
-                                {tDef ? tDef.label : '+業務'}
+                                className={`min-w-[36px] sm:min-w-[40px] h-7 px-1.5 rounded-md border text-[11px] font-extrabold flex items-center justify-center gap-0.5 transition ${
+                                  isTaskPopupActive
+                                    ? 'ring-2 ring-blue-500 bg-blue-50 border-blue-400'
+                                    : hasBell
+                                      ? 'bg-orange-200 border-orange-400 text-orange-950'
+                                      : tDef
+                                        ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                                        : 'bg-gray-50/60 border-dashed border-gray-200 text-gray-400'
+                                } ${isTaskEditable ? 'hover:border-blue-400 cursor-pointer' : 'cursor-default'}`}
+                              >
+                                {hasBell && <Bell size={10} className="text-orange-700 shrink-0" />}
+                                <span className={tDef ? tDef.text : hasBell ? 'text-orange-900 text-[10px]' : 'text-gray-400 font-normal text-[10px]'}>
+                                  {tDef ? tDef.label : hasBell ? '待機' : '+業務'}
+                                </span>
+                              </button>
+                            ) : (
+                              <span className="min-w-[36px] sm:min-w-[40px] text-center text-[10px] text-gray-300 select-none">
+                                -
                               </span>
-                            </button>
+                            )}
                           </div>
                         </div>
                       );
                     };
 
                     return (
-                      <div className="bg-white rounded-lg shadow border border-gray-200 p-3 sm:p-4 space-y-4">
+                      <div className="bg-white rounded-lg shadow border border-gray-200 p-2.5 sm:p-4 space-y-3 sm:space-y-4 w-full max-w-full overflow-x-hidden">
                         {/* 日付セレクターヘッダー */}
-                        <div className="space-y-2 border-b border-gray-200 pb-3">
+                        <div className="space-y-2 border-b border-gray-200 pb-2.5">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5 sm:gap-2">
                               <button
                                 type="button"
                                 onClick={() => setSelectedDailyViewDay(prev => (prev > 1 ? prev - 1 : daysInMonth))}
@@ -8597,16 +8609,16 @@ ${messageText}`;
                               >
                                 <ChevronLeft size={16} />
                               </button>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span
-                                  className={`text-base sm:text-lg font-extrabold ${
+                                  className={`text-sm sm:text-lg font-extrabold ${
                                     isSun || isHol ? 'text-red-600' : dow === 6 ? 'text-blue-600' : 'text-gray-800'
                                   }`}
                                 >
                                   {year}年{month}月{d}日（{dowLabel}）
                                 </span>
                                 {(isSun || isHol) && (
-                                  <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-bold">
+                                  <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] sm:text-xs font-bold">
                                     {closedRule ? closedRule.label || '外来休診日' : isSun ? '日曜休診' : '祝日'}
                                   </span>
                                 )}
@@ -8621,39 +8633,41 @@ ${messageText}`;
                               </button>
                             </div>
 
-                            <div className="flex items-center gap-2 flex-wrap text-xs">
-                              <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 font-bold border border-blue-200">
+                            <div className="flex items-center gap-1.5 flex-wrap text-[11px] sm:text-xs">
+                              <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 font-bold border border-blue-200">
                                 出勤合計: {dailyStats[d]?.total || 0}名
                               </span>
-                              <span className="px-2.5 py-1 rounded-full bg-pink-50 text-pink-700 font-bold border border-pink-200">
+                              <span className="px-2 py-0.5 rounded-full bg-pink-50 text-pink-700 font-bold border border-pink-200">
                                 休み希望: {offReqCount}名
                               </span>
-                              <span
-                                className={`px-2.5 py-1 rounded-full font-bold border ${
-                                  unassignedWorkReqStaff.length > 0
-                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
-                                    : 'bg-gray-100 text-gray-600 border-gray-200'
-                                }`}
-                              >
-                                施設未割当(委・日勤・3以外・出勤): {unassignedWorkReqStaff.length}名
-                              </span>
+                              {appUser.role === 'admin' && (
+                                <span
+                                  className={`px-2 py-0.5 rounded-full font-bold border ${
+                                    unassignedWorkReqStaff.length > 0
+                                      ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                      : 'bg-gray-100 text-gray-600 border-gray-200'
+                                  }`}
+                                >
+                                  施設未割当(委・日勤・3以外・出勤): {unassignedWorkReqStaff.length}名
+                                </span>
+                              )}
                             </div>
                           </div>
 
                           {/* 1〜末日のクイック日付切替バー */}
-                          <div className="flex items-center gap-1 overflow-x-auto pb-1">
+                          <div className="flex items-center gap-1 overflow-x-auto pb-1 max-w-full">
                             {daysArray.map(dayNum => {
                               const dSun = isSunday(year, month, dayNum);
                               const dHol = isHoliday(year, month, dayNum, clinicClosedDays);
                               const dDow = getDayOfWeek(year, month, dayNum);
                               const isSelected = dayNum === d;
-                              const unassignedCnt = dailyUnassignedWorkReqCountMap[dayNum] || 0;
+                              const unassignedCnt = appUser.role === 'admin' ? (dailyUnassignedWorkReqCountMap[dayNum] || 0) : 0;
                               return (
                                 <button
                                   key={dayNum}
                                   type="button"
                                   onClick={() => setSelectedDailyViewDay(dayNum)}
-                                  className={`relative min-w-[34px] py-1 px-1 rounded-md border text-center transition shrink-0 ${
+                                  className={`relative min-w-[32px] py-1 px-1 rounded-md border text-center transition shrink-0 ${
                                     isSelected
                                       ? 'bg-indigo-600 text-white border-indigo-700 font-bold shadow-xs'
                                       : dSun || dHol
@@ -8687,50 +8701,65 @@ ${messageText}`;
                           </div>
                         </div>
 
-                        {/* セクション1: 施設シフト以外の出勤・出勤希望（委・日勤・3以外・出勤）の確認・施設割り振りエリア */}
-                        <div
-                          className={`rounded-xl border p-3 ${
-                            unassignedWorkReqStaff.length > 0
-                              ? 'bg-amber-50/70 border-amber-300'
-                              : 'bg-gray-50/70 border-gray-200'
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs sm:text-sm font-extrabold text-amber-900 flex items-center gap-1.5">
-                                <AlertTriangle size={15} className={unassignedWorkReqStaff.length > 0 ? 'text-amber-600' : 'text-gray-400'} />
-                                施設シフト以外の出勤・出勤希望（委・日勤・3以外・出勤など）
-                              </span>
-                              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-white border border-amber-300 text-amber-900">
-                                未割当 {unassignedWorkReqStaff.length}名
-                              </span>
-                            </div>
-                            <span className="text-[11px] text-amber-800">
-                              ※右側のシフトボタンをクリックすると、その場で各施設シフト（坂1・君2・木1など）や下段タスクへ変更できます
-                            </span>
-                          </div>
-
-                          {unassignedWorkReqStaff.length > 0 ? (
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                              {unassignedWorkReqStaff.map(item => renderStaffActionChip(item, false))}
-                            </div>
-                          ) : (
-                            <div className="text-xs text-gray-500 py-1">
-                              現在、この日に施設未割当の「委・日勤・3以外・出勤」の職員はいません。
-                            </div>
-                          )}
-
-                          {assignedFromWorkReqStaff.length > 0 && (
-                            <div className="mt-3 pt-2.5 border-t border-amber-200/80">
-                              <div className="text-[11px] font-bold text-amber-800 mb-1.5">
-                                元の出勤希望（委・日勤・3以外等）から施設シフトへ割り振り済みの職員（{assignedFromWorkReqStaff.length}名）:
+                        {/* セクション1: 管理者時は未割当確認＆変更案内を表示。個人カレンダーから見た際は「施設シフト以外の…」注意文章を削除し、該当者がいる場合のみ簡潔表示 */}
+                        {appUser.role === 'admin' ? (
+                          <div
+                            className={`rounded-xl border p-3 ${
+                              unassignedWorkReqStaff.length > 0
+                                ? 'bg-amber-50/70 border-amber-300'
+                                : 'bg-gray-50/70 border-gray-200'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs sm:text-sm font-extrabold text-amber-900 flex items-center gap-1.5">
+                                  <AlertTriangle size={15} className={unassignedWorkReqStaff.length > 0 ? 'text-amber-600' : 'text-gray-400'} />
+                                  施設シフト以外の出勤・出勤希望（委・日勤・3以外・出勤など）
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-white border border-amber-300 text-amber-900">
+                                  未割当 {unassignedWorkReqStaff.length}名
+                                </span>
                               </div>
+                              <span className="text-[11px] text-amber-800">
+                                ※右側のシフトボタンをクリックすると、その場で各施設シフト（坂1・君2・木1など）や下段タスクへ変更できます
+                              </span>
+                            </div>
+
+                            {unassignedWorkReqStaff.length > 0 ? (
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                                {assignedFromWorkReqStaff.map(item => renderStaffActionChip(item, true))}
+                                {unassignedWorkReqStaff.map(item => renderStaffActionChip(item, false))}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-gray-500 py-1">
+                                現在、この日に施設未割当の「委・日勤・3以外・出勤」の職員はいません。
+                              </div>
+                            )}
+
+                            {assignedFromWorkReqStaff.length > 0 && (
+                              <div className="mt-3 pt-2.5 border-t border-amber-200/80">
+                                <div className="text-[11px] font-bold text-amber-800 mb-1.5">
+                                  元の出勤希望（委・日勤・3以外等）から施設シフトへ割り振り済みの職員（{assignedFromWorkReqStaff.length}名）:
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                  {assignedFromWorkReqStaff.map(item => renderStaffActionChip(item, true))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          unassignedWorkReqStaff.length > 0 && (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-2.5 sm:p-3">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-xs font-extrabold text-amber-900">
+                                  委員会・その他出勤（{unassignedWorkReqStaff.length}名）
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                                {unassignedWorkReqStaff.map(item => renderStaffActionChip(item, false))}
                               </div>
                             </div>
-                          )}
-                        </div>
+                          )
+                        )}
 
                         {/* セクション2: 施設別・ME室 割り振り一覧（人員の組み合わせ確認・変更） */}
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -8767,12 +8796,12 @@ ${messageText}`;
                                     <span className="font-extrabold text-sm">{group.name}</span>
                                     <span
                                       className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                                        isHeadcountShort
+                                        appUser.role === 'admin' && isHeadcountShort
                                           ? 'bg-red-600 text-white'
                                           : 'bg-white/90 text-gray-800 border border-black/10'
                                       }`}
                                     >
-                                      {totalActual} / {totalTarget}名
+                                      {appUser.role === 'admin' ? `${totalActual} / ${totalTarget}名` : `${totalActual}名`}
                                     </span>
                                   </div>
                                   {appUser.role === 'admin' && group.kind === 'facility' && (
@@ -8794,13 +8823,14 @@ ${messageText}`;
                                 </div>
 
                                 {/* シフト内訳バッジ */}
-                                <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1.5">
+                                <div className="px-2.5 sm:px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1">
                                   {group.items.map(code => {
                                     const sDef = shiftDefs[code];
                                     if (!sDef) return null;
                                     const cnt = dailyStats[d]?.[code] || 0;
                                     const tgt = getTargetCount(code, d);
-                                    const isShort = !isSun && tgt > 0 && cnt < tgt;
+                                    if (appUser.role !== 'admin' && cnt === 0) return null;
+                                    const isShort = appUser.role === 'admin' && !isSun && tgt > 0 && cnt < tgt;
                                     return (
                                       <span
                                         key={code}
@@ -8812,11 +8842,12 @@ ${messageText}`;
                                               : 'bg-gray-100 text-gray-400 border-gray-200'
                                         }`}
                                       >
-                                        <span className={sDef.text}>{sDef.label}</span>: {cnt}/{tgt}
+                                        <span className={sDef.text}>{sDef.label}</span>:{' '}
+                                        {appUser.role === 'admin' ? `${cnt}/${tgt}` : `${cnt}名`}
                                       </span>
                                     );
                                   })}
-                                  {!isSun && skillShortages.length > 0 && (
+                                  {appUser.role === 'admin' && !isSun && skillShortages.length > 0 && (
                                     <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
                                       ⚠ {skillShortages.map(s => `${s.skillLabel}${s.actual}/${s.target}`).join('・')}
                                     </span>
@@ -8824,11 +8855,11 @@ ${messageText}`;
                                 </div>
 
                                 {/* 割り振られている職員リスト */}
-                                <div className="p-2.5 space-y-1.5 flex-1">
+                                <div className="p-2 sm:p-2.5 space-y-1.5 flex-1">
                                   {assignedItems.length > 0 ? (
                                     assignedItems.map(item => renderStaffActionChip(item, false))
                                   ) : (
-                                    <div className="text-xs text-gray-400 text-center py-4">
+                                    <div className="text-xs text-gray-400 text-center py-3">
                                       割り振られている職員はいません
                                     </div>
                                   )}
@@ -8839,16 +8870,18 @@ ${messageText}`;
                         </div>
 
                         {/* セクション3: 休み・公出・未入力（空欄公休）の職員 */}
-                        <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-3">
-                          <div className="flex items-center justify-between mb-2">
+                        <div className="rounded-xl border border-gray-200 bg-gray-50/60 p-2.5 sm:p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
                             <span className="text-xs font-bold text-gray-700">
-                              休み・希望休・公出・空欄（未入力）の職員（{offOrBlankStaff.length}名）
+                              休み・公出・空欄（{offOrBlankStaff.length}名）
                             </span>
-                            <span className="text-[11px] text-gray-500">
-                              ※人数補充が必要な場合はここから直接シフトを割り当てられます
-                            </span>
+                            {appUser.role === 'admin' && (
+                              <span className="text-[11px] text-gray-500">
+                                ※人数補充が必要な場合はここから直接シフトを割り当てられます
+                              </span>
+                            )}
                           </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
                             {offOrBlankStaff.map(item => renderStaffActionChip(item, false))}
                           </div>
                         </div>
@@ -8856,7 +8889,7 @@ ${messageText}`;
                     );
                   })()
                 ) : (
-                  <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="bg-transparent rounded-lg overflow-hidden">
                 <table className="w-full border-collapse select-none">
                   <thead>
                     <tr>
@@ -8929,16 +8962,16 @@ ${messageText}`;
                       </th>
                       {appUser.role === 'admin' && adminRightFlatShifts.length > 0 && (
                         <>
-                          {/* 残業セルと個人集計表の間の隙間セル */}
+                          {/* 残業セルと個人集計表の間の隙間セル（個人集計の1セル分: w-7 min-w-[28px]） */}
                           <th
                             rowSpan={3}
-                            className="sticky top-0 z-20 w-3 min-w-[12px] bg-gray-100 border-b border-r border-gray-300 p-0"
+                            className="sticky top-0 z-20 w-7 min-w-[28px] bg-gray-100 border-0 p-0"
                             aria-hidden="true"
                           />
                           {/* 1段目: 個人集計の切替ボタン（開始位置＝坂田/3クールの上に左寄せ固定） */}
                           <th
                             colSpan={adminRightFlatShifts.length}
-                            className="sticky top-0 z-20 bg-slate-100 border-b border-r px-2 py-1 text-left align-middle"
+                            className="sticky top-0 z-20 bg-slate-100 border-b border-r border-l border-l-gray-300 px-2 py-1 text-left align-middle"
                           >
                             <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                               <span className="text-[11px] font-bold text-slate-700">個人集計:</span>
@@ -8980,7 +9013,7 @@ ${messageText}`;
                               key={grp.id}
                               colSpan={grp.shifts.length}
                               className={`sticky top-[29px] z-20 border-b border-r px-1.5 py-0.5 text-center text-[11px] font-bold whitespace-nowrap ${
-                                gIdx > 0 ? 'border-l-2 border-l-gray-300' : ''
+                                gIdx === 0 ? 'border-l border-l-gray-300' : 'border-l-2 border-l-gray-300'
                               } ${grp.headerColor}`}
                             >
                               {grp.label}
@@ -8989,12 +9022,16 @@ ${messageText}`;
                         </tr>
                         {/* 3段目: 個別シフト表示名 */}
                         <tr>
-                          {adminRightFlatShifts.map(item => (
+                          {adminRightFlatShifts.map((item, idx) => (
                             <th
                               key={`${item.groupId}_${item.shift.code}`}
                               title={`${item.groupLabel} — ${item.shift.label} (${item.shift.code})`}
-                              className={`sticky top-[54px] z-20 bg-gray-50 border-b border-r px-1 py-0.5 min-w-[28px] text-center text-[11px] font-bold whitespace-nowrap ${
-                                item.isFirstInGroup ? 'border-l-2 border-l-gray-300' : ''
+                              className={`sticky top-[54px] z-20 bg-gray-50 border-b border-r px-1 py-0.5 w-7 min-w-[28px] text-center text-[11px] font-bold whitespace-nowrap ${
+                                idx === 0
+                                  ? 'border-l border-l-gray-300'
+                                  : item.isFirstInGroup
+                                    ? 'border-l-2 border-l-gray-300'
+                                    : ''
                               }`}
                             >
                               <span className={item.shift.text || 'text-gray-700'}>{item.shift.label}</span>
@@ -9289,17 +9326,21 @@ ${messageText}`;
                           {appUser.role === 'admin' && adminRightFlatShifts.length > 0 && (
                             <>
                               <td
-                                className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0"
+                                className="w-7 min-w-[28px] bg-gray-100 border-0 p-0"
                                 aria-hidden="true"
                               />
-                              {adminRightFlatShifts.map(item => {
+                              {adminRightFlatShifts.map((item, idx) => {
                                 const cnt = staffShiftCodeCounts[staff.id]?.[item.shift.code] || 0;
                                 return (
                                   <td
                                     key={`${item.groupId}_${item.shift.code}`}
                                     title={`${staff.name} — ${item.groupLabel} [${item.shift.label}]: ${cnt}回`}
-                                    className={`border-b border-r text-center px-1 py-0.5 text-xs font-bold min-w-[28px] bg-white group-hover:bg-gray-50 ${
-                                      item.isFirstInGroup ? 'border-l-2 border-l-gray-300' : ''
+                                    className={`border-b border-r text-center px-1 py-0.5 text-xs font-bold w-7 min-w-[28px] bg-white group-hover:bg-gray-50 ${
+                                      idx === 0
+                                        ? 'border-l border-l-gray-300'
+                                        : item.isFirstInGroup
+                                          ? 'border-l-2 border-l-gray-300'
+                                          : ''
                                     }`}
                                   >
                                     {cnt > 0 ? (
@@ -9328,10 +9369,7 @@ ${messageText}`;
                           </td>
                           <td colSpan={daysInMonth + 1} className="bg-gray-100 border-b border-r"></td>
                           {adminRightFlatShifts.length > 0 && (
-                            <>
-                              <td className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0" />
-                              <td colSpan={adminRightFlatShifts.length} className="bg-gray-100 border-b"></td>
-                            </>
+                            <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
                           )}
                         </tr>
                         <tr>
@@ -9339,10 +9377,7 @@ ${messageText}`;
                           {daysArray.map(day => <td key={day} className="border-r border-b text-center text-xs font-bold bg-gray-50">{dailyStats[day].total}</td>)}
                           <td className="bg-gray-50 border-b border-r"></td>
                           {adminRightFlatShifts.length > 0 && (
-                            <>
-                              <td className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0" />
-                              <td colSpan={adminRightFlatShifts.length} className="bg-gray-50 border-b"></td>
-                            </>
+                            <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
                           )}
                         </tr>
                         <tr>
@@ -9359,10 +9394,7 @@ ${messageText}`;
                           })}
                           <td className="bg-gray-50 border-b border-r"></td>
                           {adminRightFlatShifts.length > 0 && (
-                            <>
-                              <td className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0" />
-                              <td colSpan={adminRightFlatShifts.length} className="bg-gray-50 border-b"></td>
-                            </>
+                            <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
                           )}
                         </tr>
                         {dynamicSummaryGroups.map(group => (
@@ -9407,10 +9439,7 @@ ${messageText}`;
                                 })}
                                 <td className="bg-gray-50 border-b border-r"></td>
                                 {adminRightFlatShifts.length > 0 && (
-                                  <>
-                                    <td className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0" />
-                                    <td colSpan={adminRightFlatShifts.length} className="bg-gray-50 border-b"></td>
-                                  </>
+                                  <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
                                 )}
                               </tr>
                             )}
@@ -9428,10 +9457,7 @@ ${messageText}`;
                                   })}
                                   <td className="bg-gray-50 border-b border-r"></td>
                                   {adminRightFlatShifts.length > 0 && (
-                                    <>
-                                      <td className="w-3 min-w-[12px] bg-gray-100 border-r border-gray-300 p-0" />
-                                      <td colSpan={adminRightFlatShifts.length} className="bg-gray-50 border-b"></td>
-                                    </>
+                                    <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
                                   )}
                                 </tr>
                               );
@@ -11733,9 +11759,18 @@ ${messageText}`;
         {showStaffModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[110] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="p-4 border-b flex justify-between items-center bg-gray-50">
-                <h3 className="font-bold text-gray-800 flex items-center gap-2"><User size={18}/> 職員情報</h3>
-                <button onClick={() => setShowStaffModal(false)}><X size={20} className="text-gray-400"/></button>
+              <div className="p-4 border-b flex justify-between items-center gap-2 bg-gray-50">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2 min-w-0">
+                  <User size={18} className="shrink-0" />
+                  <span className="shrink-0">職員情報</span>
+                  {(targetStaff.name || targetStaff.jobTitle) && (
+                    <span className="text-xs sm:text-sm font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md truncate">
+                      {targetStaff.name || '新規職員'}
+                      {targetStaff.jobTitle ? `（${targetStaff.jobTitle}）` : ''}
+                    </span>
+                  )}
+                </h3>
+                <button onClick={() => setShowStaffModal(false)} className="shrink-0"><X size={20} className="text-gray-400"/></button>
               </div>
               <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
                 <div className="grid grid-cols-2 gap-3">
@@ -11744,6 +11779,23 @@ ${messageText}`;
                 </div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">名前</label><input type="text" className="w-full border p-2 rounded text-sm" value={targetStaff.name || ''} onChange={e => setTargetStaff({...targetStaff, name: e.target.value})} /></div>
                 <div><label className="block text-xs font-bold text-gray-500 mb-1">ロール（班）</label><div className="flex flex-wrap gap-3">{STAFF_ROLES.map(r => (<label key={r} className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={targetStaff.roles?.includes(r)} onChange={() => { const roles = targetStaff.roles?.includes(r) ? targetStaff.roles.filter(x=>x!==r) : [...(targetStaff.roles||[]), r]; setTargetStaff({...targetStaff, roles}); }}/> <span className="text-sm">{r}</span></label>))}</div></div>
+
+                <div className="border-t pt-3">
+                  <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">
+                    <MessageSquare size={13} className="text-indigo-500" />
+                    希望要項（個人的要望・パート契約内容など）
+                  </label>
+                  <textarea
+                    rows={3}
+                    className="w-full border p-2 rounded text-xs sm:text-sm focus:ring-2 focus:ring-indigo-300 outline-none resize-y"
+                    value={targetStaff.requestNote || ''}
+                    onChange={e => setTargetStaff({ ...targetStaff, requestNote: e.target.value })}
+                    placeholder="例: パート週3日（月・水・金）契約、16時まで、祝日は休み希望など"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    ※管理者画面の職員名欄にアイコンが表示され、カーソルを合わせると内容をすぐ確認できます（AI作成用データには送信されません）。
+                  </p>
+                </div>
 
                 {targetStaff.jobTitle === 'パート' && (
                   <div className="bg-emerald-50/60 border border-emerald-200 rounded-lg p-2.5">
@@ -11993,24 +12045,7 @@ ${messageText}`;
                   </div>
                 </div>
 
-                <div className="border-t pt-4">
-                  <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">
-                    <MessageSquare size={13} className="text-indigo-500" />
-                    希望要項（個人的要望・パート契約内容など）
-                  </label>
-                  <textarea
-                    rows={3}
-                    className="w-full border p-2 rounded text-xs sm:text-sm focus:ring-2 focus:ring-indigo-300 outline-none resize-y"
-                    value={targetStaff.requestNote || ''}
-                    onChange={e => setTargetStaff({ ...targetStaff, requestNote: e.target.value })}
-                    placeholder="例: パート週3日（月・水・金）契約、16時まで、祝日は休み希望など"
-                  />
-                  <p className="text-[10px] text-gray-400 mt-1">
-                    ※管理者画面の職員名欄にアイコンが表示され、カーソルを合わせると内容をすぐ確認できます（AI作成用データには送信されません）。
-                  </p>
-                </div>
-
-                <div>
+                <div className="border-t pt-3">
                   <label className="block text-xs font-bold text-gray-500 mb-1">パスワード</label>
                   <input
                     type="password"
