@@ -547,6 +547,24 @@ const getPartTimeWeeklyContractRange = (staff) => {
   };
 };
 
+// スタッフの3クール希望回数バッジ表示情報（幅がある場合は「○〜○回」、上下限一致時は「○回」）
+const getCool3BadgeInfo = (staff) => {
+  if (!staff) return null;
+  const rawMin = Number(staff.minCool3 ?? 0);
+  const rawMax = Number(staff.maxCool3 ?? 5);
+  const min = Number.isFinite(rawMin) ? Math.max(0, rawMin) : 0;
+  const max = Number.isFinite(rawMax) ? Math.max(min, rawMax) : Math.max(min, 5);
+  if (min === 0 && max === 0 && staff.jobTitle === 'パート') return null;
+  const rangeText = min === max ? `${min}回` : `${min}〜${max}回`;
+  return {
+    min,
+    max,
+    rangeText,
+    label: `3ｸｰﾙ:${rangeText}`,
+    title: min === max ? `3クール希望数: ${min}回` : `3クール希望数: 下限${min}回〜上限${max}回`,
+  };
+};
+
 // 年間の有休（年休・有給）に該当するシフト定義かどうかを判定
 const isAnnualPaidLeaveShiftDef = (def, categoryDefs = {}) => {
   if (!def) return false;
@@ -8524,8 +8542,7 @@ ${messageText}`;
                         carry.staffHasPrevWorkShift &&
                         (carry.trailingWorkStreak > 0 || carry.prevLastDayWasCool3)
                       );
-                      const minC3Badge = Number(staff.minCool3 ?? 0);
-                      const maxC3Badge = Number(staff.maxCool3 ?? 5);
+                      const cool3Badge = getCool3BadgeInfo(staff);
                       const partContractBadge = getPartTimeWeeklyContractRange(staff);
 
                       return (
@@ -8563,12 +8580,12 @@ ${messageText}`;
                                   {autoShiftHighlight.label}
                                 </span>
                               )}
-                              {appUser.role === 'admin' && (minC3Badge > 0 || maxC3Badge > 0 || staff.jobTitle !== 'パート') && (
+                              {appUser.role === 'admin' && cool3Badge && (
                                 <span
                                   className="px-1 py-[1px] rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] font-bold leading-tight shrink-0"
-                                  title={`3クール希望数: 下限${minC3Badge}〜上限${maxC3Badge}回`}
+                                  title={cool3Badge.title}
                                 >
-                                  3ｸｰﾙ:{minC3Badge > 0 ? `${minC3Badge}〜${maxC3Badge}` : maxC3Badge === 0 ? '0' : `〜${maxC3Badge}`}
+                                  {cool3Badge.label}
                                 </span>
                               )}
                               {appUser.role === 'admin' && partContractBadge && (
@@ -9259,19 +9276,17 @@ ${messageText}`;
                                   )}
                                 </div>
                                 {appUser.role === 'admin' && (() => {
-                                  const minC3Badge = Number(staff.minCool3 ?? 0);
-                                  const maxC3Badge = Number(staff.maxCool3 ?? 5);
+                                  const cool3Badge = getCool3BadgeInfo(staff);
                                   const partRangeBadge = getPartTimeWeeklyContractRange(staff);
-                                  const showC3Badge = minC3Badge > 0 || maxC3Badge > 0 || staff.jobTitle !== 'パート';
-                                  if (!showC3Badge && !partRangeBadge) return null;
+                                  if (!cool3Badge && !partRangeBadge) return null;
                                   return (
                                     <div className="mt-0.5 flex flex-wrap items-center gap-1">
-                                      {showC3Badge && (
+                                      {cool3Badge && (
                                         <span
                                           className="px-1 py-[1px] rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] font-bold leading-tight"
-                                          title={`3クール希望数: 下限${minC3Badge}回〜上限${maxC3Badge}回`}
+                                          title={cool3Badge.title}
                                         >
-                                          3ｸｰﾙ:{minC3Badge > 0 ? `${minC3Badge}〜${maxC3Badge}` : maxC3Badge === 0 ? '0' : `〜${maxC3Badge}`}
+                                          {cool3Badge.label}
                                         </span>
                                       )}
                                       {partRangeBadge && (
