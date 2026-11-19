@@ -133,6 +133,80 @@ const SHIFT_WORK_SLOTS = [
   { value: 'other', label: 'その他',  badgeClass: 'bg-gray-100 text-gray-600 border-gray-200' },
 ];
 
+const CONTRACT_WORK_DAY_OPTIONS = [0, 1, 2, 3, 4, 5];
+const COOL3_LIMIT_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+const OVERTIME_HOUR_OPTIONS = Array.from({ length: 25 }, (_, i) => i * 0.5);
+const TIME_HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const TIME_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+const FACILITY_POWER_TARGET_OPTIONS = Array.from({ length: 41 }, (_, i) => i * 5);
+const SHIFT_TARGET_COUNT_OPTIONS = Array.from({ length: 21 }, (_, i) => i);
+const SKILL_TARGET_COUNT_OPTIONS = [0, 1, 2, 3, 4, 5];
+const ROLE_FACILITY_TARGET_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+// 既定候補に含まれない既存の保存数値も選択肢として保持するヘルパー
+const buildNumericOptions = (baseOptions, currentValue) => {
+  if (currentValue === '' || currentValue === null || currentValue === undefined) {
+    return baseOptions;
+  }
+  const num = Number(currentValue);
+  if (!Number.isFinite(num) || baseOptions.includes(num)) {
+    return baseOptions;
+  }
+  return [...baseOptions, num].sort((a, b) => a - b);
+};
+
+// 時・分のプルダウンで時刻 ("HH:MM") を選択するコンポーネント
+const TimeSelectInput = ({ value, onChange, className = '' }) => {
+  const parts = typeof value === 'string' && value.includes(':') ? value.split(':') : ['', ''];
+  const curHour = parts[0] ? parts[0].padStart(2, '0') : '';
+  const curMin = parts[1] ? parts[1].padStart(2, '0') : '';
+  const hourOpts = curHour && !TIME_HOUR_OPTIONS.includes(curHour)
+    ? [curHour, ...TIME_HOUR_OPTIONS]
+    : TIME_HOUR_OPTIONS;
+  const minOpts = curMin && !TIME_MINUTE_OPTIONS.includes(curMin)
+    ? [...TIME_MINUTE_OPTIONS, curMin].sort()
+    : TIME_MINUTE_OPTIONS;
+
+  return (
+    <div className={`flex items-center gap-1 ${className}`}>
+      <select
+        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center"
+        value={curHour}
+        onChange={e => {
+          const nextH = e.target.value;
+          if (!nextH) {
+            onChange('');
+          } else {
+            onChange(`${nextH}:${curMin || '00'}`);
+          }
+        }}
+      >
+        <option value="">--</option>
+        {hourOpts.map(h => (
+          <option key={h} value={h}>{h}</option>
+        ))}
+      </select>
+      <span className="text-xs font-bold text-gray-500">:</span>
+      <select
+        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center disabled:bg-gray-100 disabled:text-gray-400"
+        value={curHour ? (curMin || '00') : ''}
+        disabled={!curHour}
+        onChange={e => {
+          const nextM = e.target.value || '00';
+          if (curHour) {
+            onChange(`${curHour}:${nextM}`);
+          }
+        }}
+      >
+        {!curHour && <option value="">--</option>}
+        {minOpts.map(m => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
 const INITIAL_STAFF = [
   { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234', maxCool3: 5 },
   { id: '2', loginId: '2', name: '職員B', jobTitle: '主任', roles: ['エコー班'], skills: { isLeader: true, canEcho: true }, password: '1234', maxCool3: 5 },
@@ -544,14 +618,17 @@ const getPartTimeWeeklyContractRange = (staff) => {
     staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== ''
       ? staff.contractWorkDaysMax
       : staff.contractWorkDays;
-  const numMin = rawMin !== undefined && rawMin !== null && rawMin !== '' ? Number(rawMin) : 0;
-  const numMax = rawMax !== undefined && rawMax !== null && rawMax !== '' ? Number(rawMax) : 0;
-  if (numMin <= 0 && numMax <= 0) return null;
-  const effMin = numMin > 0 ? numMin : numMax;
-  const effMax = numMax > 0 ? numMax : numMin;
+  const hasMin = rawMin !== undefined && rawMin !== null && rawMin !== '';
+  const hasMax = rawMax !== undefined && rawMax !== null && rawMax !== '';
+  if (!hasMin && !hasMax) return null;
+  const numMin = hasMin ? Number(rawMin) : null;
+  const numMax = hasMax ? Number(rawMax) : null;
+  if ((numMin === null || numMin <= 0) && (numMax === null || numMax <= 0)) return null;
+  const effMin = hasMin ? Math.max(0, Math.min(6, numMin)) : Math.max(0, Math.min(6, numMax));
+  const effMax = hasMax ? Math.max(0, Math.min(6, numMax)) : Math.max(0, Math.min(6, numMin));
   return {
-    min: Math.max(1, Math.min(6, Math.min(effMin, effMax))),
-    max: Math.max(1, Math.min(6, Math.max(effMin, effMax))),
+    min: Math.min(effMin, effMax),
+    max: Math.max(effMin, effMax),
   };
 };
 
@@ -571,6 +648,23 @@ const getCool3BadgeInfo = (staff) => {
     label: `3ｸｰﾙ:${rangeText}`,
     title: min === max ? `3クール希望数: ${min}回` : `3クール希望数: 下限${min}回〜上限${max}回`,
   };
+};
+
+// 役割（タスク）に設定された施設別の必要人数マップ（有効な勤務施設のみ・1名以上）を取得
+const getRoleFacilityTargets = (taskDef, categoryDefs = {}) => {
+  if (!taskDef || !taskDef.facilityTargets || typeof taskDef.facilityTargets !== 'object') return {};
+  const result = {};
+  Object.entries(taskDef.facilityTargets).forEach(([catId, rawVal]) => {
+    if (!categoryDefs[catId] || resolveCategoryKind(categoryDefs[catId]) !== 'facility') return;
+    const num = Math.floor(Number(rawVal) || 0);
+    if (num > 0) result[catId] = num;
+  });
+  return result;
+};
+
+// 役割（タスク）の全施設合計必要人数を取得
+const getRoleTotalTargetCount = (taskDef, categoryDefs = {}) => {
+  return Object.values(getRoleFacilityTargets(taskDef, categoryDefs)).reduce((sum, n) => sum + n, 0);
 };
 
 // 年間の有休（年休・有給）に該当するシフト定義かどうかを判定
@@ -3905,6 +3999,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       type: defaultType,
       shiftSlot: 'other',
       offSubType: 'regular_off',
+      facilityTargets: {},
       originalCode: null,
       isRequestable: false,
     });
@@ -3926,6 +4021,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         effType === 'shift' && catKind === 'off'
           ? resolveOffSubType(target, categoryDefs) || 'regular_off'
           : target.offSubType,
+      facilityTargets: target.facilityTargets ? { ...target.facilityTargets } : {},
       originalCode: code,
     });
   };
@@ -3971,6 +4067,16 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         cleanShift.shiftSlot = resolveShiftWorkSlot(cleanShift, categoryDefs) || 'other';
         delete cleanShift.offSubType;
       }
+      delete cleanShift.facilityTargets;
+    } else {
+      const normalizedTargets = getRoleFacilityTargets(cleanShift, categoryDefs);
+      if (Object.keys(normalizedTargets).length > 0) {
+        cleanShift.facilityTargets = normalizedTargets;
+      } else {
+        delete cleanShift.facilityTargets;
+      }
+      delete cleanShift.shiftSlot;
+      delete cleanShift.offSubType;
     }
     if (newDefs[cleanShift.code]?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
@@ -4002,7 +4108,11 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       saveMasterData({ shiftDefs: newDefs }); // ★修正
     }
     alert('保存しました');
-    setEditingShift({ ...cleanShift, originalCode: cleanShift.code });
+    setEditingShift({
+      ...cleanShift,
+      facilityTargets: cleanShift.facilityTargets ? { ...cleanShift.facilityTargets } : {},
+      originalCode: cleanShift.code,
+    });
   };
 
   const deleteShiftConfig = (code) => {
@@ -7464,6 +7574,106 @@ ${messageText}`;
     return summary;
   }, [daysArray, shiftData, staffList, shiftDefs, categoryDefs, targetCounts, adminSettings, year, month]);
 
+  // 役割（タスク）定義一覧（表示順ソート）
+  const roleTaskDefs = useMemo(() => {
+    return Object.values(shiftDefs)
+      .filter(s => s && getEffectiveShiftType(s, categoryDefs) === 'task')
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
+  }, [shiftDefs, categoryDefs]);
+
+  // 各日・各施設の役割（タスク）必要数に対する配置実績・充足状況をメモ化
+  const dailyFacilityTaskSummary = useMemo(() => {
+    const summary = {};
+    const facilityCats = Object.values(categoryDefs)
+      .filter(cat => resolveCategoryKind(cat) === 'facility')
+      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+
+    const targetsByTask = {};
+    roleTaskDefs.forEach(rt => {
+      targetsByTask[rt.code] = getRoleFacilityTargets(rt, categoryDefs);
+    });
+
+    daysArray.forEach(day => {
+      const countsByCatTask = {};
+      const totalTaskCounts = {};
+      facilityCats.forEach(cat => {
+        countsByCatTask[cat.id] = {};
+      });
+
+      if (!isSunday(year, month, day)) {
+        staffList.forEach(s => {
+          const tCode = taskData[s.id]?.[day];
+          if (!tCode || !shiftDefs[tCode]) return;
+          totalTaskCounts[tCode] = (totalTaskCounts[tCode] || 0) + 1;
+
+          const sCode = shiftData[s.id]?.[day];
+          if (!sCode || !shiftDefs[sCode]) return;
+          const sDef = shiftDefs[sCode];
+          if (
+            getEffectiveShiftType(sDef, categoryDefs) !== 'shift' ||
+            isOffOrReqCategoryId(sDef.category, categoryDefs)
+          ) {
+            return;
+          }
+          if (countsByCatTask[sDef.category] !== undefined) {
+            countsByCatTask[sDef.category][tCode] = (countsByCatTask[sDef.category][tCode] || 0) + 1;
+          }
+        });
+      }
+
+      const itemsByCat = {};
+      facilityCats.forEach(cat => {
+        const list = [];
+        roleTaskDefs.forEach(rt => {
+          const target = targetsByTask[rt.code]?.[cat.id] || 0;
+          if (target > 0) {
+            const actual = countsByCatTask[cat.id]?.[rt.code] || 0;
+            list.push({
+              code: rt.code,
+              label: rt.label,
+              text: rt.text,
+              actual,
+              target,
+              isMet: actual >= target,
+            });
+          }
+        });
+        itemsByCat[cat.id] = list;
+      });
+
+      const byTask = {};
+      roleTaskDefs.forEach(rt => {
+        const catTargets = targetsByTask[rt.code] || {};
+        const facilityDetails = [];
+        let totalTarget = 0;
+        facilityCats.forEach(cat => {
+          const target = catTargets[cat.id] || 0;
+          if (target > 0) {
+            totalTarget += target;
+            const actual = countsByCatTask[cat.id]?.[rt.code] || 0;
+            facilityDetails.push({
+              catId: cat.id,
+              catLabel: cat.label,
+              actual,
+              target,
+              isMet: actual >= target,
+            });
+          }
+        });
+        byTask[rt.code] = {
+          totalActual: totalTaskCounts[rt.code] || 0,
+          totalTarget,
+          facilityDetails,
+          shortFacilities: facilityDetails.filter(f => !f.isMet),
+        };
+      });
+
+      summary[day] = { countsByCatTask, itemsByCat, byTask };
+    });
+
+    return summary;
+  }, [daysArray, shiftData, taskData, staffList, shiftDefs, categoryDefs, roleTaskDefs, year, month]);
+
   const countedOffShifts = useMemo(() => {
     const rawList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
     const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
@@ -9089,6 +9299,10 @@ ${messageText}`;
                               group.kind === 'facility'
                                 ? getFacilityTargetPowerScore(categoryDefs[group.id], adminSettings)
                                 : 0;
+                            const facilityRoleItems =
+                              group.kind === 'facility'
+                                ? (dailyFacilityTaskSummary[d]?.itemsByCat?.[group.id] || [])
+                                : [];
 
                             return (
                               <div
@@ -9101,7 +9315,7 @@ ${messageText}`;
                                       : 'border-gray-200'
                                 }`}
                               >
-                                <div className={`px-3 py-2 border-b flex items-center justify-between gap-2 ${group.headerColor}`}>
+                                <div className={`px-3 py-2 border-b flex flex-wrap items-center justify-between gap-1.5 ${group.headerColor}`}>
                                   <div className="flex items-center gap-2">
                                     <span className="font-extrabold text-sm">{group.name}</span>
                                     <span
@@ -9115,7 +9329,26 @@ ${messageText}`;
                                     </span>
                                   </div>
                                   {appUser.role === 'admin' && group.kind === 'facility' && (
-                                    <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                                    <div className="flex items-center justify-end gap-1 flex-wrap text-[11px] font-bold">
+                                      {facilityRoleItems.map(rt => (
+                                        <span
+                                          key={rt.code}
+                                          title={`役割「${rt.label}」: ${rt.actual}/${rt.target}名（${rt.isMet ? '必要数充足' : `あと${rt.target - rt.actual}名必要`}）`}
+                                          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border ${
+                                            rt.isMet
+                                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                              : !isSun
+                                                ? 'bg-red-50 text-red-700 border-red-200'
+                                                : 'bg-white/80 text-gray-600 border-black/10'
+                                          }`}
+                                        >
+                                          <span>
+                                            {rt.label}
+                                            {rt.isMet ? (rt.target > 1 ? ` ${rt.actual}/${rt.target}` : '') : `:${rt.actual}/${rt.target}`}
+                                          </span>
+                                          {rt.isMet && <Check size={11} className="text-emerald-600 shrink-0" />}
+                                        </span>
+                                      ))}
                                       <span
                                         className={`px-1.5 py-0.5 rounded ${
                                           targetPower > 0 && actualPower < targetPower && totalActual > 0
@@ -9894,6 +10127,87 @@ ${messageText}`;
                             })}
                           </React.Fragment>
                         ))}
+                        {roleTaskDefs.length > 0 && (
+                          <React.Fragment>
+                            <tr>
+                              <td className="sticky left-0 border-r border-b p-2 text-xs font-bold text-right bg-teal-50 text-teal-800">
+                                役割 計
+                              </td>
+                              {daysArray.map(day => {
+                                const totalRoleCnt = roleTaskDefs.reduce(
+                                  (sum, rt) => sum + (dailyStats[day]?.[rt.code] || 0),
+                                  0
+                                );
+                                return (
+                                  <td
+                                    key={day}
+                                    className="border-r border-b text-center text-xs font-bold bg-gray-50 text-gray-700"
+                                  >
+                                    {totalRoleCnt > 0 ? totalRoleCnt : '-'}
+                                  </td>
+                                );
+                              })}
+                              <td className="bg-gray-50 border-b border-r"></td>
+                              {adminRightFlatShifts.length > 0 && (
+                                <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
+                              )}
+                            </tr>
+                            {roleTaskDefs.map(taskDef => {
+                              const taskTotalTarget = getRoleTotalTargetCount(taskDef, categoryDefs);
+                              return (
+                                <tr key={`role_sum_${taskDef.code}`}>
+                                  <td className="sticky left-0 bg-white border-r border-b p-2 text-xs text-right text-gray-500">
+                                    <span className={taskDef.text}>{taskDef.label}</span> ({taskDef.code})
+                                    {taskTotalTarget > 0 && (
+                                      <span className="ml-1 text-[10px] text-teal-700 font-bold">
+                                        [要{taskTotalTarget}]
+                                      </span>
+                                    )}
+                                  </td>
+                                  {daysArray.map(day => {
+                                    const count = dailyStats[day]?.[taskDef.code] || 0;
+                                    const isSun = isSunday(year, month, day);
+                                    const taskDayInfo = dailyFacilityTaskSummary[day]?.byTask?.[taskDef.code];
+                                    const dayTarget = isSun ? 0 : (taskDayInfo?.totalTarget || 0);
+                                    const isTotalShort = !isSun && dayTarget > 0 && count < dayTarget;
+                                    const hasFacilityShort =
+                                      !isSun && dayTarget > 0 && (taskDayInfo?.shortFacilities?.length || 0) > 0;
+                                    const detailLines = (taskDayInfo?.facilityDetails || []).map(
+                                      f => `${f.catLabel}: ${f.actual}/${f.target}名`
+                                    );
+                                    const cellTitle =
+                                      dayTarget > 0
+                                        ? [`【${taskDef.label}】全施設合計 ${count}/${dayTarget}名`, ...detailLines].join('\n')
+                                        : count > 0
+                                          ? `【${taskDef.label}】合計 ${count}名`
+                                          : undefined;
+                                    return (
+                                      <td
+                                        key={day}
+                                        title={cellTitle}
+                                        className={`border-r border-b text-center text-xs ${
+                                          isTotalShort
+                                            ? 'bg-red-100 text-red-600 font-bold'
+                                            : hasFacilityShort
+                                              ? 'bg-amber-100 text-amber-800 font-bold'
+                                              : count > 0
+                                                ? 'text-gray-700 font-bold'
+                                                : 'text-gray-400'
+                                        }`}
+                                      >
+                                        {count > 0 ? count : '-'}
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="bg-gray-50 border-b border-r"></td>
+                                  {adminRightFlatShifts.length > 0 && (
+                                    <td colSpan={1 + adminRightFlatShifts.length} className="bg-gray-100 border-0 p-0" aria-hidden="true" />
+                                  )}
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        )}
                       </>
                     )}
                   </tbody>
@@ -11080,11 +11394,29 @@ ${messageText}`;
                                       <span className={`font-bold truncate ${sItem.text}`}>{sItem.label}</span>
                                       <span className="text-[10px] text-gray-400 shrink-0">({sItem.code})</span>
                                       <div className="ml-auto shrink-0" onClick={e => e.stopPropagation()}>
-                                        {effType === 'task' ? (
-                                          <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200 text-[10px]">
-                                            タスク
-                                          </span>
-                                        ) : catKind === 'req' ? (
+                                        {effType === 'task' ? (() => {
+                                          const taskFacTargets = getRoleFacilityTargets(sItem, categoryDefs);
+                                          const taskFacEntries = Object.entries(taskFacTargets);
+                                          const taskTotalCnt = taskFacEntries.reduce((sum, [, n]) => sum + n, 0);
+                                          if (taskFacEntries.length === 0) {
+                                            return (
+                                              <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200 text-[10px]">
+                                                タスク
+                                              </span>
+                                            );
+                                          }
+                                          const facDetailStr = taskFacEntries
+                                            .map(([cid, n]) => `${categoryDefs[cid]?.label || cid}:${n}名`)
+                                            .join(' / ');
+                                          return (
+                                            <span
+                                              className="px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 text-[10px] font-bold"
+                                              title={`施設別必要数（計${taskTotalCnt}名）: ${facDetailStr}`}
+                                            >
+                                              施設({taskFacEntries.length}):計{taskTotalCnt}
+                                            </span>
+                                          );
+                                        })() : catKind === 'req' ? (
                                           <span className="px-1.5 py-0.5 rounded bg-pink-50 text-pink-700 border border-pink-200 text-[10px] font-bold">
                                             希望枠
                                           </span>
@@ -11259,13 +11591,109 @@ ${messageText}`;
                               )}
 
                               <div className="grid grid-cols-2 gap-4">
-                                <div><label className="text-xs font-bold text-gray-500">残業(h)</label><input type="number" step="0.5" className="w-full border p-2 rounded text-sm" value={editingShift.overtime ?? ''} onChange={e => setEditingShift({...editingShift, overtime: e.target.value})} /></div>
+                                <div>
+                                  <label className="text-xs font-bold text-gray-500">残業(h)</label>
+                                  <select
+                                    className="w-full border p-2 rounded text-sm bg-white"
+                                    value={editingShift.overtime === '' || editingShift.overtime === null || editingShift.overtime === undefined ? '' : String(Number(editingShift.overtime))}
+                                    onChange={e => setEditingShift({ ...editingShift, overtime: e.target.value === '' ? '' : Number(e.target.value) })}
+                                  >
+                                    <option value="">未設定</option>
+                                    {buildNumericOptions(OVERTIME_HOUR_OPTIONS, editingShift.overtime).map(h => (
+                                      <option key={h} value={String(h)}>{h}h</option>
+                                    ))}
+                                  </select>
+                                </div>
                                 <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
                               </div>
                               {editEffType === 'shift' && (
                                 <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
-                                  <div><label className="text-xs font-bold text-blue-700">開始</label><input type="time" className="w-full border rounded p-1 bg-white" value={editingShift.startTime || ''} onChange={e => setEditingShift({...editingShift, startTime: e.target.value})} /></div>
-                                  <div><label className="text-xs font-bold text-blue-700">終了</label><input type="time" className="w-full border rounded p-1 bg-white" value={editingShift.endTime || ''} onChange={e => setEditingShift({...editingShift, endTime: e.target.value})} /></div>
+                                  <div>
+                                    <label className="text-xs font-bold text-blue-700 block mb-1">開始</label>
+                                    <TimeSelectInput
+                                      value={editingShift.startTime || ''}
+                                      onChange={val => setEditingShift({ ...editingShift, startTime: val })}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-xs font-bold text-blue-700 block mb-1">終了</label>
+                                    <TimeSelectInput
+                                      value={editingShift.endTime || ''}
+                                      onChange={val => setEditingShift({ ...editingShift, endTime: val })}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                              {editEffType === 'task' && (
+                                <div className="p-3 rounded-lg border border-teal-200 bg-teal-50/40 space-y-2.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <label className="text-xs font-bold text-teal-900">
+                                      必要施設・必要数設定（役割）
+                                    </label>
+                                    <span className="text-[10px] font-bold text-teal-700">
+                                      全施設合計: {getRoleTotalTargetCount(editingShift, categoryDefs)}名
+                                    </span>
+                                  </div>
+                                  <div className="space-y-1.5">
+                                    {Object.values(categoryDefs)
+                                      .filter(cat => resolveCategoryKind(cat) === 'facility')
+                                      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+                                      .map(cat => {
+                                        const curMap = editingShift.facilityTargets || {};
+                                        const reqVal = Math.max(0, Math.floor(Number(curMap[cat.id]) || 0));
+                                        const isChecked = reqVal > 0;
+                                        return (
+                                          <div
+                                            key={cat.id}
+                                            className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-xs transition ${
+                                              isChecked
+                                                ? 'bg-white border-teal-400 text-teal-950 font-bold shadow-2xs'
+                                                : 'bg-white/70 border-gray-200 text-gray-600'
+                                            }`}
+                                          >
+                                            <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0 select-none">
+                                              <input
+                                                type="checkbox"
+                                                className="w-4 h-4 text-teal-600 rounded"
+                                                checked={isChecked}
+                                                onChange={e => {
+                                                  const nextMap = { ...curMap };
+                                                  if (e.target.checked) {
+                                                    nextMap[cat.id] = nextMap[cat.id] > 0 ? nextMap[cat.id] : 1;
+                                                  } else {
+                                                    delete nextMap[cat.id];
+                                                  }
+                                                  setEditingShift({ ...editingShift, facilityTargets: nextMap });
+                                                }}
+                                              />
+                                              <span className="truncate">{cat.label}</span>
+                                            </label>
+                                            <div className="flex items-center gap-1 shrink-0">
+                                              <span className="text-[10px] text-gray-500">必要数:</span>
+                                              <select
+                                                disabled={!isChecked}
+                                                className="border rounded px-2 py-1 text-xs font-bold bg-white disabled:bg-gray-100 disabled:text-gray-400"
+                                                value={isChecked ? reqVal : 1}
+                                                onChange={e => {
+                                                  const nextNum = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                                  setEditingShift({
+                                                    ...editingShift,
+                                                    facilityTargets: { ...curMap, [cat.id]: nextNum },
+                                                  });
+                                                }}
+                                              >
+                                                {buildNumericOptions(ROLE_FACILITY_TARGET_OPTIONS, isChecked ? reqVal : 1).map(n => (
+                                                  <option key={n} value={n}>{n}名</option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                  </div>
+                                  <p className="text-[10px] text-teal-800 leading-snug">
+                                    ※チェックを入れて必要数を保存すると、全体表の「施設別」各施設スコア左側に役割が表示され、必要数達成でチェックマークが付きます。月別勤務表の下部集計にも全施設合計が表示されます。
+                                  </p>
                                 </div>
                               )}
                               <div className="mt-4 p-3 border rounded-lg bg-gray-50">
@@ -11339,51 +11767,53 @@ ${messageText}`;
                                     {staff.jobTitle === 'パート' ? (
                                       <div className="flex items-center justify-center gap-1">
                                         <span className="text-[10px] font-bold text-emerald-800">週</span>
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          max="6"
-                                          placeholder="-"
+                                        <select
                                           title="週あたりの契約出勤日数（下限）"
-                                          className="w-10 p-1 border rounded text-center text-xs bg-white font-bold"
-                                          value={staff.contractWorkDaysMin ?? ''}
+                                          className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                          value={staff.contractWorkDaysMin === null || staff.contractWorkDaysMin === undefined || staff.contractWorkDaysMin === '' ? '' : String(staff.contractWorkDaysMin)}
                                           onChange={(e) => {
                                             const raw = e.target.value;
-                                            const parsed = raw === '' ? null : Math.max(0, Math.min(6, parseInt(raw, 10) || 0));
-                                            const val = parsed && parsed > 0 ? parsed : null;
-                                            const curMax = staff.contractWorkDaysMax ? Number(staff.contractWorkDaysMax) : null;
+                                            const val = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+                                            const hasCurMax = staff.contractWorkDaysMax !== null && staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== '';
+                                            const curMax = hasCurMax ? Number(staff.contractWorkDaysMax) : null;
                                             const newList = [...staffList];
                                             newList[index] = {
                                               ...staff,
                                               contractWorkDaysMin: val,
-                                              contractWorkDaysMax: val && curMax && curMax < val ? val : curMax,
+                                              contractWorkDaysMax: val !== null && curMax !== null && curMax < val ? val : curMax,
                                             };
                                             setStaffList(newList);
                                           }}
-                                        />
+                                        >
+                                          <option value="">-</option>
+                                          {buildNumericOptions(CONTRACT_WORK_DAY_OPTIONS, staff.contractWorkDaysMin).map(dVal => (
+                                            <option key={dVal} value={String(dVal)}>{dVal}</option>
+                                          ))}
+                                        </select>
                                         <span className="text-gray-400 text-xs">〜</span>
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          max="6"
-                                          placeholder="-"
+                                        <select
                                           title="週あたりの契約出勤日数（上限）"
-                                          className="w-10 p-1 border rounded text-center text-xs bg-white font-bold"
-                                          value={staff.contractWorkDaysMax ?? ''}
+                                          className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                          value={staff.contractWorkDaysMax === null || staff.contractWorkDaysMax === undefined || staff.contractWorkDaysMax === '' ? '' : String(staff.contractWorkDaysMax)}
                                           onChange={(e) => {
                                             const raw = e.target.value;
-                                            const parsed = raw === '' ? null : Math.max(0, Math.min(6, parseInt(raw, 10) || 0));
-                                            const val = parsed && parsed > 0 ? parsed : null;
-                                            const curMin = staff.contractWorkDaysMin ? Number(staff.contractWorkDaysMin) : null;
+                                            const val = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+                                            const hasCurMin = staff.contractWorkDaysMin !== null && staff.contractWorkDaysMin !== undefined && staff.contractWorkDaysMin !== '';
+                                            const curMin = hasCurMin ? Number(staff.contractWorkDaysMin) : null;
                                             const newList = [...staffList];
                                             newList[index] = {
                                               ...staff,
                                               contractWorkDaysMax: val,
-                                              contractWorkDaysMin: val && curMin && curMin > val ? val : curMin,
+                                              contractWorkDaysMin: val !== null && curMin !== null && curMin > val ? val : curMin,
                                             };
                                             setStaffList(newList);
                                           }}
-                                        />
+                                        >
+                                          <option value="">-</option>
+                                          {buildNumericOptions(CONTRACT_WORK_DAY_OPTIONS, staff.contractWorkDaysMax).map(dVal => (
+                                            <option key={dVal} value={String(dVal)}>{dVal}</option>
+                                          ))}
+                                        </select>
                                         <span className="text-[10px] text-gray-500">日</span>
                                       </div>
                                     ) : (
@@ -11392,12 +11822,10 @@ ${messageText}`;
                                   </td>
                                   <td className="p-2 border text-center">
                                     <div className="flex items-center justify-center gap-1">
-                                      <input
-                                        type="number"
-                                        min="0"
+                                      <select
                                         title="3クール月間下限回数"
-                                        className="w-11 p-1 border rounded text-center text-xs"
-                                        value={staff.minCool3 ?? 0}
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.minCool3 ?? 0)}
                                         onChange={(e) => {
                                           const val = Math.max(0, parseInt(e.target.value, 10) || 0);
                                           const newList = [...staffList];
@@ -11408,14 +11836,16 @@ ${messageText}`;
                                           };
                                           setStaffList(newList);
                                         }}
-                                      />
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.minCool3 ?? 0).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
                                       <span className="text-gray-400 text-xs">〜</span>
-                                      <input
-                                        type="number"
-                                        min="0"
+                                      <select
                                         title="3クール月間上限回数"
-                                        className="w-11 p-1 border rounded text-center text-xs"
-                                        value={staff.maxCool3 ?? 5}
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.maxCool3 ?? 5)}
                                         onChange={(e) => {
                                           const val = Math.max(0, parseInt(e.target.value, 10) || 0);
                                           const newList = [...staffList];
@@ -11426,7 +11856,11 @@ ${messageText}`;
                                           };
                                           setStaffList(newList);
                                         }}
-                                      />
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.maxCool3 ?? 5).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
                                     </div>
                                   </td>
                                   <td className="p-2 border">
@@ -12395,7 +12829,8 @@ ${messageText}`;
                       <label className="text-xs font-bold text-emerald-900">
                         契約出勤日数（週単位：下限 〜 上限）
                       </label>
-                      {(targetStaff.contractWorkDaysMin || targetStaff.contractWorkDaysMax) && (
+                      {((targetStaff.contractWorkDaysMin !== null && targetStaff.contractWorkDaysMin !== undefined && targetStaff.contractWorkDaysMin !== '') ||
+                        (targetStaff.contractWorkDaysMax !== null && targetStaff.contractWorkDaysMax !== undefined && targetStaff.contractWorkDaysMax !== '')) && (
                         <button
                           type="button"
                           onClick={() =>
@@ -12414,51 +12849,53 @@ ${messageText}`;
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold text-emerald-800 mb-1">週下限（日/週）</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="6"
-                          placeholder="例: 4"
+                        <select
                           className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
-                          value={targetStaff.contractWorkDaysMin ?? ''}
+                          value={targetStaff.contractWorkDaysMin === null || targetStaff.contractWorkDaysMin === undefined || targetStaff.contractWorkDaysMin === '' ? '' : String(targetStaff.contractWorkDaysMin)}
                           onChange={e => {
                             const raw = e.target.value;
-                            const parsed = raw === '' ? null : Math.max(1, Math.min(6, parseInt(raw, 10) || 0));
-                            const val = parsed && parsed > 0 ? parsed : null;
-                            const curMax = targetStaff.contractWorkDaysMax ? Number(targetStaff.contractWorkDaysMax) : null;
+                            const val = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+                            const hasCurMax = targetStaff.contractWorkDaysMax !== null && targetStaff.contractWorkDaysMax !== undefined && targetStaff.contractWorkDaysMax !== '';
+                            const curMax = hasCurMax ? Number(targetStaff.contractWorkDaysMax) : null;
                             setTargetStaff({
                               ...targetStaff,
                               contractWorkDaysMin: val,
-                              contractWorkDaysMax: val && curMax && curMax < val ? val : curMax,
+                              contractWorkDaysMax: val !== null && curMax !== null && curMax < val ? val : curMax,
                             });
                           }}
-                        />
+                        >
+                          <option value="">未設定</option>
+                          {buildNumericOptions(CONTRACT_WORK_DAY_OPTIONS, targetStaff.contractWorkDaysMin).map(dVal => (
+                            <option key={dVal} value={String(dVal)}>{dVal}日</option>
+                          ))}
+                        </select>
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold text-emerald-800 mb-1">週上限（日/週）</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="6"
-                          placeholder="例: 5"
+                        <select
                           className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
-                          value={targetStaff.contractWorkDaysMax ?? ''}
+                          value={targetStaff.contractWorkDaysMax === null || targetStaff.contractWorkDaysMax === undefined || targetStaff.contractWorkDaysMax === '' ? '' : String(targetStaff.contractWorkDaysMax)}
                           onChange={e => {
                             const raw = e.target.value;
-                            const parsed = raw === '' ? null : Math.max(1, Math.min(6, parseInt(raw, 10) || 0));
-                            const val = parsed && parsed > 0 ? parsed : null;
-                            const curMin = targetStaff.contractWorkDaysMin ? Number(targetStaff.contractWorkDaysMin) : null;
+                            const val = raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0);
+                            const hasCurMin = targetStaff.contractWorkDaysMin !== null && targetStaff.contractWorkDaysMin !== undefined && targetStaff.contractWorkDaysMin !== '';
+                            const curMin = hasCurMin ? Number(targetStaff.contractWorkDaysMin) : null;
                             setTargetStaff({
                               ...targetStaff,
                               contractWorkDaysMax: val,
-                              contractWorkDaysMin: val && curMin && curMin > val ? val : curMin,
+                              contractWorkDaysMin: val !== null && curMin !== null && curMin > val ? val : curMin,
                             });
                           }}
-                        />
+                        >
+                          <option value="">未設定</option>
+                          {buildNumericOptions(CONTRACT_WORK_DAY_OPTIONS, targetStaff.contractWorkDaysMax).map(dVal => (
+                            <option key={dVal} value={String(dVal)}>{dVal}日</option>
+                          ))}
+                        </select>
                       </div>
                     </div>
                     <p className="text-[10px] text-emerald-700 mt-1">
-                      ※固定日数（例: 週3日）の場合は下限・上限に同じ数値（または片方のみ）を入力してください。AI作成・検算で絶対守るルールとして適用されます。
+                      ※固定日数（例: 週3日）の場合は下限・上限に同じ数値（または片方のみ）を選択してください。AI作成・検算で絶対守るルールとして適用されます。
                     </p>
                   </div>
                 )}
@@ -12466,11 +12903,9 @@ ${messageText}`;
                 <div className="grid grid-cols-2 gap-3 bg-indigo-50/50 border border-indigo-100 rounded-lg p-2.5">
                   <div>
                     <label className="block text-xs font-bold text-indigo-800 mb-1">3クール下限（回/月）</label>
-                    <input
-                      type="number"
-                      min="0"
+                    <select
                       className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
-                      value={targetStaff.minCool3 ?? 0}
+                      value={String(targetStaff.minCool3 ?? 0)}
                       onChange={e => {
                         const val = Math.max(0, parseInt(e.target.value, 10) || 0);
                         setTargetStaff({
@@ -12479,15 +12914,17 @@ ${messageText}`;
                           maxCool3: Math.max(val, targetStaff.maxCool3 ?? 5),
                         });
                       }}
-                    />
+                    >
+                      {buildNumericOptions(COOL3_LIMIT_OPTIONS, targetStaff.minCool3 ?? 0).map(n => (
+                        <option key={n} value={String(n)}>{n}回</option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-indigo-800 mb-1">3クール上限（回/月）</label>
-                    <input
-                      type="number"
-                      min="0"
+                    <select
                       className="w-full border bg-white p-1.5 rounded text-sm text-center font-bold"
-                      value={targetStaff.maxCool3 ?? 5}
+                      value={String(targetStaff.maxCool3 ?? 5)}
                       onChange={e => {
                         const val = Math.max(0, parseInt(e.target.value, 10) || 0);
                         setTargetStaff({
@@ -12496,7 +12933,11 @@ ${messageText}`;
                           minCool3: Math.min(targetStaff.minCool3 ?? 0, val),
                         });
                       }}
-                    />
+                    >
+                      {buildNumericOptions(COOL3_LIMIT_OPTIONS, targetStaff.maxCool3 ?? 5).map(n => (
+                        <option key={n} value={String(n)}>{n}回</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
@@ -12783,12 +13224,8 @@ ${messageText}`;
                                {group.kind === 'facility' && (
                                  <label className="inline-flex items-center gap-1 bg-white/85 text-gray-700 px-2 py-0.5 rounded border border-black/10">
                                    <span className="text-[11px] font-bold">目標スコア:</span>
-                                   <input
-                                     type="number"
-                                     min="0"
-                                     max="200"
-                                     step="5"
-                                     value={powerTargetVal}
+                                   <select
+                                     value={String(powerTargetVal)}
                                      onChange={(e) => {
                                        const nextScore = Math.max(0, parseInt(e.target.value, 10) || 0);
                                        setAdminSettings(prev => ({
@@ -12799,9 +13236,13 @@ ${messageText}`;
                                          },
                                        }));
                                      }}
-                                     className="w-12 px-1 py-0.5 border border-gray-300 rounded text-center text-xs font-bold bg-white text-indigo-700"
+                                     className="px-1.5 py-0.5 border border-gray-300 rounded text-center text-xs font-bold bg-white text-indigo-700 cursor-pointer"
                                      title="AI作成・検算で目安にする施設の1日あたり合計パワースコア（0にするとスコア判定なし）"
-                                   />
+                                   >
+                                     {buildNumericOptions(FACILITY_POWER_TARGET_OPTIONS, powerTargetVal).map(sc => (
+                                       <option key={sc} value={String(sc)}>{sc}</option>
+                                     ))}
+                                   </select>
                                    <span className="text-[10px] text-gray-500">点</span>
                                  </label>
                                )}
@@ -12846,29 +13287,64 @@ ${messageText}`;
                                      </td>
                                      {splitMode === 'mwf_tts' ? (
                                        <>
-                                         <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } })); }} /></td>
-                                         <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val2} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } })); }} /></td>
+                                         <td className="p-1 border">
+                                           <select
+                                             className="w-16 p-1 border rounded text-center bg-white"
+                                             value={String(val1)}
+                                             onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 3:v, 5:v } })); }}
+                                           >
+                                             {buildNumericOptions(SHIFT_TARGET_COUNT_OPTIONS, val1).map(n => (
+                                               <option key={n} value={String(n)}>{n}</option>
+                                             ))}
+                                           </select>
+                                         </td>
+                                         <td className="p-1 border">
+                                           <select
+                                             className="w-16 p-1 border rounded text-center bg-white"
+                                             value={String(val2)}
+                                             onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 2:v, 4:v, 6:v } })); }}
+                                           >
+                                             {buildNumericOptions(SHIFT_TARGET_COUNT_OPTIONS, val2).map(n => (
+                                               <option key={n} value={String(n)}>{n}</option>
+                                             ))}
+                                           </select>
+                                         </td>
                                        </>
                                      ) : splitMode === 'daily' ? (
-                                       [1, 2, 3, 4, 5, 6].map(dow => (
-                                         <td key={dow} className="p-1 border">
-                                           <input
-                                             type="number"
-                                             min="0"
-                                             className="w-12 p-1 border rounded text-center"
-                                             value={targetCounts[code]?.[dow] ?? 0}
-                                             onChange={(e) => {
-                                               const v = parseInt(e.target.value, 10) || 0;
-                                               setTargetCounts(prev => ({
-                                                 ...prev,
-                                                 [code]: { ...(prev[code] || {}), [dow]: v },
-                                               }));
-                                             }}
-                                           />
-                                         </td>
-                                       ))
+                                       [1, 2, 3, 4, 5, 6].map(dow => {
+                                         const dVal = targetCounts[code]?.[dow] ?? 0;
+                                         return (
+                                           <td key={dow} className="p-1 border">
+                                             <select
+                                               className="w-14 p-1 border rounded text-center bg-white"
+                                               value={String(dVal)}
+                                               onChange={(e) => {
+                                                 const v = parseInt(e.target.value, 10) || 0;
+                                                 setTargetCounts(prev => ({
+                                                   ...prev,
+                                                   [code]: { ...(prev[code] || {}), [dow]: v },
+                                                 }));
+                                               }}
+                                             >
+                                               {buildNumericOptions(SHIFT_TARGET_COUNT_OPTIONS, dVal).map(n => (
+                                                 <option key={n} value={String(n)}>{n}</option>
+                                               ))}
+                                             </select>
+                                           </td>
+                                         );
+                                       })
                                      ) : (
-                                       <td className="p-1 border"><input type="number" min="0" className="w-16 p-1 border rounded text-center" value={val1} onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } })); }} /></td>
+                                       <td className="p-1 border">
+                                         <select
+                                           className="w-16 p-1 border rounded text-center bg-white"
+                                           value={String(val1)}
+                                           onChange={(e) => { const v = parseInt(e.target.value, 10) || 0; setTargetCounts(prev => ({ ...prev, [code]: { ...(prev[code] || {}), 1:v, 2:v, 3:v, 4:v, 5:v, 6:v } })); }}
+                                         >
+                                           {buildNumericOptions(SHIFT_TARGET_COUNT_OPTIONS, val1).map(n => (
+                                             <option key={n} value={String(n)}>{n}</option>
+                                           ))}
+                                         </select>
+                                       </td>
                                      )}
                                    </tr>
                                  );
@@ -12901,12 +13377,9 @@ ${messageText}`;
                                    >
                                      <span className="truncate">{sk.label}</span>
                                      <div className="flex items-center gap-0.5 shrink-0">
-                                       <input
-                                         type="number"
-                                         min="0"
-                                         max="5"
-                                         className="w-11 p-0.5 border rounded text-center text-xs font-bold"
-                                         value={reqVal}
+                                       <select
+                                         className="w-12 p-0.5 border rounded text-center text-xs font-bold bg-white"
+                                         value={String(reqVal)}
                                          onChange={(e) => {
                                            const nextNum = Math.max(0, Math.min(5, parseInt(e.target.value, 10) || 0));
                                            setAdminSettings(prev => {
@@ -12926,7 +13399,11 @@ ${messageText}`;
                                              };
                                            });
                                          }}
-                                       />
+                                       >
+                                         {buildNumericOptions(SKILL_TARGET_COUNT_OPTIONS, reqVal).map(n => (
+                                           <option key={n} value={String(n)}>{n}</option>
+                                         ))}
+                                       </select>
                                        <span className="text-[10px] text-gray-500">名</span>
                                      </div>
                                    </label>
