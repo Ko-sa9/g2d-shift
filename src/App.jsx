@@ -650,21 +650,76 @@ const getCool3BadgeInfo = (staff) => {
   };
 };
 
-// 役割（タスク）に設定された施設別の必要人数マップ（有効な勤務施設のみ・1名以上）を取得
+// じんクリ施設カテゴリかどうかを判定（役割設定で月水金・火木土に分割する対象）
+const isJinkuriFacilityCategory = (cat) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
+  const id = String(cat.id || '').trim();
+  const lbl = String(cat.label || '').trim();
+  return id === 'jinkuri' || lbl.includes('じん') || lbl.includes('腎');
+};
+
+// 役割（タスク）に設定された施設別の必要人数マップ（じんクリは _mwf / _tts 分割対応・1名以上）を取得
 const getRoleFacilityTargets = (taskDef, categoryDefs = {}) => {
   if (!taskDef || !taskDef.facilityTargets || typeof taskDef.facilityTargets !== 'object') return {};
+  const raw = taskDef.facilityTargets;
   const result = {};
-  Object.entries(taskDef.facilityTargets).forEach(([catId, rawVal]) => {
-    if (!categoryDefs[catId] || resolveCategoryKind(categoryDefs[catId]) !== 'facility') return;
-    const num = Math.floor(Number(rawVal) || 0);
-    if (num > 0) result[catId] = num;
+  Object.values(categoryDefs).forEach(cat => {
+    if (!cat || resolveCategoryKind(cat) !== 'facility') return;
+    if (isJinkuriFacilityCategory(cat)) {
+      const mwfKey = `${cat.id}_mwf`;
+      const ttsKey = `${cat.id}_tts`;
+      const hasSplit = raw[mwfKey] !== undefined || raw[ttsKey] !== undefined;
+      const mwfNum = Math.floor(Number(hasSplit ? raw[mwfKey] : raw[cat.id]) || 0);
+      const ttsNum = Math.floor(Number(hasSplit ? raw[ttsKey] : raw[cat.id]) || 0);
+      if (mwfNum > 0) result[mwfKey] = mwfNum;
+      if (ttsNum > 0) result[ttsKey] = ttsNum;
+    } else {
+      const num = Math.floor(Number(raw[cat.id]) || 0);
+      if (num > 0) result[cat.id] = num;
+    }
   });
   return result;
 };
 
-// 役割（タスク）の全施設合計必要人数を取得
-const getRoleTotalTargetCount = (taskDef, categoryDefs = {}) => {
-  return Object.values(getRoleFacilityTargets(taskDef, categoryDefs)).reduce((sum, n) => sum + n, 0);
+// 特定の曜日(dow: 1..6)における対象施設の役割必要数を取得
+const getRoleFacilityTargetForDow = (normalizedTargets = {}, cat, dow) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility' || dow === 0) return 0;
+  if (isJinkuriFacilityCategory(cat)) {
+    if (dow === 1 || dow === 3 || dow === 5) return normalizedTargets[`${cat.id}_mwf`] || 0;
+    if (dow === 2 || dow === 4 || dow === 6) return normalizedTargets[`${cat.id}_tts`] || 0;
+    return 0;
+  }
+  return normalizedTargets[cat.id] || 0;
+};
+
+// 役割（タスク）の全施設合計必要人数（月水金 / 火木土）を取得
+const getRoleTotalTargetInfo = (taskDef, categoryDefs = {}) => {
+  const targets = getRoleFacilityTargets(taskDef, categoryDefs);
+  let mwfTotal = 0;
+  let ttsTotal = 0;
+  Object.values(categoryDefs).forEach(cat => {
+    if (!cat || resolveCategoryKind(cat) !== 'facility') return;
+    mwfTotal += getRoleFacilityTargetForDow(targets, cat, 1);
+    ttsTotal += getRoleFacilityTargetForDow(targets, cat, 2);
+  });
+  return {
+    mwfTotal,
+    ttsTotal,
+    maxTotal: Math.max(mwfTotal, ttsTotal),
+    isSame: mwfTotal === ttsTotal,
+    summaryLabel:
+      mwfTotal === 0 && ttsTotal === 0
+        ? ''
+        : mwfTotal === ttsTotal
+          ? `${mwfTotal}名`
+          : `月水金${mwfTotal}名 / 火木土${ttsTotal}名`,
+    shortBadgeLabel:
+      mwfTotal === 0 && ttsTotal === 0
+        ? ''
+        : mwfTotal === ttsTotal
+          ? `要${mwfTotal}`
+          : `要:月水金${mwfTotal}/火木土${ttsTotal}`,
+  };
 };
 
 // 年間の有休（年休・有給）に該当するシフト定義かどうかを判定
@@ -4021,7 +4076,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         effType === 'shift' && catKind === 'off'
           ? resolveOffSubType(target, categoryDefs) || 'regular_off'
           : target.offSubType,
-      facilityTargets: target.facilityTargets ? { ...target.facilityTargets } : {},
+      facilityTargets: getRoleFacilityTargets(target, categoryDefs),
       originalCode: code,
     });
   };
@@ -7621,11 +7676,12 @@ ${messageText}`;
         });
       }
 
+      const dow = getDayOfWeek(year, month, day);
       const itemsByCat = {};
       facilityCats.forEach(cat => {
         const list = [];
         roleTaskDefs.forEach(rt => {
-          const target = targetsByTask[rt.code]?.[cat.id] || 0;
+          const target = getRoleFacilityTargetForDow(targetsByTask[rt.code], cat, dow);
           if (target > 0) {
             const actual = countsByCatTask[cat.id]?.[rt.code] || 0;
             list.push({
@@ -7647,7 +7703,7 @@ ${messageText}`;
         const facilityDetails = [];
         let totalTarget = 0;
         facilityCats.forEach(cat => {
-          const target = catTargets[cat.id] || 0;
+          const target = getRoleFacilityTargetForDow(catTargets, cat, dow);
           if (target > 0) {
             totalTarget += target;
             const actual = countsByCatTask[cat.id]?.[rt.code] || 0;
@@ -10153,14 +10209,14 @@ ${messageText}`;
                               )}
                             </tr>
                             {roleTaskDefs.map(taskDef => {
-                              const taskTotalTarget = getRoleTotalTargetCount(taskDef, categoryDefs);
+                              const taskTargetInfo = getRoleTotalTargetInfo(taskDef, categoryDefs);
                               return (
                                 <tr key={`role_sum_${taskDef.code}`}>
                                   <td className="sticky left-0 bg-white border-r border-b p-2 text-xs text-right text-gray-500">
                                     <span className={taskDef.text}>{taskDef.label}</span> ({taskDef.code})
-                                    {taskTotalTarget > 0 && (
-                                      <span className="ml-1 text-[10px] text-teal-700 font-bold">
-                                        [要{taskTotalTarget}]
+                                    {taskTargetInfo.maxTotal > 0 && (
+                                      <span className="ml-1 text-[10px] text-teal-700 font-bold" title={`必要数合計: ${taskTargetInfo.summaryLabel}`}>
+                                        [{taskTargetInfo.shortBadgeLabel}]
                                       </span>
                                     )}
                                   </td>
@@ -11397,7 +11453,7 @@ ${messageText}`;
                                         {effType === 'task' ? (() => {
                                           const taskFacTargets = getRoleFacilityTargets(sItem, categoryDefs);
                                           const taskFacEntries = Object.entries(taskFacTargets);
-                                          const taskTotalCnt = taskFacEntries.reduce((sum, [, n]) => sum + n, 0);
+                                          const targetInfo = getRoleTotalTargetInfo(sItem, categoryDefs);
                                           if (taskFacEntries.length === 0) {
                                             return (
                                               <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200 text-[10px]">
@@ -11406,14 +11462,24 @@ ${messageText}`;
                                             );
                                           }
                                           const facDetailStr = taskFacEntries
-                                            .map(([cid, n]) => `${categoryDefs[cid]?.label || cid}:${n}名`)
+                                            .map(([tKey, n]) => {
+                                              if (tKey.endsWith('_mwf')) {
+                                                const baseId = tKey.slice(0, -4);
+                                                return `${categoryDefs[baseId]?.label || baseId}(月水金):${n}名`;
+                                              }
+                                              if (tKey.endsWith('_tts')) {
+                                                const baseId = tKey.slice(0, -4);
+                                                return `${categoryDefs[baseId]?.label || baseId}(火木土):${n}名`;
+                                              }
+                                              return `${categoryDefs[tKey]?.label || tKey}:${n}名`;
+                                            })
                                             .join(' / ');
                                           return (
                                             <span
                                               className="px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 text-[10px] font-bold"
-                                              title={`施設別必要数（計${taskTotalCnt}名）: ${facDetailStr}`}
+                                              title={`施設別必要数（${targetInfo.summaryLabel}）: ${facDetailStr}`}
                                             >
-                                              施設({taskFacEntries.length}):計{taskTotalCnt}
+                                              施設設定({targetInfo.isSame ? `計${targetInfo.mwfTotal}` : `${targetInfo.mwfTotal}/${targetInfo.ttsTotal}`})
                                             </span>
                                           );
                                         })() : catKind === 'req' ? (
@@ -11624,27 +11690,47 @@ ${messageText}`;
                                   </div>
                                 </div>
                               )}
-                              {editEffType === 'task' && (
-                                <div className="p-3 rounded-lg border border-teal-200 bg-teal-50/40 space-y-2.5">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <label className="text-xs font-bold text-teal-900">
-                                      必要施設・必要数設定（役割）
-                                    </label>
-                                    <span className="text-[10px] font-bold text-teal-700">
-                                      全施設合計: {getRoleTotalTargetCount(editingShift, categoryDefs)}名
-                                    </span>
-                                  </div>
-                                  <div className="space-y-1.5">
-                                    {Object.values(categoryDefs)
-                                      .filter(cat => resolveCategoryKind(cat) === 'facility')
-                                      .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
-                                      .map(cat => {
-                                        const curMap = editingShift.facilityTargets || {};
-                                        const reqVal = Math.max(0, Math.floor(Number(curMap[cat.id]) || 0));
+                              {editEffType === 'task' && (() => {
+                                const editTargetInfo = getRoleTotalTargetInfo(editingShift, categoryDefs);
+                                const curMap = getRoleFacilityTargets(editingShift, categoryDefs);
+                                const facilityRows = [];
+                                Object.values(categoryDefs)
+                                  .filter(cat => resolveCategoryKind(cat) === 'facility')
+                                  .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+                                  .forEach(cat => {
+                                    if (isJinkuriFacilityCategory(cat)) {
+                                      facilityRows.push({
+                                        targetKey: `${cat.id}_mwf`,
+                                        label: `${cat.label}（月・水・金）`,
+                                      });
+                                      facilityRows.push({
+                                        targetKey: `${cat.id}_tts`,
+                                        label: `${cat.label}（火・木・土）`,
+                                      });
+                                    } else {
+                                      facilityRows.push({
+                                        targetKey: cat.id,
+                                        label: cat.label,
+                                      });
+                                    }
+                                  });
+                                return (
+                                  <div className="p-3 rounded-lg border border-teal-200 bg-teal-50/40 space-y-2.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <label className="text-xs font-bold text-teal-900">
+                                        必要施設・必要数設定（役割）
+                                      </label>
+                                      <span className="text-[10px] font-bold text-teal-700">
+                                        全施設合計: {editTargetInfo.summaryLabel || '0名'}
+                                      </span>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                      {facilityRows.map(row => {
+                                        const reqVal = Math.max(0, Math.floor(Number(curMap[row.targetKey]) || 0));
                                         const isChecked = reqVal > 0;
                                         return (
                                           <div
-                                            key={cat.id}
+                                            key={row.targetKey}
                                             className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-xs transition ${
                                               isChecked
                                                 ? 'bg-white border-teal-400 text-teal-950 font-bold shadow-2xs'
@@ -11659,14 +11745,14 @@ ${messageText}`;
                                                 onChange={e => {
                                                   const nextMap = { ...curMap };
                                                   if (e.target.checked) {
-                                                    nextMap[cat.id] = nextMap[cat.id] > 0 ? nextMap[cat.id] : 1;
+                                                    nextMap[row.targetKey] = nextMap[row.targetKey] > 0 ? nextMap[row.targetKey] : 1;
                                                   } else {
-                                                    delete nextMap[cat.id];
+                                                    delete nextMap[row.targetKey];
                                                   }
                                                   setEditingShift({ ...editingShift, facilityTargets: nextMap });
                                                 }}
                                               />
-                                              <span className="truncate">{cat.label}</span>
+                                              <span className="truncate">{row.label}</span>
                                             </label>
                                             <div className="flex items-center gap-1 shrink-0">
                                               <span className="text-[10px] text-gray-500">必要数:</span>
@@ -11678,7 +11764,7 @@ ${messageText}`;
                                                   const nextNum = Math.max(1, parseInt(e.target.value, 10) || 1);
                                                   setEditingShift({
                                                     ...editingShift,
-                                                    facilityTargets: { ...curMap, [cat.id]: nextNum },
+                                                    facilityTargets: { ...curMap, [row.targetKey]: nextNum },
                                                   });
                                                 }}
                                               >
@@ -11690,12 +11776,13 @@ ${messageText}`;
                                           </div>
                                         );
                                       })}
+                                    </div>
+                                    <p className="text-[10px] text-teal-800 leading-snug">
+                                      ※チェックを入れて必要数を保存すると、全体表の「施設別」各施設スコア左側に役割が表示され、必要数達成でチェックマークが付きます。月別勤務表の下部集計にも全施設合計が表示されます。
+                                    </p>
                                   </div>
-                                  <p className="text-[10px] text-teal-800 leading-snug">
-                                    ※チェックを入れて必要数を保存すると、全体表の「施設別」各施設スコア左側に役割が表示され、必要数達成でチェックマークが付きます。月別勤務表の下部集計にも全施設合計が表示されます。
-                                  </p>
-                                </div>
-                              )}
+                                );
+                              })()}
                               <div className="mt-4 p-3 border rounded-lg bg-gray-50">
                                 <label className="flex items-center gap-2 cursor-pointer">
                                   <input 
