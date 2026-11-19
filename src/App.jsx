@@ -10911,11 +10911,8 @@ ${messageText}`;
                         appUser.role === 'admin' &&
                         activePopup.type === 'shift' &&
                         Boolean(popupStaff) &&
-                        (
-                          (Array.isArray(popupStaff.excludedCategories) && popupStaff.excludedCategories.includes(shift.category)) ||
-                          (Array.isArray(popupStaff.excludedShifts) && popupStaff.excludedShifts.includes(shift.code)) ||
-                          (isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(popupStaff, shift.code))
-                        );
+                        isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) &&
+                        !isShiftAllowedForStaff(popupStaff, shift.code);
                       return (
                         <button
                           key={shift.code}
