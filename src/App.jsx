@@ -2140,30 +2140,6 @@ export default function WorkScheduleApp() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         
-        const loadedStaffList = (data.staffList || []).map(s => ({
-          ...s,
-          loginId: s.loginId || '',
-          skills: s.skills || {},
-          minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
-          maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
-          contractWorkDaysMin:
-            s.contractWorkDaysMin !== undefined && s.contractWorkDaysMin !== ''
-              ? s.contractWorkDaysMin
-              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
-                ? s.contractWorkDays
-                : null,
-          contractWorkDaysMax:
-            s.contractWorkDaysMax !== undefined && s.contractWorkDaysMax !== ''
-              ? s.contractWorkDaysMax
-              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
-                ? s.contractWorkDays
-                : null,
-          excludeFromAi: s.excludeFromAi || false,
-          excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
-          excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
-          requestNote: s.requestNote || '',
-        }));
-
         const loadedCategoryDefs = { ...(data.categoryDefs || DEFAULT_CATEGORY_DEFS) };
         let existingMeCat = Object.values(loadedCategoryDefs).find(c => c && resolveCategoryKind(c) === 'me');
         if (!existingMeCat) {
@@ -2183,6 +2159,36 @@ export default function WorkScheduleApp() {
               type: rawShiftDefs[k].type || (catKind === 'role' || k.startsWith('task_') ? 'task' : 'shift'),
             };
           }
+        });
+
+        const loadedStaffList = (data.staffList || []).map(s => {
+          const restStaff = { ...s };
+          delete restStaff.contractWorkDays;
+          const resolvedMin =
+            s.contractWorkDaysMin !== undefined
+              ? (s.contractWorkDaysMin !== '' ? s.contractWorkDaysMin : null)
+              : (s.contractWorkDays !== undefined && s.contractWorkDays !== '' ? s.contractWorkDays : null);
+          const resolvedMax =
+            s.contractWorkDaysMax !== undefined
+              ? (s.contractWorkDaysMax !== '' ? s.contractWorkDaysMax : null)
+              : (s.contractWorkDays !== undefined && s.contractWorkDays !== '' ? s.contractWorkDays : null);
+          return {
+            ...restStaff,
+            loginId: s.loginId || '',
+            skills: s.skills || {},
+            minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
+            maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5,
+            contractWorkDaysMin: resolvedMin,
+            contractWorkDaysMax: resolvedMax,
+            excludeFromAi: s.excludeFromAi || false,
+            excludedCategories: (Array.isArray(s.excludedCategories) ? s.excludedCategories : []).filter(
+              cid => loadedCategoryDefs[cid] && resolveCategoryKind(loadedCategoryDefs[cid]) === 'facility'
+            ),
+            excludedShifts: (Array.isArray(s.excludedShifts) ? s.excludedShifts : []).filter(
+              c => isAiAssignableFacilityShiftDef(c, loadedShiftDefs, loadedCategoryDefs)
+            ),
+            requestNote: s.requestNote || '',
+          };
         });
         const existingMeShifts = Object.values(loadedShiftDefs).filter(
           s => s && isMeShiftDef(s.code, loadedShiftDefs, loadedCategoryDefs)
@@ -2445,7 +2451,12 @@ export default function WorkScheduleApp() {
       return { shift: rawEntry };
     }
     if (typeof rawEntry === 'object') {
-      return { ...rawEntry };
+      const cloned = { ...rawEntry };
+      if (cloned.teamShiftBy === 'opera') cloned.teamShiftBy = 'ope';
+      if (cloned.teamTaskBy === 'opera') cloned.teamTaskBy = 'ope';
+      if (cloned.editedShiftBy === 'opera') cloned.editedShiftBy = 'ope';
+      if (cloned.editedTaskBy === 'opera') cloned.editedTaskBy = 'ope';
+      return cloned;
     }
     return {};
   };
@@ -2515,11 +2526,9 @@ export default function WorkScheduleApp() {
       if (todayStr > deadlineStr) {
         return true;
       }
-    } else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
-      return true;
     }
     return false;
-  }, [year, month, adminSettings.deadlineDay, adminSettings.deadline]);
+  }, [year, month, adminSettings.deadlineDay]);
 
   // カテゴリ3(B案): スタッフ用の勤務変更・交換申請モーダルを開く初期化ヘルパー
   const openStaffChangeRequestModal = (initialDay = 1, defaultMode = 'swap') => {
@@ -2982,7 +2991,7 @@ export default function WorkScheduleApp() {
 
   // 現在のシフト設定に整合した休み希望カウント対象コード一覧を解決
   // ※施設シフト以外の「委・日勤・3以外・出勤」は出勤希望扱いのため休み希望数カウントから常時除外
-  const resolveEffectiveCountedOffShifts = (settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
+  const resolveEffectiveCountedOffShifts = useCallback((settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
     const rawList = Array.isArray(settingsObj?.countedOffShifts) ? settingsObj.countedOffShifts : ['HOPE'];
     const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
     if (isUntouchedDefault) {
@@ -3000,7 +3009,7 @@ export default function WorkScheduleApp() {
     const existingMatched = rawList.filter(c => Boolean(defs[c]) && !isWorkRequestShiftDef(defs[c], cats));
     if (existingMatched.length > 0) return existingMatched;
     return rawList.filter(c => !defs[c] || !isWorkRequestShiftDef(defs[c], cats));
-  };
+  }, [adminSettings, shiftDefs, categoryDefs]);
 
   // 基本設定でカウント対象シフトをON/OFF切り替え
   const toggleCountedOffShift = (code) => {
@@ -3867,21 +3876,27 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
 
   const handleEditStaff = (staff) => {
     if (!isMasterAdmin) return;
-    const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
-    const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
-    setTargetStaff({ 
-      ...staff, 
-      skills: staff.skills || {}, 
+    const exCats = (Array.isArray(staff.excludedCategories) ? staff.excludedCategories : []).filter(
+      cid => categoryDefs[cid] && resolveCategoryKind(categoryDefs[cid]) === 'facility'
+    );
+    const exShifts = (Array.isArray(staff.excludedShifts) ? staff.excludedShifts : []).filter(
+      c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)
+    );
+    const restStaff = { ...staff };
+    delete restStaff.contractWorkDays;
+    setTargetStaff({
+      ...restStaff,
+      skills: staff.skills || {},
       minCool3: staff.minCool3 !== undefined ? staff.minCool3 : 0,
       maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
       contractWorkDaysMin:
-        staff.contractWorkDaysMin !== undefined && staff.contractWorkDaysMin !== ''
-          ? staff.contractWorkDaysMin
-          : staff.contractWorkDays ?? null,
+        staff.contractWorkDaysMin !== undefined
+          ? (staff.contractWorkDaysMin !== '' ? staff.contractWorkDaysMin : null)
+          : (staff.contractWorkDays ?? null),
       contractWorkDaysMax:
-        staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== ''
-          ? staff.contractWorkDaysMax
-          : staff.contractWorkDays ?? null,
+        staff.contractWorkDaysMax !== undefined
+          ? (staff.contractWorkDaysMax !== '' ? staff.contractWorkDaysMax : null)
+          : (staff.contractWorkDays ?? null),
       excludeFromAi: staff.excludeFromAi || false,
       excludedCategories: exCats,
       excludedShifts: exShifts,
@@ -4259,10 +4274,16 @@ const handleResetSchedule = () => {
             const entry = normalizeUserInputEntry(newUserInputs[staffId]?.[day], curShift, curTask);
 
             if (isMasterReset) {
-              // 全体管理者の全消去: AIが作成したシフト（＝本人希望でも管理者手動固定[teamShiftBy]でもないシフト）のみ消去
+              // 全体管理者の全消去: AIが作成したシフト（＝勤務施設シフトかつ本人希望でも管理者手動固定[teamShiftBy]でもAI除外職員でもないシフト）のみ消去
+              const staffObjForClear = staffList.find(s => s.id === staffId);
+              const isNonAiShift = Boolean(
+                curShift && shiftDefs[curShift] && !isAiAssignableFacilityShiftDef(curShift, shiftDefs, categoryDefs)
+              );
               const hasLockedAdminShift = Boolean(
                 (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy]) ||
-                  isMeRoomShiftCode(curShift)
+                  isMeRoomShiftCode(curShift) ||
+                  isNonAiShift ||
+                  staffObjForClear?.excludeFromAi
               );
               const isStaffRequestShift = Boolean(entry.shift && curShift === entry.shift);
               if (curShift && !hasLockedAdminShift && !isStaffRequestShift) {
@@ -6093,13 +6114,14 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             c => c && shiftDefs[c] && getEffectiveShiftType(shiftDefs[c], categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(shiftDefs[c], categoryDefs)
           ).length;
 
+          const stPartContractRange = getPartTimeWeeklyContractRange(st);
           if (st.excludeFromAi || assignableDaysInThisWeek.length === 0) {
             mustKeepBlankDaysMinInThisWeek = 0;
             recommendedNewWorkDaysInThisWeek = '0日（変更不可）';
-          } else if (st.jobTitle === 'パート' && (st.contractWorkDaysMin || st.contractWorkDaysMax)) {
+          } else if (st.jobTitle === 'パート' && stPartContractRange) {
             // ★パート職員の週契約出勤日数（下限〜上限：絶対厳守ルール）
-            const wMin = Number(st.contractWorkDaysMin || st.contractWorkDaysMax);
-            const wMax = Number(st.contractWorkDaysMax || st.contractWorkDaysMin);
+            const wMin = stPartContractRange.min;
+            const wMax = stPartContractRange.max;
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
             const capByStreak = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
@@ -6259,10 +6281,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             powerScore: st.powerScore,
             minCool3: st.minCool3 ?? 0,
             maxCool3: st.maxCool3,
-            ...(st.contractWorkDaysMin || st.contractWorkDaysMax
+            ...(stPartContractRange
               ? {
-                  contractWorkDaysMin: st.contractWorkDaysMin ?? st.contractWorkDaysMax,
-                  contractWorkDaysMax: st.contractWorkDaysMax ?? st.contractWorkDaysMin,
+                  contractWorkDaysMin: stPartContractRange.min,
+                  contractWorkDaysMax: stPartContractRange.max,
                 }
               : {}),
             excludeFromAi: st.excludeFromAi,
@@ -6363,7 +6385,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
            ・mustKeepBlankDaysMinInThisWeek（assignableDaysInThisWeek のうち必ず空欄のまま残すべき最低日数）
            ・recommendedNewWorkDaysInThisWeek（今週AIが新規に割り当てる出勤日数の目安）
            を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
-         - ★契約出勤日数（"contractWorkDays"）が設定されている職員（パート含む）は、その契約出勤日数（月間または週単位）を【絶対厳守】してください。契約日数を1日でも超過したり不足したりしないよう、"recommendedNewWorkDaysInThisWeek" と "mustKeepBlankDaysMinInThisWeek" を最優先で守ってください。
+         - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。契約日数を1日でも超過したり不足したりしないよう、"recommendedNewWorkDaysInThisWeek" と "mustKeepBlankDaysMinInThisWeek" を最優先で守ってください。
       4. 3クール上限・下限と連続3クール禁止（★絶対厳守★）:
          - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（上限までの残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
          - 3クール下限（"minCool3" > 0）が設定されており "cumulativeStatsSoFar.remainingMinCool3Needed"（下限達成に必要な残り回数）が1回以上ある職員には、月間で下限回数以上に到達できるよう優先して3クールを割り当ててください。
@@ -7731,25 +7753,8 @@ ${messageText}`;
   }, [daysArray, shiftData, taskData, staffList, shiftDefs, categoryDefs, roleTaskDefs, year, month]);
 
   const countedOffShifts = useMemo(() => {
-    const rawList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
-    const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
-    if (isUntouchedDefault) {
-      const autoCodes = Object.values(shiftDefs)
-        .filter(
-          s =>
-            s &&
-            getEffectiveShiftType(s, categoryDefs) === 'shift' &&
-            (isTrueOffShiftDef(s, categoryDefs) || isKoushutsuShiftDef(s, categoryDefs))
-        )
-        .map(s => s.code);
-      if (autoCodes.length > 0) return autoCodes;
-    }
-    const existingMatched = rawList.filter(
-      c => Boolean(shiftDefs[c]) && !isWorkRequestShiftDef(shiftDefs[c], categoryDefs)
-    );
-    if (existingMatched.length > 0) return existingMatched;
-    return rawList.filter(c => !shiftDefs[c] || !isWorkRequestShiftDef(shiftDefs[c], categoryDefs));
-  }, [adminSettings.countedOffShifts, shiftDefs, categoryDefs]);
+    return resolveEffectiveCountedOffShifts(adminSettings, shiftDefs, categoryDefs);
+  }, [resolveEffectiveCountedOffShifts, adminSettings, shiftDefs, categoryDefs]);
 
   const clinicClosedDays = useMemo(() => {
     return Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
@@ -10911,11 +10916,8 @@ ${messageText}`;
                         appUser.role === 'admin' &&
                         activePopup.type === 'shift' &&
                         Boolean(popupStaff) &&
-                        (
-                          (Array.isArray(popupStaff.excludedCategories) && popupStaff.excludedCategories.includes(shift.category)) ||
-                          (Array.isArray(popupStaff.excludedShifts) && popupStaff.excludedShifts.includes(shift.code)) ||
-                          (isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(popupStaff, shift.code))
-                        );
+                        isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) &&
+                        !isShiftAllowedForStaff(popupStaff, shift.code);
                       return (
                         <button
                           key={shift.code}
@@ -11003,9 +11005,9 @@ ${messageText}`;
                             className="border p-2 rounded w-24 text-right" 
                             value={adminSettings.deadlineDay || ''} 
                             onChange={(e) => {
-                              const newSettings = { ...adminSettings, deadlineDay: e.target.value };
+                              const newSettings = { ...adminSettings, deadlineDay: e.target.value, deadline: '' };
                               setAdminSettings(newSettings);
-                              saveMasterData({ adminSettings: newSettings }); // ★修正
+                              saveMasterData({ adminSettings: newSettings });
                             }}
                           >
                             <option value="">未設定</option>
