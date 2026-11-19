@@ -9386,25 +9386,28 @@ ${messageText}`;
                                   </div>
                                   {appUser.role === 'admin' && group.kind === 'facility' && (
                                     <div className="flex items-center justify-end gap-1 flex-wrap text-[11px] font-bold">
-                                      {facilityRoleItems.map(rt => (
-                                        <span
-                                          key={rt.code}
-                                          title={`役割「${rt.label}」: ${rt.actual}/${rt.target}名（${rt.isMet ? '必要数充足' : `あと${rt.target - rt.actual}名必要`}）`}
-                                          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border ${
-                                            rt.isMet
-                                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                              : !isSun
-                                                ? 'bg-red-50 text-red-700 border-red-200'
-                                                : 'bg-white/80 text-gray-600 border-black/10'
-                                          }`}
-                                        >
-                                          <span>
-                                            {rt.label}
-                                            {rt.isMet ? (rt.target > 1 ? ` ${rt.actual}/${rt.target}` : '') : `:${rt.actual}/${rt.target}`}
+                                      {group.items.map(code => {
+                                        const sDef = shiftDefs[code];
+                                        if (!sDef) return null;
+                                        const cnt = dailyStats[d]?.[code] || 0;
+                                        const tgt = getTargetCount(code, d);
+                                        const isShort = !isSun && tgt > 0 && cnt < tgt;
+                                        return (
+                                          <span
+                                            key={code}
+                                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                              isShort
+                                                ? 'bg-red-100 text-red-700 border-red-300'
+                                                : cnt > 0
+                                                  ? 'bg-white/95 text-gray-700 border-black/10'
+                                                  : 'bg-white/60 text-gray-400 border-black/10'
+                                            }`}
+                                          >
+                                            <span className={sDef.text}>{sDef.label}</span>: {' '}
+                                            {`${cnt}/${tgt}`}
                                           </span>
-                                          {rt.isMet && <Check size={11} className="text-emerald-600 shrink-0" />}
-                                        </span>
-                                      ))}
+                                        );
+                                      })}
                                       <span
                                         className={`px-1.5 py-0.5 rounded ${
                                           targetPower > 0 && actualPower < targetPower && totalActual > 0
@@ -9421,35 +9424,65 @@ ${messageText}`;
                                   )}
                                 </div>
 
-                                {/* シフト内訳バッジ */}
-                                <div className="px-2.5 sm:px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1">
-                                  {group.items.map(code => {
-                                    const sDef = shiftDefs[code];
-                                    if (!sDef) return null;
-                                    const cnt = dailyStats[d]?.[code] || 0;
-                                    const tgt = getTargetCount(code, d);
-                                    if (appUser.role !== 'admin' && cnt === 0) return null;
-                                    const isShort = appUser.role === 'admin' && !isSun && tgt > 0 && cnt < tgt;
-                                    return (
-                                      <span
-                                        key={code}
-                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
-                                          isShort
-                                            ? 'bg-red-100 text-red-700 border-red-300'
-                                            : cnt > 0
-                                              ? 'bg-white text-gray-700 border-gray-200'
-                                              : 'bg-gray-100 text-gray-400 border-gray-200'
-                                        }`}
-                                      >
-                                        <span className={sDef.text}>{sDef.label}</span>:{' '}
-                                        {appUser.role === 'admin' ? `${cnt}/${tgt}` : `${cnt}名`}
-                                      </span>
-                                    );
-                                  })}
-                                  {appUser.role === 'admin' && !isSun && skillShortages.length > 0 && (
-                                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
-                                      ⚠ {skillShortages.map(s => `${s.skillLabel}${s.actual}/${s.target}`).join('・')}
-                                    </span>
+                                {/* 役割チェック・スキル不足バッジ（管理者の勤務施設は役割チェック、それ以外はシフト内訳） */}
+                                <div className="px-2.5 sm:px-3 py-1.5 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center gap-1 min-h-[29px]">
+                                  {appUser.role === 'admin' && group.kind === 'facility' ? (
+                                    <>
+                                      {facilityRoleItems.length > 0 ? (
+                                        facilityRoleItems.map(rt => (
+                                          <span
+                                            key={rt.code}
+                                            title={`役割「${rt.label}」: ${rt.actual}/${rt.target}名（${rt.isMet ? '必要数充足' : `あと${rt.target - rt.actual}名必要`}）`}
+                                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                              rt.isMet
+                                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                                : !isSun
+                                                  ? 'bg-red-100 text-red-700 border-red-300'
+                                                  : 'bg-white text-gray-600 border-gray-200'
+                                            }`}
+                                          >
+                                            <span>
+                                              {rt.label}
+                                              {rt.isMet ? (rt.target > 1 ? ` ${rt.actual}/${rt.target}` : '') : `:${rt.actual}/${rt.target}`}
+                                            </span>
+                                            {rt.isMet && <Check size={11} className="text-emerald-600 shrink-0" />}
+                                          </span>
+                                        ))
+                                      ) : (
+                                        skillShortages.length === 0 && (
+                                          <span className="text-[10px] text-gray-400">役割設定なし</span>
+                                        )
+                                      )}
+                                      {!isSun && skillShortages.length > 0 && (
+                                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
+                                          ⚠ {skillShortages.map(s => `${s.skillLabel}${s.actual}/${s.target}`).join('・')}
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    group.items.map(code => {
+                                      const sDef = shiftDefs[code];
+                                      if (!sDef) return null;
+                                      const cnt = dailyStats[d]?.[code] || 0;
+                                      const tgt = getTargetCount(code, d);
+                                      if (appUser.role !== 'admin' && cnt === 0) return null;
+                                      const isShort = appUser.role === 'admin' && !isSun && tgt > 0 && cnt < tgt;
+                                      return (
+                                        <span
+                                          key={code}
+                                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                            isShort
+                                              ? 'bg-red-100 text-red-700 border-red-300'
+                                              : cnt > 0
+                                                ? 'bg-white text-gray-700 border-gray-200'
+                                                : 'bg-gray-100 text-gray-400 border-gray-200'
+                                          }`}
+                                        >
+                                          <span className={sDef.text}>{sDef.label}</span>: {' '}
+                                          {appUser.role === 'admin' ? `${cnt}/${tgt}` : `${cnt}名`}
+                                        </span>
+                                      );
+                                    })
                                   )}
                                 </div>
 
@@ -10209,16 +10242,10 @@ ${messageText}`;
                               )}
                             </tr>
                             {roleTaskDefs.map(taskDef => {
-                              const taskTargetInfo = getRoleTotalTargetInfo(taskDef, categoryDefs);
                               return (
                                 <tr key={`role_sum_${taskDef.code}`}>
                                   <td className="sticky left-0 bg-white border-r border-b p-2 text-xs text-right text-gray-500">
                                     <span className={taskDef.text}>{taskDef.label}</span> ({taskDef.code})
-                                    {taskTargetInfo.maxTotal > 0 && (
-                                      <span className="ml-1 text-[10px] text-teal-700 font-bold" title={`必要数合計: ${taskTargetInfo.summaryLabel}`}>
-                                        [{taskTargetInfo.shortBadgeLabel}]
-                                      </span>
-                                    )}
                                   </td>
                                   {daysArray.map(day => {
                                     const count = dailyStats[day]?.[taskDef.code] || 0;
