@@ -2005,6 +2005,7 @@ export default function WorkScheduleApp() {
   // 管理者編集用の戻る・進む（Undo / Redo）履歴
   const [undoHistory, setUndoHistory] = useState({ past: [], future: [] });
   const undoHistoryRef = useRef({ past: [], future: [] });
+  const [showUndoHistoryModal, setShowUndoHistoryModal] = useState(false);
   const scheduleSnapshotRef = useRef({
     shifts: {},
     tasks: {},
@@ -2946,7 +2947,13 @@ export default function WorkScheduleApp() {
   // 管理者が「希望履歴そのもの」を取り消すハンドラ
   const handleClearUserRequest = (staffId, day, type = 'shift') => {
     if (appUser?.role === 'admin') {
-      recordAdminUndoSnapshot();
+      const targetStaff = staffList.find(s => s.id === staffId);
+      const reqCode = type === 'shift' ? getUserRequestedShift(staffId, day) : getUserRequestedTask(staffId, day);
+      const reqLabel = reqCode ? (shiftDefs[reqCode]?.label || reqCode) : '希望';
+      recordAdminUndoSnapshot(null, {
+        label: `${targetStaff?.name || '職員'}（${month}/${day}）${type === 'shift' ? 'シフト' : 'タスク'}希望取消`,
+        detail: `${reqLabel} を取消`,
+      });
     }
     const currentShiftBefore = shiftData[staffId]?.[day];
     const currentTaskBefore = taskData[staffId]?.[day];
@@ -3307,7 +3314,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           (entry.editedShiftBy !== loginAdminKey ||
             (activeTeamKey && entry.teamShiftBy !== activeTeamKey));
         if (changedShift || changedOwner) {
-          recordAdminUndoSnapshot();
+          const targetStaff = staffList.find(s => s.id === staffId);
+          const beforeLbl = currentShiftBefore ? (shiftDefs[currentShiftBefore]?.label || currentShiftBefore) : '空欄';
+          const afterLbl = toolCode ? (shiftDefs[toolCode]?.label || toolCode) : '空欄';
+          recordAdminUndoSnapshot(null, {
+            label: `${targetStaff?.name || '職員'}（${month}/${day}）シフト変更`,
+            detail: `${beforeLbl} → ${afterLbl}`,
+          });
         }
       }
 
@@ -3401,7 +3414,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           (entry.editedTaskBy !== loginAdminKey ||
             (activeTeamKey && entry.teamTaskBy !== activeTeamKey));
         if (changedTask || changedOwner) {
-          recordAdminUndoSnapshot();
+          const targetStaff = staffList.find(s => s.id === staffId);
+          const beforeLbl = currentTaskBefore ? (shiftDefs[currentTaskBefore]?.label || currentTaskBefore) : '空欄';
+          const afterLbl = toolCode ? (shiftDefs[toolCode]?.label || toolCode) : '空欄';
+          recordAdminUndoSnapshot(null, {
+            label: `${targetStaff?.name || '職員'}（${month}/${day}）タスク変更`,
+            detail: `${beforeLbl} → ${afterLbl}`,
+          });
         }
       }
 
@@ -3460,7 +3479,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   // 緊急待機番(ベル)のタスク欄背景色（オレンジ）をタスク内容を変更せずにON/OFF切り替え
   const handleToggleBell = (staffId, day) => {
     if (!appUser || appUser.role !== 'admin') return;
-    recordAdminUndoSnapshot();
+    const targetStaff = staffList.find(s => s.id === staffId);
+    const wasBellOn = Boolean(bellData[staffId]?.[day]);
+    recordAdminUndoSnapshot(null, {
+      label: `${targetStaff?.name || '職員'}（${month}/${day}）緊急待機番`,
+      detail: wasBellOn ? 'ON → OFF' : 'OFF → ON',
+    });
     const loginAdminKey = getLoggedInAdminKey();
     const nextBells = { ...bellData };
     const staffBells = nextBells[staffId] ? { ...nextBells[staffId] } : {};
@@ -3509,7 +3533,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       return;
     }
 
-    recordAdminUndoSnapshot();
+    const targetStaff = staffList.find(s => s.id === staffId);
+    const wasLeaderOn = Boolean(leaderData[staffId]?.[day]);
+    recordAdminUndoSnapshot(null, {
+      label: `${targetStaff?.name || '職員'}（${month}/${day}）${cat?.label || ''}リーダー色`,
+      detail: wasLeaderOn ? 'ON → OFF' : 'OFF → ON',
+    });
     const loginAdminKey = getLoggedInAdminKey();
     const nextLeaders = { ...leaderData };
     const nextUserInputs = { ...userInputs };
@@ -4242,7 +4271,10 @@ const handleResetSchedule = () => {
         ? `${year}年${month}月の「AIが作成したシフト」のみをすべて消去しますか？\n\n※職員本人の希望入力、各班管理者の入力、および全体管理者が手動入力（固定）したシフト・タスク・待機番はすべてそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`
         : `「${adminLabel}」が編集した${year}年${month}月のシフト・タスク等を消去しますか？\n\n※職員本人の希望入力や、他の管理者が編集したシフトはそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`,
       onConfirm: () => {
-        recordAdminUndoSnapshot();
+        recordAdminUndoSnapshot(null, {
+          label: isMasterReset ? 'AI作成シフトを全消去' : `${adminLabel}の編集内容を全消去`,
+          detail: `${year}年${month}月`,
+        });
         const newShiftData = JSON.parse(JSON.stringify(shiftData || {}));
         const newTaskData = JSON.parse(JSON.stringify(taskData || {}));
         const newBellData = JSON.parse(JSON.stringify(bellData || {}));
@@ -6731,6 +6763,9 @@ ${dailyCheckExampleLines}
         userInputs: originalUserInputs,
         bells: bellData,
         leaders: leaderData,
+      }, {
+        label: 'AIシフト自動作成',
+        detail: `${year}年${month}月 一括作成`,
       });
       setShiftData(finalShifts);
       setTaskData(finalTasks);
@@ -6967,7 +7002,14 @@ ${dailyCheckExampleLines}
       prevCode: (item.kind === 'shift' ? shiftData[item.staffId]?.[item.day] : taskData[item.staffId]?.[item.day]) || null,
     }));
 
-    recordAdminUndoSnapshot();
+    const changePreview = targetMsg.proposedChanges
+      .slice(0, 3)
+      .map(it => `${staffList.find(s => s.id === it.staffId)?.name || '職員'}(${month}/${it.day})`)
+      .join('・');
+    recordAdminUndoSnapshot(null, {
+      label: `AIチャット提案を反映（${targetMsg.proposedChanges.length}件）`,
+      detail: changePreview + (targetMsg.proposedChanges.length > 3 ? ' ほか' : ''),
+    });
 
     targetMsg.proposedChanges.forEach(item => {
       if (item.kind === 'shift') {
@@ -8137,18 +8179,28 @@ ${messageText}`;
     const emptyHistory = { past: [], future: [] };
     undoHistoryRef.current = emptyHistory;
     setUndoHistory(emptyHistory);
+    setShowUndoHistoryModal(false);
   }, [year, month, appUser?.role, appUser?.initialView]);
 
-  const recordAdminUndoSnapshot = (customSnapshot = null) => {
+  const recordAdminUndoSnapshot = (customSnapshot = null, actionMeta = null) => {
     if (!appUser || appUser.role !== 'admin') return;
     const baseSnap = cloneScheduleSnapshot(customSnapshot || scheduleSnapshotRef.current);
-    const nextPast = [...undoHistoryRef.current.past, baseSnap].slice(-50);
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const meta = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      label: actionMeta?.label || 'シフト編集',
+      detail: actionMeta?.detail || '',
+      timeStr,
+    };
+    const nextPast = [...undoHistoryRef.current.past, { snapshot: baseSnap, actionMeta: meta }].slice(-50);
     const nextHistory = { past: nextPast, future: [] };
     undoHistoryRef.current = nextHistory;
     setUndoHistory(nextHistory);
   };
 
   const applyScheduleSnapshotForHistory = (snapshot) => {
+    if (!snapshot) return;
     const restored = cloneScheduleSnapshot(snapshot);
     scheduleSnapshotRef.current = restored;
     setActivePopup(null);
@@ -8167,11 +8219,12 @@ ${messageText}`;
     const { past, future } = undoHistoryRef.current;
     if (past.length === 0) return;
 
-    const targetSnapshot = past[past.length - 1];
+    const lastEntry = past[past.length - 1];
+    const targetSnapshot = lastEntry.snapshot || lastEntry;
     const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
     const nextHistory = {
       past: past.slice(0, -1),
-      future: [currentSnapshot, ...future].slice(0, 50),
+      future: [{ snapshot: currentSnapshot, actionMeta: lastEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }, ...future].slice(0, 50),
     };
     undoHistoryRef.current = nextHistory;
     setUndoHistory(nextHistory);
@@ -8185,15 +8238,51 @@ ${messageText}`;
     const { past, future } = undoHistoryRef.current;
     if (future.length === 0) return;
 
-    const targetSnapshot = future[0];
+    const nextEntry = future[0];
+    const targetSnapshot = nextEntry.snapshot || nextEntry;
     const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
     const nextHistory = {
-      past: [...past, currentSnapshot].slice(-50),
+      past: [...past, { snapshot: currentSnapshot, actionMeta: nextEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }].slice(-50),
       future: future.slice(1),
     };
     undoHistoryRef.current = nextHistory;
     setUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(targetSnapshot);
+  };
+
+  const handleJumpToHistoryStep = (targetStep) => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isAutoFillRunningRef.current) return;
+    if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
+    const { past, future } = undoHistoryRef.current;
+    const currentStep = past.length;
+    const totalActions = past.length + future.length;
+    if (targetStep === currentStep || targetStep < 0 || targetStep > totalActions) return;
+    const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
+    const allActions = [
+      ...past.map(p => p.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+      ...future.map(f => f.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+    ];
+    const allStates = [
+      ...past.map(p => p.snapshot || p),
+      currentSnapshot,
+      ...future.map(f => f.snapshot || f),
+    ];
+    const nextPast = Array.from({ length: targetStep }, (_, i) => ({
+      snapshot: allStates[i],
+      actionMeta: allActions[i],
+    }));
+    const nextFuture = Array.from({ length: totalActions - targetStep }, (_, idx) => {
+      const i = targetStep + idx;
+      return {
+        snapshot: allStates[i + 1],
+        actionMeta: allActions[i],
+      };
+    });
+    const nextHistory = { past: nextPast, future: nextFuture };
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+    applyScheduleSnapshotForHistory(allStates[targetStep]);
   };
 
   const undoRedoActionsRef = useRef({ undo: () => {}, redo: () => {} });
@@ -8463,6 +8552,21 @@ ${messageText}`;
                >
                  <ChevronLeft size={16} />
                  <span className="hidden xl:inline">戻る</span>
+               </button>
+               <div className="w-px h-4 bg-gray-300" />
+               <button
+                 type="button"
+                 onClick={() => setShowUndoHistoryModal(true)}
+                 className="flex items-center gap-1 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 transition font-bold text-xs"
+                 title="作業の履歴（誰の何日を変更したか）を確認し、選択した状態に移行します"
+               >
+                 <Clock size={14} className="text-indigo-600 shrink-0" />
+                 <span>履歴</span>
+                 {(undoHistory.past.length + undoHistory.future.length) > 0 && (
+                   <span className="px-1 py-0.2 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-extrabold leading-none">
+                     {undoHistory.past.length}/{undoHistory.past.length + undoHistory.future.length}
+                   </span>
+                 )}
                </button>
                <div className="w-px h-4 bg-gray-300" />
                <button
@@ -10747,7 +10851,12 @@ ${messageText}`;
                           onClick={() => {
                             if (!isMasterAdmin && teamClearPerm.allowed && !popupOptions.some(o => o.code === popupReqCode)) {
                               // 班管理者が自班の入力を取り消して元の個人希望に戻す場合
-                              recordAdminUndoSnapshot();
+                              const beforeLbl = popupCurrentCode ? (shiftDefs[popupCurrentCode]?.label || popupCurrentCode) : '空欄';
+                              const afterLbl = popupReqDef ? popupReqDef.label : popupReqCode;
+                              recordAdminUndoSnapshot(null, {
+                                label: `${popupStaff?.name || '職員'}（${month}/${activePopup.day}）希望に戻す`,
+                                detail: `${beforeLbl} → ${afterLbl}`,
+                              });
                               const nextShifts = { ...shiftData, [activePopup.staffId]: { ...(shiftData[activePopup.staffId] || {}), [activePopup.day]: popupReqCode } };
                               const entry = normalizeUserInputEntry(userInputs[activePopup.staffId]?.[activePopup.day], shiftData[activePopup.staffId]?.[activePopup.day], taskData[activePopup.staffId]?.[activePopup.day]);
                               delete entry.teamShiftBy;
@@ -10965,6 +11074,180 @@ ${messageText}`;
                   日曜日のタスク欄は緊急待機番の色付けのみ設定可能です
                 </p>
               )}
+            </div>
+          );
+        })()}
+
+        {/* 作業履歴一覧・状態移行モーダル */}
+        {showUndoHistoryModal && appUser?.role === 'admin' && (() => {
+          const pastList = undoHistory.past || [];
+          const futureList = undoHistory.future || [];
+          const currentStep = pastList.length;
+          const allActions = [
+            ...pastList.map(p => p.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+            ...futureList.map(f => f.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+          ];
+          const totalSteps = allActions.length;
+          const stepRows = Array.from({ length: totalSteps + 1 }, (_, stepIdx) => {
+            if (stepIdx === 0) {
+              return {
+                stepIdx: 0,
+                label: '作業開始時の状態（初期状態）',
+                detail: `${year}年${month}月を開いた時点、または履歴リセット時点の状態`,
+                timeStr: '',
+                isInitial: true,
+              };
+            }
+            const meta = allActions[stepIdx - 1] || {};
+            return {
+              stepIdx,
+              label: meta.label || 'シフト編集',
+              detail: meta.detail || '',
+              timeStr: meta.timeStr || '',
+              isInitial: false,
+            };
+          }).reverse();
+
+          return (
+            <div className="absolute inset-0 bg-black/50 z-[115] flex items-center justify-center p-4" onClick={() => setShowUndoHistoryModal(false)}>
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[82vh] border border-gray-200" onClick={e => e.stopPropagation()}>
+                <div className="px-4 py-3 bg-gradient-to-r from-indigo-600 to-slate-800 text-white flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Clock size={18} className="text-indigo-200" />
+                    <div>
+                      <h3 className="text-sm font-bold leading-tight">変更履歴（{year}年{month}月）</h3>
+                      <p className="text-[11px] text-indigo-100">誰の何日を変更したかを確認し、クリックでその時点の状態に移行できます</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowUndoHistoryModal(false)}
+                    className="p-1 rounded-lg hover:bg-white/15 text-white transition"
+                    title="閉じる"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="px-4 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-xs text-gray-600 shrink-0">
+                  <span>
+                    記録件数: <strong className="text-gray-900">{totalSteps}</strong> 件（最大50件保持）
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleUndoSchedule}
+                      disabled={pastList.length === 0}
+                      className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 font-bold text-[11px] text-gray-700 flex items-center gap-0.5"
+                    >
+                      <ChevronLeft size={13} /> 1つ戻る
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedoSchedule}
+                      disabled={futureList.length === 0}
+                      className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 font-bold text-[11px] text-gray-700 flex items-center gap-0.5"
+                    >
+                      1つ進む <ChevronRight size={13} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 overflow-y-auto flex-1 space-y-1.5">
+                  {totalSteps === 0 ? (
+                    <div className="py-10 text-center text-gray-400 text-xs">
+                      まだこの画面での変更履歴はありません。<br />
+                      シフト・タスクの変更やAI作成を行うとここに履歴が記録されます。
+                    </div>
+                  ) : (
+                    stepRows.map(row => {
+                      const isCurrent = row.stepIdx === currentStep;
+                      const isFuture = row.stepIdx > currentStep;
+                      return (
+                        <div
+                          key={`hist_step_${row.stepIdx}`}
+                          onClick={() => {
+                            if (!isCurrent) {
+                              handleJumpToHistoryStep(row.stepIdx);
+                            }
+                          }}
+                          className={`p-2.5 rounded-lg border transition flex items-center justify-between gap-2 ${
+                            isCurrent
+                              ? 'bg-indigo-50/90 border-indigo-400 ring-1 ring-indigo-300'
+                              : isFuture
+                                ? 'bg-amber-50/40 border-gray-200 hover:border-amber-300 hover:bg-amber-50/80 cursor-pointer'
+                                : 'bg-white border-gray-200 hover:border-indigo-300 hover:bg-slate-50 cursor-pointer'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
+                                isCurrent
+                                  ? 'bg-indigo-600 text-white'
+                                  : row.isInitial
+                                    ? 'bg-gray-200 text-gray-700'
+                                    : isFuture
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                #{row.stepIdx}
+                              </span>
+                              <span className={`text-xs font-bold truncate ${isCurrent ? 'text-indigo-950' : 'text-gray-800'}`}>
+                                {row.label}
+                              </span>
+                              {row.timeStr && (
+                                <span className="text-[10px] text-gray-400 font-mono ml-auto">
+                                  {row.timeStr}
+                                </span>
+                              )}
+                            </div>
+                            {row.detail && (
+                              <div className="mt-1 text-[11px] text-gray-600 font-medium truncate">
+                                {row.detail}
+                              </div>
+                            )}
+                          </div>
+                          <div className="shrink-0">
+                            {isCurrent ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-indigo-600 text-white text-[10px] font-bold shadow-xs">
+                                <Check size={11} /> 現在の状態
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleJumpToHistoryStep(row.stepIdx);
+                                }}
+                                className={`px-2 py-1 rounded-md border text-[10px] font-bold transition ${
+                                  isFuture
+                                    ? 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'
+                                    : 'bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                                }`}
+                              >
+                                {isFuture ? 'この状態に進む' : 'この状態に戻す'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between shrink-0">
+                  <span className="text-[11px] text-gray-500">
+                    ※状態に移行すると自動でクラウドにも保存されます
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowUndoHistoryModal(false)}
+                    className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-900 text-white text-xs font-bold transition"
+                  >
+                    閉じる
+                  </button>
+                </div>
+              </div>
             </div>
           );
         })()}
