@@ -805,6 +805,132 @@ const getFacilityTargetPowerScore = (cat, adminSettings = {}) => {
   return 0;
 };
 
+// 案A: 固定の30点・40点ではなく、その日の出勤スタッフ全体の1人あたり平均スコアと各施設の人数比から動的に期待スコア・施設間偏りを算出
+const evaluateDailyFacilityPowerBalance = ({
+  facilityCats = [],
+  shiftDefs = {},
+  categoryDefs = {},
+  actualHeadcountByCat = {},
+  powerScoreByCat = {},
+  readTargetCount = () => 0,
+  adminSettings = {},
+  fallbackStaffAvgScore = 10,
+}) => {
+  const enabledCats = facilityCats.filter(cat => getFacilityTargetPowerScore(cat, adminSettings) > 0);
+  let totalAssignedHc = 0;
+  let totalAssignedScore = 0;
+  const catStats = {};
+
+  enabledCats.forEach(cat => {
+    const codes = Object.values(shiftDefs)
+      .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
+      .map(sd => sd.code);
+    const targetHc = codes.reduce((sum, c) => sum + readTargetCount(c), 0);
+    const actualHc = actualHeadcountByCat[cat.id] || 0;
+    const actualScore = powerScoreByCat[cat.id] || 0;
+    const isActive = targetHc > 0 || actualHc > 0;
+    if (actualHc > 0) {
+      totalAssignedHc += actualHc;
+      totalAssignedScore += actualScore;
+    }
+    catStats[cat.id] = {
+      catId: cat.id,
+      label: cat.label,
+      targetHc,
+      actualHc,
+      actualScore,
+      actualAvg: actualHc > 0 ? actualScore / actualHc : 0,
+      isActive,
+      isEnabled: true,
+    };
+  });
+
+  const dayAvgScore = totalAssignedHc > 0 ? totalAssignedScore / totalAssignedHc : fallbackStaffAvgScore;
+  const activeWithStaff = Object.values(catStats).filter(st => st.isActive && st.actualHc > 0);
+  const maxFacAvg = activeWithStaff.length > 0 ? Math.max(...activeWithStaff.map(st => st.actualAvg)) : dayAvgScore;
+  const minFacAvg = activeWithStaff.length > 0 ? Math.min(...activeWithStaff.map(st => st.actualAvg)) : dayAvgScore;
+  const maxFacObj = activeWithStaff.find(st => st.actualAvg === maxFacAvg) || null;
+
+  const byCat = {};
+  const imbalancedItems = [];
+
+  facilityCats.forEach(cat => {
+    const st = catStats[cat.id];
+    if (!st) {
+      const actualHc = actualHeadcountByCat[cat.id] || 0;
+      const actualScore = powerScoreByCat[cat.id] || 0;
+      byCat[cat.id] = {
+        catId: cat.id,
+        label: cat.label,
+        isEnabled: false,
+        isActive: actualHc > 0,
+        actualHc,
+        targetHc: 0,
+        actualScore,
+        expectedScore: 0,
+        actualAvg: actualHc > 0 ? Number((actualScore / actualHc).toFixed(1)) : 0,
+        dayAvg: Number(dayAvgScore.toFixed(1)),
+        diffFromDayAvg: 0,
+        isImbalancedLow: false,
+        isImbalancedHigh: false,
+      };
+      return;
+    }
+
+    const refHc = st.actualHc > 0 ? st.actualHc : st.targetHc;
+    const expectedScore = refHc > 0 ? Math.round(dayAvgScore * refHc) : 0;
+    const diffFromDayAvg = st.actualHc > 0 ? st.actualAvg - dayAvgScore : 0;
+    const gapFromMax = st.actualHc > 0 ? maxFacAvg - st.actualAvg : 0;
+
+    // 2施設以上稼働している日に、1人あたり平均が当日全体平均より0.9点以上低い、または最高施設と1.6点以上差がある場合は「低スコア偏り」
+    const isImbalancedLow =
+      activeWithStaff.length >= 2 &&
+      st.actualHc > 0 &&
+      (dayAvgScore - st.actualAvg >= 0.9 || gapFromMax >= 1.6);
+
+    const isImbalancedHigh =
+      activeWithStaff.length >= 2 &&
+      st.actualHc > 0 &&
+      (st.actualAvg - dayAvgScore >= 1.0 || (st.actualAvg === maxFacAvg && maxFacAvg - minFacAvg >= 1.6));
+
+    byCat[cat.id] = {
+      catId: cat.id,
+      label: cat.label,
+      isEnabled: true,
+      isActive: st.isActive,
+      actualHc: st.actualHc,
+      targetHc: st.targetHc,
+      actualScore: st.actualScore,
+      expectedScore,
+      actualAvg: Number(st.actualAvg.toFixed(1)),
+      dayAvg: Number(dayAvgScore.toFixed(1)),
+      diffFromDayAvg: Number(diffFromDayAvg.toFixed(1)),
+      isImbalancedLow,
+      isImbalancedHigh,
+      highFacilityLabel: maxFacObj && maxFacObj.catId !== cat.id ? maxFacObj.label : null,
+      highFacilityAvg: maxFacObj ? Number(maxFacObj.actualAvg.toFixed(1)) : Number(dayAvgScore.toFixed(1)),
+    };
+
+    if (isImbalancedLow) {
+      const highHint =
+        maxFacObj && maxFacObj.catId !== cat.id
+          ? `（当日平均${dayAvgScore.toFixed(1)}点/人・${maxFacObj.label}平均${maxFacObj.actualAvg.toFixed(1)}点に高スコア集中）`
+          : `（当日平均${dayAvgScore.toFixed(1)}点/人）`;
+      imbalancedItems.push(
+        `${cat.label} ${st.actualScore}/目安${expectedScore}点 [平均${st.actualAvg.toFixed(1)}点]${highHint}`
+      );
+    }
+  });
+
+  return {
+    dayAvgScore: Number(dayAvgScore.toFixed(1)),
+    maxFacAvg: Number(maxFacAvg.toFixed(1)),
+    minFacAvg: Number(minFacAvg.toFixed(1)),
+    byCat,
+    imbalancedItems,
+  };
+};
+
 const resolveFacilitySkillTarget = (cat, skillKey, adminSettings = {}) => {
   if (!cat || resolveCategoryKind(cat) !== 'facility') return 0;
   const customMap = adminSettings?.facilitySkillTargets;
@@ -897,7 +1023,7 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
     const headerExtras = [];
     if (kind === 'facility') {
       const pTarget = getFacilityTargetPowerScore(cat, adminSettings);
-      headerExtras.push(pTarget > 0 ? `目標スコア:${pTarget}点以上` : 'スコア判定なし');
+      headerExtras.push(pTarget > 0 ? 'パワーバランス均等化対象（当日平均スコア×人数比）' : 'スコア判定なし');
       const reqSkills = STAFF_SKILLS
         .map(sk => ({ label: sk.label, cnt: resolveFacilitySkillTarget(cat, sk.key, adminSettings) }))
         .filter(x => x.cnt > 0)
@@ -1678,26 +1804,28 @@ const evaluateScheduleValidation = ({
       });
     }
 
-    // (c) 目標パワースコア参考チェック（各施設の実際のカテゴリ設定・目標スコア設定を動的参照）
-    const pItems = [];
-    facilityCats.forEach(cat => {
-      const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
-      if (targetScore <= 0) return;
-      const codes = Object.values(shiftDefs)
-        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-        .map(sd => sd.code);
-      const tSum = codes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
-      const isActive = tSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
-      const actualScore = powerScoreByCat[cat.id] || 0;
-      if (isActive && actualScore < targetScore) {
-        pItems.push(`${cat.label} ${actualScore}/${targetScore}点`);
-      }
+    // (c) パワーバランス参考チェック（案A: 当日出勤者の施設間1人あたり平均スコアと人数比の動的目安で偏りを検出）
+    const activePoolForAvg = staffList.filter(s => !s.excludeFromAi);
+    const avgPool = activePoolForAvg.length > 0 ? activePoolForAvg : staffList;
+    const fallbackStaffAvgScore =
+      avgPool.length > 0
+        ? avgPool.reduce((sum, s) => sum + (staffPowerMap[s.id] || 0), 0) / avgPool.length
+        : 10;
+    const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+      facilityCats,
+      shiftDefs,
+      categoryDefs,
+      actualHeadcountByCat,
+      powerScoreByCat,
+      readTargetCount: (c) => readTargetCount(c, d),
+      adminSettings,
+      fallbackStaffAvgScore,
     });
-    if (pItems.length > 0) {
+    if (dayPowerBalance.imbalancedItems.length > 0) {
       dailyPowerShortages.push({
         day: d,
         dowLabel,
-        items: pItems,
+        items: dayPowerBalance.imbalancedItems,
       });
     }
   });
@@ -5129,24 +5257,36 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
     });
 
-    // 現在のカテゴリ設定から目標パワースコア・必須スキル設定を動的整形
+    // 現在のカテゴリ設定からパワーバランス対象施設（案A: 当日平均スコア×人数比）と必須スキル設定を動的整形
+    const activeAiStaffForAvg = staffList.filter(s => !s.excludeFromAi);
+    const staffPoolForAvg = activeAiStaffForAvg.length > 0 ? activeAiStaffForAvg : staffList;
+    const overallStaffAvgPowerScore =
+      staffPoolForAvg.length > 0
+        ? Number((staffPoolForAvg.reduce((sum, s) => sum + (staffPowerMap[s.id] || 0), 0) / staffPoolForAvg.length).toFixed(1))
+        : 10;
+
     const categoriesMeta = {};
     const facilityPowerTargetsSummary = {};
     sortedCategories.forEach(cat => {
       const kind = resolveCategoryKind(cat);
       if (!includeTasks && kind === 'role') return;
       const targetPowerScore = kind === 'facility' ? getFacilityTargetPowerScore(cat, adminSettings) : 0;
+      const isPowerBalanceTarget = targetPowerScore > 0;
       categoriesMeta[cat.id] = {
         id: cat.id,
         label: cat.label,
         kind,
         order: cat.order ?? 99,
-        ...(kind === 'facility' ? { targetPowerScore } : {}),
+        ...(kind === 'facility' ? { isPowerBalanceTarget, referenceStaffAvgScore: overallStaffAvgPowerScore } : {}),
       };
       if (kind === 'facility') {
         facilityPowerTargetsSummary[cat.id] = {
           facilityLabel: cat.label,
           targetPowerScore,
+          isPowerBalanceTarget,
+          balanceRule: isPowerBalanceTarget
+            ? `当日出勤者の1人あたり平均スコア（全体平均目安:${overallStaffAvgPowerScore}点/人）×施設人数で施設間均等化`
+            : 'スコア判定なし',
         };
       }
     });
@@ -5216,22 +5356,30 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         shortages.push(`${sh.catLabel} 必須スキル[${sh.skillLabel}]: ${sh.actual}/${sh.target}名`);
       });
 
+      const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+        facilityCats,
+        shiftDefs,
+        categoryDefs,
+        actualHeadcountByCat,
+        powerScoreByCat: actualScoreByCat,
+        readTargetCount: (c) => getTargetCount(c, d),
+        adminSettings,
+        fallbackStaffAvgScore: overallStaffAvgPowerScore,
+      });
       const facilityPowerScores = {};
       facilityCats.forEach(cat => {
-        const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
-        const actualScore = actualScoreByCat[cat.id] || 0;
-        const catShiftCodes = Object.values(shiftDefs)
-          .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-          .map(sd => sd.code);
-        const targetHcSum = catShiftCodes.reduce((sum, c) => sum + getTargetCount(c, d), 0);
-        const isActive = targetHcSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
+        const pBal = dayPowerBalance.byCat[cat.id];
         facilityPowerScores[cat.id] = {
           label: cat.label,
-          actualScore,
-          targetScore,
+          actualScore: pBal?.actualScore || 0,
+          expectedBalancedScore: pBal?.expectedScore || 0,
+          actualAvgPerPerson: pBal?.actualAvg || 0,
+          dayOverallAvgPerPerson: dayPowerBalance.dayAvgScore,
+          isPowerBalanceTarget: Boolean(pBal?.isEnabled),
+          isImbalancedLow: Boolean(pBal?.isImbalancedLow),
         };
-        if (targetScore > 0 && isActive && actualScore < targetScore) {
-          shortages.push(`${cat.label}スコア: ${actualScore}/${targetScore}点`);
+        if (pBal?.isEnabled && pBal?.isActive && pBal?.isImbalancedLow) {
+          shortages.push(`${cat.label}パワーバランス偏り: ${pBal.actualScore}/目安${pBal.expectedScore}点(平均${pBal.actualAvg}点 vs 当日平均${dayPowerBalance.dayAvgScore}点)`);
         }
       });
 
@@ -5857,8 +6005,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         ? powerTargetEntries
             .map(([catId, fp]) =>
               fp.targetPowerScore > 0
-                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
-                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+                ? `${fp.facilityLabel}(${catId}): 当日平均×人数で均等化`
+                : `${fp.facilityLabel}(${catId}): スコア判定なし`
             )
             .join(' ／ ')
         : '設定なし';
@@ -6430,7 +6578,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して、可能な範囲で満たしてください。
          - 【重要：完璧に埋めきらなくてよいルール】AI対象スタッフだけで必要人数を100%埋めようとして、誰かの週休確保（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ることは絶対禁止です。足りない枠は後からパート職員やAI除外スタッフ・管理者の手動調整で補う前提のため、出勤可能人数が足りない日は無理をせず不足のまま残してください。
          - 出勤可能なAI対象スタッフ数がその日の必要人数合計に届かない場合は、①各施設の必須スキル（リーダー等）と、②3クール・2クール等の主力枠を優先して割り当て、パートや手動調整で補いやすい枠（日勤・半日・サブ枠など）の方を未達として残してください。
-         - 各施設の合計powerScore基準: 【${powerScoreSummaryText}】（ME室は対象外）。
+         - 各施設のパワーバランス平準化（案A：施設間の1人あたり平均powerScore均等化）: 【${powerScoreSummaryText}】（ME室は対象外）。スタッフ全体の保有スキルスコアが高いため、単なる固定合計点ではなく「その日に出勤するスタッフの1人あたり平均powerScore」が各施設間で均等になるように（特定の施設に12〜13点の高スコア者が固まり、別施設の1人あたり平均スコアが当日全体平均より0.9点以上低くなる偏りが起きないように）高スコア者と中堅・若手を施設間でバランスよく分散配置してください。
          - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、前週までに負担が多い職員に3クールや残業が偏らないよう平準化してください。
       7. 日ごとの勤務地ローテーション・ランダム分散・施設偏りの防止（★重要★）:
          - 機械的な固まり配置の禁止: 同じ日に名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めて並べたり、特定の職員を1週間ずっと同じ施設に張り付ける組み方はやめてください。各日の検討順（"targetWeek.dailyShuffledStaffOrder"）を活用し、人ごと・日ごとに自然なランダム性を持たせてください。
@@ -7145,8 +7293,8 @@ ${dailyCheckExampleLines}
         ? powerTargetEntries
             .map(([catId, fp]) =>
               fp.targetPowerScore > 0
-                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
-                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+                ? `${fp.facilityLabel}(${catId}): 当日出勤者の平均スコア×人数で施設間均等化`
+                : `${fp.facilityLabel}(${catId}): スコア判定なし`
             )
             .join(' ／ ')
         : '設定なし';
@@ -7199,7 +7347,7 @@ ${shiftSystemRefText}
 - 施設ごとの必須スキル配置（Step 4）と不足時の次善策:
   ・各施設の必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】（dailySummary[d].facilitySkillCounts と shortages に現状が計算済みです）。
   ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
-- 施設別目標パワースコア: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores と不足一覧 shortages に計算済みです）。
+- 施設間パワーバランス（案A：当日出勤者の1人あたり平均powerScoreと人数比による動的目安）: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores の expectedBalancedScore / actualAvgPerPerson / dayOverallAvgPerPerson と shortages に計算済みです。特定の施設だけに高スコア者が偏らず、各施設の1人あたり平均スコアが均等になるよう調整してください）。
 - 必要人数と不足時の優先順位（パート・手動調整前提）: targetCounts（キーはシフトコード）を可能な範囲で満たすように調整しますが、AI対象スタッフだけで完璧に100%埋めきる必要はありません。足りない分はパート職員やAI除外スタッフ・管理者の手動調整で補う運用のため、個人の週休確保（空欄公休）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ってまで無理に埋めず、人数が足りない日はリーダー（必須スキル）や3クール・2クール等の主力枠を優先して確保し、日勤・半日等の補いやすい枠を未達として残してください。
 - ランダム分散・日ごとの勤務地ローテーション・施設偏りの平準化（重要）:
   ・仮組みや複数日のシフト提案を行う際は、名簿の上から機械的に「AAAA, FFFF」のように同じ施設・シフトを固めて並べないでください。
@@ -9033,6 +9181,33 @@ ${messageText}`;
                     const facilityAndMeGroups = dynamicSummaryGroups.filter(
                       g => g.kind === 'facility' || g.kind === 'me'
                     );
+                    const facilityCatsForDayBalance = facilityAndMeGroups
+                      .filter(g => g.kind === 'facility')
+                      .map(g => categoryDefs[g.id])
+                      .filter(Boolean);
+                    const actualHcByCatForDay = {};
+                    const powerScoreByCatForDay = {};
+                    facilityCatsForDayBalance.forEach(cat => {
+                      const items = byCategoryStaff[cat.id] || [];
+                      actualHcByCatForDay[cat.id] = items.length;
+                      powerScoreByCatForDay[cat.id] = items.reduce((sum, it) => sum + getStaffPowerScore(it.staff), 0);
+                    });
+                    const activePoolForDayAvg = staffList.filter(s => !s.excludeFromAi);
+                    const avgPoolForDay = activePoolForDayAvg.length > 0 ? activePoolForDayAvg : staffList;
+                    const fallbackAvgForDay =
+                      avgPoolForDay.length > 0
+                        ? avgPoolForDay.reduce((sum, s) => sum + getStaffPowerScore(s), 0) / avgPoolForDay.length
+                        : 10;
+                    const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+                      facilityCats: facilityCatsForDayBalance,
+                      shiftDefs,
+                      categoryDefs,
+                      actualHeadcountByCat: actualHcByCatForDay,
+                      powerScoreByCat: powerScoreByCatForDay,
+                      readTargetCount: (code) => getTargetCount(code, d),
+                      adminSettings,
+                      fallbackStaffAvgScore: fallbackAvgForDay,
+                    });
 
                     const renderStaffActionChip = (item, showCategoryBadge = false) => {
                       const {
@@ -9460,10 +9635,7 @@ ${messageText}`;
                             const skillShortages = dailyFacilitySkillSummary[d]?.shortagesByCat?.[group.id] || [];
                             const skillCounts = dailyFacilitySkillSummary[d]?.skillCountsByCat?.[group.id] || {};
                             const actualPower = assignedItems.reduce((sum, it) => sum + getStaffPowerScore(it.staff), 0);
-                            const targetPower =
-                              group.kind === 'facility'
-                                ? getFacilityTargetPowerScore(categoryDefs[group.id], adminSettings)
-                                : 0;
+                            const pBal = group.kind === 'facility' ? dayPowerBalance.byCat[group.id] : null;
                             const facilityRoleItems =
                               group.kind === 'facility'
                                 ? (dailyFacilityTaskSummary[d]?.itemsByCat?.[group.id] || [])
@@ -9518,13 +9690,22 @@ ${messageText}`;
                                         );
                                       })}
                                       <span
+                                        title={
+                                          pBal?.isEnabled
+                                            ? `パワーバランス（当日平均 ${pBal.dayAvg}点/人 × ${pBal.actualHc > 0 ? pBal.actualHc : pBal.targetHc}名 ＝ 目安${pBal.expectedScore}点）| ${group.name}平均: ${pBal.actualAvg}点/人 (${pBal.diffFromDayAvg >= 0 ? `+${pBal.diffFromDayAvg}` : pBal.diffFromDayAvg})${pBal.isImbalancedLow ? ' ⚠他施設より平均スコアが低く偏っています' : pBal.isImbalancedHigh ? ' ※高スコア者が多く集まっています' : ' ✓バランス良好'}`
+                                            : `合計パワースコア: ${actualPower}点（スコアバランス判定対象外）`
+                                        }
                                         className={`px-1.5 py-0.5 rounded ${
-                                          targetPower > 0 && actualPower < targetPower && totalActual > 0
-                                            ? 'bg-red-100 text-red-700 border border-red-300'
-                                            : 'bg-white/80 text-gray-700'
+                                          !isSun && pBal?.isEnabled && pBal.isImbalancedLow
+                                            ? 'bg-amber-100 text-amber-900 border border-amber-400'
+                                            : !isSun && pBal?.isEnabled && pBal.isImbalancedHigh
+                                              ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                                              : 'bg-white/80 text-gray-700'
                                         }`}
                                       >
-                                        スコア: {actualPower}{targetPower > 0 ? `/${targetPower}` : ''}
+                                        {pBal?.isEnabled
+                                          ? `${!isSun && pBal.isImbalancedLow ? '⚠ ' : ''}スコア:${actualPower}${pBal.expectedScore > 0 ? `/目安${pBal.expectedScore}` : ''}${totalActual > 0 ? ` (平均${pBal.actualAvg})` : ''}`
+                                          : `スコア:${actualPower}${totalActual > 0 ? ` (平均${(actualPower / totalActual).toFixed(1)})` : ''}`}
                                       </span>
                                       <span className="px-1.5 py-0.5 rounded bg-white/80 text-blue-700">
                                         L:{skillCounts.isLeader || 0} V:{skillCounts.isVeteran || 0}
@@ -13622,11 +13803,12 @@ ${messageText}`;
                                </label>
                                {group.kind === 'facility' && (
                                  <label className="inline-flex items-center gap-1 bg-white/85 text-gray-700 px-2 py-0.5 rounded border border-black/10">
-                                   <span className="text-[11px] font-bold">目標スコア:</span>
+                                   <span className="text-[11px] font-bold">パワーバランス:</span>
                                    <select
-                                     value={String(powerTargetVal)}
+                                     value={powerTargetVal > 0 ? 'auto' : '0'}
                                      onChange={(e) => {
-                                       const nextScore = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                       const isAuto = e.target.value === 'auto';
+                                       const nextScore = isAuto ? (DEFAULT_FACILITY_POWER_TARGETS[group.id] || 30) : 0;
                                        setAdminSettings(prev => ({
                                          ...prev,
                                          facilityPowerTargets: {
@@ -13635,14 +13817,12 @@ ${messageText}`;
                                          },
                                        }));
                                      }}
-                                     className="px-1.5 py-0.5 border border-gray-300 rounded text-center text-xs font-bold bg-white text-indigo-700 cursor-pointer"
-                                     title="AI作成・検算で目安にする施設の1日あたり合計パワースコア（0にするとスコア判定なし）"
+                                     className="px-1.5 py-0.5 border border-gray-300 rounded text-center text-[11px] font-bold bg-white text-indigo-700 cursor-pointer"
+                                     title="その日の出勤スタッフの平均スコア×人数比から動的に期待スコア・施設間バランスを判定します"
                                    >
-                                     {buildNumericOptions(FACILITY_POWER_TARGET_OPTIONS, powerTargetVal).map(sc => (
-                                       <option key={sc} value={String(sc)}>{sc}</option>
-                                     ))}
+                                     <option value="auto">自動均等化（当日平均×人数）</option>
+                                     <option value="0">判定なし（除外）</option>
                                    </select>
-                                   <span className="text-[10px] text-gray-500">点</span>
                                  </label>
                                )}
                              </div>
@@ -13941,7 +14121,7 @@ ${messageText}`;
                         <div className="text-lg font-extrabold">{liveValidationReport.dailySkillShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
                       </div>
                       <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.dailyPowerShortages.length > 0 ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
-                        <div className="text-[10px] font-bold opacity-80">目標スコア未満日</div>
+                        <div className="text-[10px] font-bold opacity-80">パワーバランス偏り日</div>
                         <div className="text-lg font-extrabold">{liveValidationReport.dailyPowerShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
                       </div>
                     </div>
@@ -14083,11 +14263,11 @@ ${messageText}`;
                       </div>
                     )}
 
-                    {/* 4. 参考：目標パワースコア未達日（折りたたみ） */}
+                    {/* 4. 参考：施設間パワーバランス偏り日（折りたたみ） */}
                     {liveValidationReport.dailyPowerShortages.length > 0 && (
                       <details className="border border-gray-200 rounded-lg bg-gray-50/60 overflow-hidden text-xs">
                         <summary className="px-3 py-2 cursor-pointer font-bold text-gray-600 hover:bg-gray-100 select-none">
-                          参考：目標パワースコア目安を下回る日（{liveValidationReport.dailyPowerShortages.length}日・クリックで展開）
+                          参考：施設間のパワーバランス（1人あたり平均スコア）に偏りがある日（{liveValidationReport.dailyPowerShortages.length}日・クリックで展開）
                         </summary>
                         <div className="divide-y divide-gray-100 bg-white max-h-40 overflow-y-auto border-t">
                           {liveValidationReport.dailyPowerShortages.map(pItem => (
