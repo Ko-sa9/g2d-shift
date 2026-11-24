@@ -5610,15 +5610,25 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               // 勤務施設カテゴリのシフト以外の書き込みは禁止（ME室・その他[出勤/公出]・休み・希望はすべてブロック）
               if (!isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs)) return;
 
-              // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
+              // Step 3: 3クール連続禁止 ＆ 月間3クール上限（maxCool3）超過防止ガード
               if (cool3Set.has(code)) {
                 const prevDayIsCool3 =
                   (dayNum === 1 && staffCarry?.prevLastDayWasCool3) ||
                   (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(ns[staffId][dayNum - 1]));
                 const nextDayIsCool3 =
                   dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(ns[staffId][dayNum + 1]);
+                const wasAlreadyCool3OnThisDay = Boolean(ns[staffId]?.[dayNum] && cool3Set.has(ns[staffId][dayNum]));
+                const currentStaffCool3Count = Object.keys(ns[staffId] || {}).filter(dKey => {
+                  const dIdx = parseInt(dKey, 10);
+                  return !isNaN(dIdx) && !isSunday(year, month, dIdx) && cool3Set.has(ns[staffId][dKey]);
+                }).length;
+                const hasMaxCool3Limit = staffObj.maxCool3 !== undefined && staffObj.maxCool3 !== null;
+                const wouldExceedMaxCool3 =
+                  hasMaxCool3Limit &&
+                  !wasAlreadyCool3OnThisDay &&
+                  currentStaffCool3Count >= Number(staffObj.maxCool3);
 
-                if (prevDayIsCool3 || nextDayIsCool3) {
+                if (prevDayIsCool3 || nextDayIsCool3 || wouldExceedMaxCool3) {
                   const sameFacilityAlt = Object.values(shiftDefs)
                     .filter(
                       alt =>
@@ -5717,6 +5727,642 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     } catch (e) {
       return { success: false, parsedOk: false, message: `JSONの解析に失敗しました: ${e.message}` };
     }
+  };
+
+  // AI自動作成後、個人の厳守ルール（3クール上下限・連続3クール禁止・最大連勤・週契約出勤日数・常勤所定出勤日数）を
+  // 90%〜100%クリアするよう安全に入れ替え・補正するローカルパス（足りない施設枠は無理に埋めず手動調整用に残す）
+  const enforcePersonalRulesAndCool3Bounds = (
+    baseShifts,
+    lockedBaselineShifts = shiftData,
+    scopeDaysSet = null
+  ) => {
+    const ns = {};
+    Object.keys(baseShifts || {}).forEach(sId => {
+      ns[sId] = { ...(baseShifts[sId] || {}) };
+    });
+
+    const maxDay = getDaysInMonth(year, month);
+    const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
+    const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    const cool3Codes = Object.values(shiftDefs)
+      .filter(sd => sd && isCool3ShiftDef(sd, categoryDefs))
+      .map(sd => sd.code);
+    const cool3Set = new Set(cool3Codes);
+
+    const isDayInScope = (d) => !scopeDaysSet || scopeDaysSet.has(d);
+    const hasScope = Boolean(scopeDaysSet && scopeDaysSet.size > 0);
+
+    const isEditable = (staff, d) => {
+      if (!staff || staff.excludeFromAi) return false;
+      if (!isDayInScope(d) || isSunday(year, month, d)) return false;
+      if (lockedBaselineShifts?.[staff.id]?.[d]) return false;
+      if (getUserRequestedShift(staff.id, d)) return false;
+      if (getTeamLockedShiftSource(staff.id, d, lockedBaselineShifts)) return false;
+      const curCode = ns[staff.id]?.[d];
+      if (curCode && shiftDefs[curCode] && !isAiAssignableFacilityShiftDef(curCode, shiftDefs, categoryDefs)) {
+        return false;
+      }
+      return true;
+    };
+
+    const isWorkCode = (code) => {
+      if (!code || !shiftDefs[code]) return false;
+      const def = shiftDefs[code];
+      return getEffectiveShiftType(def, categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(def, categoryDefs);
+    };
+
+    const isPaidLeave = (code) => {
+      if (!code || !shiftDefs[code]) return false;
+      return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
+    };
+
+    const operatingDays = [];
+    const operatingWeeks = [];
+    let curWeek = [];
+    for (let d = 1; d <= maxDay; d++) {
+      if (isSunday(year, month, d)) {
+        if (curWeek.length > 0) {
+          operatingWeeks.push(curWeek);
+          curWeek = [];
+        }
+        continue;
+      }
+      operatingDays.push(d);
+      curWeek.push(d);
+    }
+    if (curWeek.length > 0) operatingWeeks.push(curWeek);
+
+    const operatingDaysCount = operatingDays.length;
+    const baseRegularOffMin = Math.floor(operatingDaysCount / 6);
+    const baseRegularOffMax = Math.ceil(operatingDaysCount / 6);
+    const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
+    const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
+
+    const allFacilityWorkCodes = Object.values(shiftDefs)
+      .filter(sd => sd && isAiAssignableFacilityShiftDef(sd.code, shiftDefs, categoryDefs))
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+      .map(sd => sd.code);
+
+    const countCodeOnDay = (code, d) => {
+      let cnt = 0;
+      staffList.forEach(s => {
+        if (ns[s.id]?.[d] === code) cnt++;
+      });
+      return cnt;
+    };
+
+    const getStaffCool3Days = (staffId) => {
+      const days = [];
+      for (let d = 1; d <= maxDay; d++) {
+        if (isSunday(year, month, d)) continue;
+        const c = ns[staffId]?.[d];
+        if (c && cool3Set.has(c)) days.push(d);
+      }
+      return days;
+    };
+
+    const canTakeCool3OnDay = (staff, d, cool3Code) => {
+      if (!staff || !cool3Code || !cool3Set.has(cool3Code)) return false;
+      if (!isShiftAllowedForStaff(staff, cool3Code)) return false;
+      const carry = prevMonthCarryOver?.byStaff?.[staff.id];
+      if (d === 1 && carry?.prevLastDayWasCool3) return false;
+      if (d > 1 && !isSunday(year, month, d - 1) && cool3Set.has(ns[staff.id]?.[d - 1])) return false;
+      if (d < maxDay && !isSunday(year, month, d + 1) && cool3Set.has(ns[staff.id]?.[d + 1])) return false;
+      return true;
+    };
+
+    const wouldAddingWorkExceedStreak = (staff, d) => {
+      const carry = prevMonthCarryOver?.byStaff?.[staff.id];
+      const carryStreak = carry?.trailingWorkStreak || 0;
+      let before = 0;
+      let cur = d - 1;
+      let hitBreak = false;
+      while (cur >= 1 && !isSunday(year, month, cur)) {
+        if (isWorkCode(ns[staff.id]?.[cur])) {
+          before++;
+          cur--;
+        } else {
+          hitBreak = true;
+          break;
+        }
+      }
+      if (!hitBreak && cur === 0) before += carryStreak;
+
+      let after = 0;
+      let next = d + 1;
+      while (next <= maxDay && !isSunday(year, month, next)) {
+        if (isWorkCode(ns[staff.id]?.[next])) {
+          after++;
+          next++;
+        } else {
+          break;
+        }
+      }
+      return before + 1 + after > maxStreak;
+    };
+
+    const pickAllowedNonCool3ShiftForDay = (staff, d, preferredCategoryId = null) => {
+      const allowedNonCool3 = allFacilityWorkCodes.filter(
+        c => !cool3Set.has(c) && isShiftAllowedForStaff(staff, c)
+      );
+      if (allowedNonCool3.length === 0) return null;
+
+      if (preferredCategoryId) {
+        const sameFacShort = allowedNonCool3.filter(
+          c => shiftDefs[c]?.category === preferredCategoryId && countCodeOnDay(c, d) < getTargetCount(c, d)
+        );
+        if (sameFacShort.length > 0) return sameFacShort[0];
+      }
+      const anyShort = allowedNonCool3.filter(c => countCodeOnDay(c, d) < getTargetCount(c, d));
+      if (anyShort.length > 0) return anyShort[0];
+
+      if (preferredCategoryId) {
+        const sameFacAny = allowedNonCool3.filter(
+          c => shiftDefs[c]?.category === preferredCategoryId && getTargetCount(c, d) > 0
+        );
+        if (sameFacAny.length > 0) return sameFacAny[0];
+        const sameFacFallback = allowedNonCool3.filter(c => shiftDefs[c]?.category === preferredCategoryId);
+        if (sameFacFallback.length > 0) return sameFacFallback[0];
+      }
+      const activeAllowed = allowedNonCool3.filter(c => getTargetCount(c, d) > 0);
+      return activeAllowed.length > 0 ? activeAllowed[0] : allowedNonCool3[0];
+    };
+
+    let changedCount = 0;
+
+    // --- Phase 1: 配置制限外シフトの即時修正 ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      for (let d = 1; d <= maxDay; d++) {
+        if (!isEditable(s, d)) continue;
+        const code = ns[s.id]?.[d];
+        if (!code || !shiftDefs[code]) continue;
+        if (isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(s, code)) {
+          const alt = pickAllowedNonCool3ShiftForDay(s, d, shiftDefs[code].category);
+          if (alt) {
+            ns[s.id][d] = alt;
+          } else {
+            delete ns[s.id][d];
+          }
+          changedCount++;
+        }
+      }
+    });
+
+    // --- Phase 2: 連続出勤上限（maxStreak）超過・パート週契約上限超過・常勤フル6日週の公休確保 ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      ns[s.id] = { ...(ns[s.id] || {}) };
+      const partRange = getPartTimeWeeklyContractRange(s);
+
+      // 2-A: パート職員の週契約上限超過を空欄に戻す
+      if (partRange) {
+        operatingWeeks.forEach(wDays => {
+          if (hasScope && !wDays.some(wd => isDayInScope(wd))) return;
+          let wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          while (wWorkDays.length > partRange.max) {
+            const editableInWeek = wWorkDays.filter(wd => isEditable(s, wd));
+            if (editableInWeek.length === 0) break;
+            editableInWeek.sort((a, b) => {
+              const codeA = ns[s.id][a];
+              const codeB = ns[s.id][b];
+              const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+              const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+              if (surpA !== surpB) return surpB - surpA;
+              const c3A = cool3Set.has(codeA) ? 1 : 0;
+              const c3B = cool3Set.has(codeB) ? 1 : 0;
+              return c3A - c3B;
+            });
+            delete ns[s.id][editableInWeek[0]];
+            changedCount++;
+            wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          }
+        });
+      } else if (s.jobTitle !== 'パート') {
+        // 2-B: 常勤職員のフル6日週で週休（空欄・休・公出）が0日の場合は最低1日を空欄公休にする
+        operatingWeeks.forEach(wDays => {
+          if (wDays.length < 6) return;
+          if (hasScope && !wDays.every(wd => isDayInScope(wd))) return;
+          const wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          if (wWorkDays.length === 6) {
+            const editableInWeek = wWorkDays.filter(wd => isEditable(s, wd));
+            if (editableInWeek.length > 0) {
+              editableInWeek.sort((a, b) => {
+                const codeA = ns[s.id][a];
+                const codeB = ns[s.id][b];
+                const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+                const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+                if (surpA !== surpB) return surpB - surpA;
+                const c3A = cool3Set.has(codeA) ? 1 : 0;
+                const c3B = cool3Set.has(codeB) ? 1 : 0;
+                return c3A - c3B;
+              });
+              delete ns[s.id][editableInWeek[0]];
+              changedCount++;
+            }
+          }
+        });
+      }
+
+      // 2-C: 最大連勤超過（前月末からの通算含む）を分割して空欄公休にする
+      const carryStreak = prevMonthCarryOver?.byStaff?.[s.id]?.trailingWorkStreak || 0;
+      for (let guard = 0; guard < 10; guard++) {
+        let streakLen = carryStreak;
+        let runDays = [];
+        let broken = false;
+
+        const tryBreakRun = (daysArr, totalLen) => {
+          if (totalLen <= maxStreak || daysArr.length === 0) return false;
+          if (hasScope && !daysArr.some(wd => isDayInScope(wd))) return false;
+          const editableDays = daysArr.filter(wd => isEditable(s, wd));
+          if (editableDays.length === 0) return false;
+          const idealIdx = Math.floor(daysArr.length / 2);
+          editableDays.sort((a, b) => {
+            const distA = Math.abs(daysArr.indexOf(a) - idealIdx);
+            const distB = Math.abs(daysArr.indexOf(b) - idealIdx);
+            if (distA !== distB) return distA - distB;
+            const codeA = ns[s.id][a];
+            const codeB = ns[s.id][b];
+            const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+            const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+            return surpB - surpA;
+          });
+          delete ns[s.id][editableDays[0]];
+          changedCount++;
+          return true;
+        };
+
+        for (let d = 1; d <= maxDay; d++) {
+          if (isSunday(year, month, d)) {
+            if (tryBreakRun(runDays, streakLen)) {
+              broken = true;
+              break;
+            }
+            streakLen = 0;
+            runDays = [];
+            continue;
+          }
+          if (isWorkCode(ns[s.id]?.[d])) {
+            streakLen++;
+            runDays.push(d);
+          } else {
+            if (tryBreakRun(runDays, streakLen)) {
+              broken = true;
+              break;
+            }
+            streakLen = 0;
+            runDays = [];
+          }
+        }
+        if (!broken && tryBreakRun(runDays, streakLen)) {
+          broken = true;
+        }
+        if (!broken) break;
+      }
+    });
+
+    // --- Phase 3: 出勤日数不足（パートの週契約下限・常勤の空欄過多）の安全穴埋め ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      ns[s.id] = { ...(ns[s.id] || {}) };
+      const partRange = getPartTimeWeeklyContractRange(s);
+
+      const pickShiftToFillBlank = (staff, d) => {
+        const cool3Days = getStaffCool3Days(staff.id);
+        const minC3 = Number(staff.minCool3 || 0);
+        const maxC3 = staff.maxCool3 !== undefined && staff.maxCool3 !== null ? Number(staff.maxCool3) : 99;
+        const needsCool3 = cool3Days.length < minC3 && cool3Days.length < maxC3;
+
+        if (needsCool3) {
+          const shortCool3 = cool3Codes.filter(
+            c => canTakeCool3OnDay(staff, d, c) && countCodeOnDay(c, d) < getTargetCount(c, d)
+          );
+          if (shortCool3.length > 0) return shortCool3[0];
+        }
+
+        const nonCool3 = pickAllowedNonCool3ShiftForDay(staff, d, null);
+        if (nonCool3) return nonCool3;
+
+        if (cool3Days.length < maxC3) {
+          const anyCool3 = cool3Codes.filter(c => canTakeCool3OnDay(staff, d, c));
+          if (anyCool3.length > 0) return anyCool3[0];
+        }
+        return null;
+      };
+
+      if (partRange) {
+        // 3-A: パート職員のフル6日週での週契約下限達成
+        operatingWeeks.forEach(wDays => {
+          if (wDays.length < 6) return;
+          if (hasScope && !wDays.every(wd => isDayInScope(wd))) return;
+          let wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          while (wWorkDays.length < partRange.min) {
+            const blankCandidates = wDays.filter(
+              wd => !ns[s.id]?.[wd] && isEditable(s, wd) && !wouldAddingWorkExceedStreak(s, wd)
+            );
+            if (blankCandidates.length === 0) break;
+            blankCandidates.sort((a, b) => {
+              const shortA = allFacilityWorkCodes.filter(
+                c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, a) < getTargetCount(c, a)
+              ).length;
+              const shortB = allFacilityWorkCodes.filter(
+                c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, b) < getTargetCount(c, b)
+              ).length;
+              return shortB - shortA;
+            });
+            const targetDay = blankCandidates[0];
+            const codeToFill = pickShiftToFillBlank(s, targetDay);
+            if (!codeToFill) break;
+            ns[s.id][targetDay] = codeToFill;
+            changedCount++;
+            wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          }
+        });
+      } else if (!hasScope && s.jobTitle !== 'パート') {
+        // 3-B: 常勤職員の月間出勤日数不足（空欄公休の残しすぎ）を解消
+        let workDays = 0;
+        let paidLeaveDays = 0;
+        const regOffDaySet = new Set();
+        for (let d = 1; d <= maxDay; d++) {
+          if (isSunday(year, month, d)) continue;
+          const code = ns[s.id]?.[d];
+          const def = code ? shiftDefs[code] : null;
+          const reqShift = getUserRequestedShift(s.id, d);
+          if (!code || !def) {
+            if (reqShift && shiftDefs[reqShift] && isPaidLeave(reqShift)) paidLeaveDays++;
+            else if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) regOffDaySet.add(d);
+            else if (isHoliday(year, month, d, closedRules)) regOffDaySet.add(d);
+          } else if (isNonWorkOrKoushutsuShiftDef(def, categoryDefs)) {
+            if (isPaidLeave(code)) paidLeaveDays++;
+            else regOffDaySet.add(d);
+          } else {
+            workDays++;
+          }
+        }
+        const excessSameWeekRegOffDays = operatingWeeks.reduce((acc, wDays) => {
+          const cnt = wDays.filter(wd => regOffDaySet.has(wd)).length;
+          return acc + Math.max(0, cnt - 1);
+        }, 0);
+        const targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
+        const targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
+
+        while (workDays < targetMin) {
+          const candidateDays = [];
+          operatingWeeks.forEach(wDays => {
+            const nonWorkInWeek = wDays.filter(wd => !isWorkCode(ns[s.id]?.[wd]));
+            if (wDays.length === 6 && nonWorkInWeek.length <= 1) return;
+            wDays.forEach(wd => {
+              if (
+                !ns[s.id]?.[wd] &&
+                !isHoliday(year, month, wd, closedRules) &&
+                isEditable(s, wd) &&
+                !wouldAddingWorkExceedStreak(s, wd)
+              ) {
+                candidateDays.push(wd);
+              }
+            });
+          });
+          if (candidateDays.length === 0) break;
+          candidateDays.sort((a, b) => {
+            const shortA = allFacilityWorkCodes.filter(
+              c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, a) < getTargetCount(c, a)
+            ).length;
+            const shortB = allFacilityWorkCodes.filter(
+              c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, b) < getTargetCount(c, b)
+            ).length;
+            return shortB - shortA;
+          });
+          const dayToFill = candidateDays[0];
+          const codeToFill = pickShiftToFillBlank(s, dayToFill);
+          if (!codeToFill) break;
+          ns[s.id][dayToFill] = codeToFill;
+          workDays++;
+          changedCount++;
+        }
+
+        // 月間上限（targetMax）を超えている場合は、端数週などの編集可能日を空欄公休に戻す
+        while (workDays > targetMax) {
+          const editableWorkDays = [];
+          operatingWeeks.forEach(wDays => {
+            const wWork = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+            if (wDays.length === 6 && wWork.length <= 5) return;
+            wWork.forEach(wd => {
+              if (isEditable(s, wd)) editableWorkDays.push(wd);
+            });
+          });
+          if (editableWorkDays.length === 0) break;
+          editableWorkDays.sort((a, b) => {
+            const codeA = ns[s.id][a];
+            const codeB = ns[s.id][b];
+            const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+            const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+            return surpB - surpA;
+          });
+          delete ns[s.id][editableWorkDays[0]];
+          workDays--;
+          changedCount++;
+        }
+      }
+    });
+
+    // --- Phase 4: 連続3クール禁止（consecutive_cool3）および3クール月間上限超過（cool3_over_limit）の解消 ---
+    const replaceOrSwapOutCool3OnDay = (staff, d) => {
+      const curCool3Code = ns[staff.id]?.[d];
+      if (!curCool3Code || !cool3Set.has(curCool3Code)) return false;
+      const facId = shiftDefs[curCool3Code]?.category;
+
+      const swapPartners = staffList.filter(other => {
+        if (other.id === staff.id || other.excludeFromAi) return false;
+        if (!isEditable(other, d)) return false;
+        const otherCode = ns[other.id]?.[d];
+        if (!otherCode || !isWorkCode(otherCode) || cool3Set.has(otherCode)) return false;
+        if (!isShiftAllowedForStaff(staff, otherCode)) return false;
+        if (!canTakeCool3OnDay(other, d, curCool3Code)) return false;
+        const otherC3Count = getStaffCool3Days(other.id).length;
+        const otherMax = other.maxCool3 !== undefined && other.maxCool3 !== null ? Number(other.maxCool3) : 99;
+        return otherC3Count < otherMax;
+      });
+
+      if (swapPartners.length > 0) {
+        swapPartners.sort((a, b) => {
+          const aSameFac = shiftDefs[ns[a.id][d]]?.category === facId ? 1 : 0;
+          const bSameFac = shiftDefs[ns[b.id][d]]?.category === facId ? 1 : 0;
+          if (aSameFac !== bSameFac) return bSameFac - aSameFac;
+          const aNeed = Math.max(0, Number(a.minCool3 || 0) - getStaffCool3Days(a.id).length);
+          const bNeed = Math.max(0, Number(b.minCool3 || 0) - getStaffCool3Days(b.id).length);
+          if (aNeed !== bNeed) return bNeed - aNeed;
+          const aRem = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+          const bRem = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+          return bRem - aRem;
+        });
+        const partner = swapPartners[0];
+        const partnerCode = ns[partner.id][d];
+        ns[staff.id][d] = partnerCode;
+        ns[partner.id][d] = curCool3Code;
+        changedCount++;
+        return true;
+      }
+
+      const fallbackNonCool3 = pickAllowedNonCool3ShiftForDay(staff, d, facId);
+      if (fallbackNonCool3) {
+        ns[staff.id][d] = fallbackNonCool3;
+        changedCount++;
+        return true;
+      }
+      return false;
+    };
+
+    // 4-A: 連続3クールの解消
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      const carry = prevMonthCarryOver?.byStaff?.[s.id];
+      if (cool3Set.has(ns[s.id]?.[1]) && carry?.prevLastDayWasCool3 && isEditable(s, 1)) {
+        replaceOrSwapOutCool3OnDay(s, 1);
+      }
+      for (let d = 2; d <= maxDay; d++) {
+        if (isSunday(year, month, d) || isSunday(year, month, d - 1)) continue;
+        if (cool3Set.has(ns[s.id]?.[d]) && cool3Set.has(ns[s.id]?.[d - 1])) {
+          if (isEditable(s, d)) {
+            replaceOrSwapOutCool3OnDay(s, d);
+          } else if (isEditable(s, d - 1)) {
+            replaceOrSwapOutCool3OnDay(s, d - 1);
+          }
+        }
+      }
+    });
+
+    // 4-B: 3クール月間上限超過（maxCool3）の解消
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      if (s.maxCool3 === undefined || s.maxCool3 === null) return;
+      const maxLimit = Number(s.maxCool3);
+      for (let guard = 0; guard < 15; guard++) {
+        const c3Days = getStaffCool3Days(s.id);
+        if (c3Days.length <= maxLimit) break;
+        const editableC3Days = c3Days.filter(d => isEditable(s, d));
+        if (editableC3Days.length === 0) break;
+        editableC3Days.sort((a, b) => {
+          const hasPartner = (dayNum) =>
+            staffList.some(other => {
+              if (other.id === s.id || other.excludeFromAi || !isEditable(other, dayNum)) return false;
+              const oc = ns[other.id]?.[dayNum];
+              if (!oc || !isWorkCode(oc) || cool3Set.has(oc)) return false;
+              const oMax = other.maxCool3 !== undefined && other.maxCool3 !== null ? Number(other.maxCool3) : 99;
+              return (
+                isShiftAllowedForStaff(s, oc) &&
+                canTakeCool3OnDay(other, dayNum, ns[s.id][dayNum]) &&
+                getStaffCool3Days(other.id).length < oMax
+              );
+            }) ? 1 : 0;
+          return hasPartner(b) - hasPartner(a);
+        });
+        if (!replaceOrSwapOutCool3OnDay(s, editableC3Days[0])) break;
+      }
+    });
+
+    // --- Phase 5: 3クール月間下限未達（minCool3）の引き上げ（未充足3クールへの昇格 ＆ 余裕がある職員との同一日スワップ） ---
+    if (!hasScope) {
+      staffList.forEach(s => {
+        if (s.excludeFromAi) return;
+        const minReq = Number(s.minCool3 || 0);
+        const maxLim = s.maxCool3 !== undefined && s.maxCool3 !== null ? Number(s.maxCool3) : 99;
+        if (minReq <= 0) return;
+
+        for (let guard = 0; guard < 15; guard++) {
+          const curC3Days = getStaffCool3Days(s.id);
+          if (curC3Days.length >= minReq || curC3Days.length >= maxLim) break;
+
+          const candidateWorkDays = [];
+          for (let d = 1; d <= maxDay; d++) {
+            if (!isEditable(s, d)) continue;
+            const curCode = ns[s.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) continue;
+            candidateWorkDays.push(d);
+          }
+          if (candidateWorkDays.length === 0) break;
+
+          let gainedCool3 = false;
+
+          // ステップA: 同じ日に必要人数未達の3クール枠があれば直接昇格（同一施設を最優先）
+          for (const d of candidateWorkDays) {
+            const curCode = ns[s.id][d];
+            const curFacId = shiftDefs[curCode]?.category;
+            const allowedShortC3 = cool3Codes
+              .filter(c3 => canTakeCool3OnDay(s, d, c3) && countCodeOnDay(c3, d) < getTargetCount(c3, d))
+              .sort((a, b) => {
+                const aSame = shiftDefs[a]?.category === curFacId ? 1 : 0;
+                const bSame = shiftDefs[b]?.category === curFacId ? 1 : 0;
+                return bSame - aSame;
+              });
+            if (allowedShortC3.length > 0) {
+              ns[s.id][d] = allowedShortC3[0];
+              changedCount++;
+              gainedCool3 = true;
+              break;
+            }
+          }
+          if (gainedCool3) continue;
+
+          // ステップB: 同じ日に3クール回数の余裕（cool3Count > minCool3）がある他職員と1対1スワップ（同一施設を最優先）
+          let bestSwap = null;
+          for (const d of candidateWorkDays) {
+            const curCode = ns[s.id][d];
+            const curFacId = shiftDefs[curCode]?.category;
+            staffList.forEach(donor => {
+              if (donor.id === s.id || donor.excludeFromAi) return;
+              if (!isEditable(donor, d)) return;
+              const donorC3Code = ns[donor.id]?.[d];
+              if (!donorC3Code || !cool3Set.has(donorC3Code)) return;
+              const donorC3Count = getStaffCool3Days(donor.id).length;
+              const donorMin = Number(donor.minCool3 || 0);
+              if (donorC3Count <= donorMin) return;
+              if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
+              if (!isShiftAllowedForStaff(donor, curCode)) return;
+
+              const isSameFac = shiftDefs[donorC3Code]?.category === curFacId ? 1 : 0;
+              const donorSurplus = donorC3Count - donorMin;
+              const score = isSameFac * 100 + donorSurplus;
+              if (!bestSwap || score > bestSwap.score) {
+                bestSwap = { d, donor, donorC3Code, replacementForDonor: curCode, score };
+              }
+            });
+          }
+
+          // ステップC: 施設制限の違いで直接1対1交換できない場合、donorをその施設内の通常シフトへ下げてsが3クールを引き継ぐ
+          if (!bestSwap) {
+            for (const d of candidateWorkDays) {
+              staffList.forEach(donor => {
+                if (donor.id === s.id || donor.excludeFromAi) return;
+                if (!isEditable(donor, d)) return;
+                const donorC3Code = ns[donor.id]?.[d];
+                if (!donorC3Code || !cool3Set.has(donorC3Code)) return;
+                const donorC3Count = getStaffCool3Days(donor.id).length;
+                const donorMin = Number(donor.minCool3 || 0);
+                if (donorC3Count <= donorMin) return;
+                if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
+                const donorFacId = shiftDefs[donorC3Code]?.category;
+                const donorAlt = pickAllowedNonCool3ShiftForDay(donor, d, donorFacId);
+                if (!donorAlt) return;
+                const donorSurplus = donorC3Count - donorMin;
+                if (!bestSwap || donorSurplus > bestSwap.score) {
+                  bestSwap = { d, donor, donorC3Code, replacementForDonor: donorAlt, score: donorSurplus };
+                }
+              });
+            }
+          }
+
+          if (bestSwap) {
+            ns[s.id][bestSwap.d] = bestSwap.donorC3Code;
+            ns[bestSwap.donor.id][bestSwap.d] = bestSwap.replacementForDonor;
+            changedCount++;
+            gainedCool3 = true;
+          }
+          if (!gainedCool3) break;
+        }
+      });
+    }
+
+    return { nextShifts: ns, changedCount };
   };
 
 // 条件操作ハンドラ（Step 5: [絶対] strict / [なるべく] soft の2段階優先度対応）
@@ -6452,6 +7098,31 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             };
           }
 
+          const remainingWeeksToBuild = Math.max(1, weeksToBuild.length - wIdx);
+          const remMinCool3 = st.currentStats.remainingMinCool3Needed || 0;
+          const remMaxCool3 = st.currentStats.remainingCool3 ?? 99;
+          const existingCool3InThisWeek = Object.values(existingShiftsInThisWeek).filter(c => cool3Set.has(c)).length;
+          const hasAllowedCool3Shift = (st.allowedWorkShifts || []).some(c => cool3Set.has(c));
+          const physicalMaxNewCool3InWeek = hasAllowedCool3Shift
+            ? Math.max(0, Math.ceil((assignableDaysInThisWeek.length + existingCool3InThisWeek) / 2) - existingCool3InThisWeek)
+            : 0;
+          const maxAllowedNewCool3InThisWeek =
+            st.excludeFromAi || assignableDaysInThisWeek.length === 0
+              ? 0
+              : Math.max(0, Math.min(remMaxCool3, physicalMaxNewCool3InWeek));
+          const mustAssignNewCool3MinInThisWeek =
+            st.excludeFromAi || remMinCool3 <= 0
+              ? 0
+              : Math.min(maxAllowedNewCool3InThisWeek, Math.ceil(remMinCool3 / remainingWeeksToBuild));
+          const recommendedNewCool3InThisWeek =
+            maxAllowedNewCool3InThisWeek === 0
+              ? '0回（★3クール上限到達または配置不可のため今週は3クール絶対禁止★）'
+              : mustAssignNewCool3MinInThisWeek > 0
+                ? mustAssignNewCool3MinInThisWeek === maxAllowedNewCool3InThisWeek
+                  ? `${mustAssignNewCool3MinInThisWeek}回（★月間下限${st.minCool3}回達成のため今週${mustAssignNewCool3MinInThisWeek}回必須★）`
+                  : `${mustAssignNewCool3MinInThisWeek}〜${maxAllowedNewCool3InThisWeek}回（★月間下限${st.minCool3}回達成のため今週最低${mustAssignNewCool3MinInThisWeek}回を最優先割当★）`
+                : `0〜${Math.min(2, maxAllowedNewCool3InThisWeek)}回（上限残り${remMaxCool3}回以内）`;
+
           const staffEntry = {
             id: st.id,
             name: st.name,
@@ -6489,6 +7160,9 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               forbidCool3OnFirstDayOfWeek: forbidCool3OnFirstDay,
               mustKeepBlankDaysMinInThisWeek,
               recommendedNewWorkDaysInThisWeek,
+              mustAssignNewCool3MinInThisWeek,
+              maxAllowedNewCool3InThisWeek,
+              recommendedNewCool3InThisWeek,
               ...(rotationGuide ? { rotationGuide } : {}),
             },
           };
@@ -6567,8 +7241,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
            を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
          - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。契約日数を1日でも超過したり不足したりしないよう、"recommendedNewWorkDaysInThisWeek" と "mustKeepBlankDaysMinInThisWeek" を最優先で守ってください。
       4. 3クール上限・下限と連続3クール禁止（★絶対厳守★）:
-         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（上限までの残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
-         - 3クール下限（"minCool3" > 0）が設定されており "cumulativeStatsSoFar.remainingMinCool3Needed"（下限達成に必要な残り回数）が1回以上ある職員には、月間で下限回数以上に到達できるよう優先して3クールを割り当ててください。
+         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は、各職員の "thisWeekPlan.maxAllowedNewCool3InThisWeek" および "cumulativeStatsSoFar.remainingCool3" を1回でも超えて割り当てることは絶対禁止です（0回の職員には絶対に3クールを入れないこと）。
+         - "thisWeekPlan.mustAssignNewCool3MinInThisWeek" が1回以上ある職員（3クール月間下限 "minCool3" 達成のため今週割り当てが必要な職員）には、"thisWeekPlan.recommendedNewCool3InThisWeek" に従って他の職員より最優先で3クール枠を割り当ててください。
          - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
       5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
          - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
@@ -6667,10 +7341,15 @@ ${dailyCheckExampleLines}
         setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
 
         if (weekPass.parsedOk) {
-          workingShifts = weekPass.nextShifts;
+          const weekEnforced = enforcePersonalRulesAndCool3Bounds(
+            weekPass.nextShifts,
+            originalShifts,
+            allowedWeekDaysSet
+          );
+          workingShifts = weekEnforced.nextShifts;
           workingTasks = weekPass.nextTasks;
           workingUserInputs = weekPass.nextUserInputs;
-          totalUpdatedCells += weekPass.count;
+          totalUpdatedCells += weekPass.count + weekEnforced.changedCount;
 
           // 案Cハイブリッド: 完了した週から背景の勤務表へリアルタイム仮反映（※保存は全工程完了時のみ）
           setShiftData(workingShifts);
@@ -6716,6 +7395,17 @@ ${dailyCheckExampleLines}
       );
       setAiLoadingSubDetail('最大連勤・週休ペース・3クール連続禁止・各施設リーダー配置・必要人数を検証しています');
       updateStepItem('validate', { status: 'active', detail: '検算中...' });
+
+      const monthEnforced1 = enforcePersonalRulesAndCool3Bounds(
+        workingShifts,
+        originalShifts,
+        targetScopeDaysSet
+      );
+      workingShifts = monthEnforced1.nextShifts;
+      totalUpdatedCells += monthEnforced1.changedCount;
+      if (monthEnforced1.changedCount > 0) {
+        setShiftData(workingShifts);
+      }
 
       const pass1Report = evaluateScheduleValidation({
         year,
@@ -6846,6 +7536,12 @@ ${dailyCheckExampleLines}
           );
 
           if (pass2.success) {
+            const monthEnforced2 = enforcePersonalRulesAndCool3Bounds(
+              pass2.nextShifts,
+              originalShifts,
+              targetScopeDaysSet
+            );
+            const candidateShifts2 = monthEnforced2.nextShifts;
             const pass2Report = evaluateScheduleValidation({
               year,
               month,
@@ -6856,7 +7552,7 @@ ${dailyCheckExampleLines}
               adminSettings,
               userInputs,
               prevMonthCarryOver,
-              shiftsMap: pass2.nextShifts,
+              shiftsMap: candidateShifts2,
               lockedBaselineShifts: originalShifts,
               includeEmptyDays: true,
               scopeDaysSet: targetScopeDaysSet,
@@ -6868,11 +7564,11 @@ ${dailyCheckExampleLines}
               pass2Report.criticalScore <= pass1Report.criticalScore
             ) {
               repairedIssueCount = Math.max(0, pass1Report.totalActionableCount - pass2Report.totalActionableCount);
-              finalShifts = pass2.nextShifts;
+              finalShifts = candidateShifts2;
               finalTasks = pass2.nextTasks;
               finalUserInputs = pass2.nextUserInputs;
               finalReport = pass2Report;
-              totalUpdatedCells += pass2.count;
+              totalUpdatedCells += pass2.count + monthEnforced2.changedCount;
             }
           }
         } catch (repairErr) {
