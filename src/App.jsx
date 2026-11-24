@@ -2127,6 +2127,7 @@ export default function WorkScheduleApp() {
   const [printManualScale, setPrintManualScale] = useState(100);
   const [printTeamFilter, setPrintTeamFilter] = useState('all');
   const [printShowJobTitle, setPrintShowJobTitle] = useState(false);
+  const [printShowMarks, setPrintShowMarks] = useState(false);
   const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
   const printSheetMeasureRef = useRef(null);
 
@@ -2146,7 +2147,7 @@ export default function WorkScheduleApp() {
   const [currentView, setCurrentView] = useState('all'); 
   const [overallSubViewMode, setOverallSubViewMode] = useState('monthly'); // 'monthly' | 'daily'
   const [selectedDailyViewDay, setSelectedDailyViewDay] = useState(1);
-  const [adminCountDisplayMode, setAdminCountDisplayMode] = useState('facility'); // 'facility' (<施設別>) | 'slot' (<シフト表示別>)
+  const [adminCountDisplayMode, setAdminCountDisplayMode] = useState('slot'); // 'slot' (<シフト表示別>) | 'facility' (<施設別>)
 
 // 設定モーダル内のタブ管理
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -8988,7 +8989,19 @@ ${messageText}`;
     if (w > 0 && h > 0) {
       setPrintMeasuredSize(prev => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
     }
-  }, [showPrintModal, printTeamFilter, printShowJobTitle, printStaffList, year, month, daysInMonth]);
+  }, [
+    showPrintModal,
+    printTeamFilter,
+    printShowJobTitle,
+    printShowMarks,
+    printOrientation,
+    adminCountDisplayMode,
+    adminRightFlatShifts.length,
+    printStaffList,
+    year,
+    month,
+    daysInMonth,
+  ]);
 
   const handleOpenPrintModal = () => {
     setActivePopup(null);
@@ -9255,6 +9268,7 @@ ${messageText}`;
 
   const renderPrintScheduleSheet = () => {
     const printTeamObj = TEAMS.find(t => t.id === printTeamFilter);
+    const showPrintPersonalSummary = printOrientation === 'landscape' && adminRightFlatShifts.length > 0;
     return (
       <div className="bg-white text-gray-900 pb-1.5 pr-1">
         <div className="flex items-end justify-between gap-4 mb-1.5 px-0.5">
@@ -9263,15 +9277,24 @@ ${messageText}`;
               {year}年{month}月 勤務表{printTeamObj?.role ? `（${printTeamObj.label}）` : ''}
             </h2>
             <span className="text-[10px] text-gray-600 font-medium">対象 {printStaffList.length}名</span>
+            {showPrintPersonalSummary && (
+              <span className="text-[9px] text-indigo-700 font-bold bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                個人集計（{adminCountDisplayMode === 'slot' ? 'シフト表示別' : '施設別'}）付き
+              </span>
+            )}
           </div>
           <div className="text-[9px] text-gray-500 whitespace-nowrap">
             背景色：リーダー（施設色）・ME室(灰)・HHD(黄)・緊急待機番(橙)
+            {printShowMarks ? ' ／ マーク：個人希望(桃)・班固定(緑)' : ''}
           </div>
         </div>
         <table className="border-collapse border border-gray-400 bg-white text-gray-800">
           <thead>
             <tr>
-              <th className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap">
+              <th
+                rowSpan={showPrintPersonalSummary ? 2 : 1}
+                className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap"
+              >
                 氏名
               </th>
               {daysArray.map(day => {
@@ -9287,6 +9310,7 @@ ${messageText}`;
                 return (
                   <th
                     key={day}
+                    rowSpan={showPrintPersonalSummary ? 2 : 1}
                     className={`w-[32px] min-w-[32px] px-0.5 py-0.5 text-center border border-gray-400 ${thColor}`}
                   >
                     <div className="text-[10px] font-bold leading-tight">{day}</div>
@@ -9296,13 +9320,53 @@ ${messageText}`;
                   </th>
                 );
               })}
+              {showPrintPersonalSummary && (
+                <>
+                  <th
+                    rowSpan={2}
+                    className="w-[10px] min-w-[10px] bg-gray-100 border border-gray-400 p-0"
+                    aria-hidden="true"
+                  />
+                  {adminRightCountGroups.map(grp => (
+                    <th
+                      key={grp.id}
+                      colSpan={grp.shifts.length}
+                      className={`px-1 py-0.5 text-center border border-gray-400 text-[9px] font-bold whitespace-nowrap ${grp.headerColor}`}
+                    >
+                      {grp.label}
+                    </th>
+                  ))}
+                </>
+              )}
             </tr>
+            {showPrintPersonalSummary && (
+              <tr>
+                {adminRightFlatShifts.map(item => (
+                  <th
+                    key={`${item.groupId}_${item.shift.code}`}
+                    className="w-[24px] min-w-[24px] px-0.5 py-0.5 text-center border border-gray-400 bg-gray-50 text-[9px] font-bold whitespace-nowrap"
+                  >
+                    <span className={item.shift.text || 'text-gray-700'}>{item.shift.label}</span>
+                  </th>
+                ))}
+              </tr>
+            )}
           </thead>
           <tbody>
             {printStaffList.map(staff => (
               <tr key={staff.id}>
                 <td className="px-1.5 py-0.5 border border-gray-400 bg-white text-left whitespace-nowrap">
-                  <div className="text-[11px] font-bold leading-tight text-gray-900">{staff.name}</div>
+                  <div className="text-[11px] font-bold leading-tight text-gray-900 flex items-center gap-1">
+                    <span>{staff.name}</span>
+                    {printShowMarks && (
+                      <span className="inline-flex items-center gap-0.5">
+                        {staff.skills?.isLeader && <ShieldCheck size={9} className="text-blue-500" />}
+                        {staff.skills?.isVeteran && <Star size={9} className="text-yellow-500" />}
+                        {getStaffRestrictionSummaryText(staff) && <ListFilter size={9} className="text-amber-500" />}
+                        {staff.excludeFromAi && <Lock size={9} className="text-red-500" />}
+                      </span>
+                    )}
+                  </div>
                   {printShowJobTitle && staff.jobTitle && (
                     <div className="text-[8px] leading-tight text-gray-500">{staff.jobTitle}</div>
                   )}
@@ -9315,6 +9379,13 @@ ${messageText}`;
                   const shift = shiftDefs[shiftCode];
                   const task = shiftDefs[taskCode];
                   const isSun = isSunday(year, month, day);
+                  const reqShiftCode = printShowMarks ? getUserRequestedShift(staff.id, day) : null;
+                  const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
+                  const reqReason = printShowMarks ? getUserRequestedReason(staff.id, day) : null;
+                  const reqTaskCode = printShowMarks ? getUserRequestedTask(staff.id, day) : null;
+                  const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
+                  const teamShiftLock = printShowMarks ? getTeamLockedShiftSource(staff.id, day) : null;
+                  const teamTaskLock = printShowMarks ? getTeamLockedTaskSource(staff.id, day) : null;
                   const shiftBg = autoShiftHighlight
                     ? autoShiftHighlight.bgClass
                     : isSun
@@ -9324,12 +9395,38 @@ ${messageText}`;
                   return (
                     <td key={day} className="p-0 border border-gray-400 text-center align-middle">
                       <div className="flex flex-col w-full">
-                        <div className={`h-[17px] flex items-center justify-center border-b border-gray-200 ${shiftBg}`}>
+                        <div className={`relative h-[17px] flex items-center justify-center border-b border-gray-200 ${shiftBg}`}>
+                          {printShowMarks && teamShiftLock && (
+                            <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500" />
+                          )}
+                          {printShowMarks && reqShiftCode && (
+                            shiftCode !== reqShiftCode ? (
+                              <span className="absolute top-0 right-0 px-0.5 rounded-bl text-[6.5px] leading-tight bg-pink-100 text-pink-700 border-l border-b border-pink-200 font-bold max-w-[20px] truncate">
+                                {reqShift?.label || reqShiftCode}
+                              </span>
+                            ) : reqReason ? (
+                              <span className="absolute top-0 right-0 w-0 h-0 border-t-[6px] border-t-pink-500 border-l-[6px] border-l-transparent" />
+                            ) : (
+                              <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-pink-500" />
+                            )
+                          )}
                           {shift ? (
                             <span className={`font-bold text-[10px] leading-none ${shift.text}`}>{shift.label}</span>
                           ) : null}
                         </div>
-                        <div className={`h-[16px] flex items-center justify-center ${taskBg}`}>
+                        <div className={`relative h-[16px] flex items-center justify-center ${taskBg}`}>
+                          {printShowMarks && teamTaskLock && (
+                            <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500" />
+                          )}
+                          {printShowMarks && reqTaskCode && (
+                            taskCode !== reqTaskCode && !task ? (
+                              <span className="px-0.5 rounded text-[6.5px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold max-w-[28px] truncate">
+                                {reqTask?.label || reqTaskCode}
+                              </span>
+                            ) : (
+                              <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full ${taskCode !== reqTaskCode ? 'bg-pink-600' : 'bg-pink-400'}`} />
+                            )
+                          )}
                           {task ? (
                             <span className={`font-bold text-[9px] leading-none ${task.text || 'text-gray-700'}`}>
                               {task.label}
@@ -9340,6 +9437,46 @@ ${messageText}`;
                     </td>
                   );
                 })}
+                {showPrintPersonalSummary && (
+                  <>
+                    <td className="w-[10px] min-w-[10px] bg-gray-100 border border-gray-400 p-0" aria-hidden="true" />
+                    {adminRightFlatShifts.map(item => {
+                      const cnt = staffShiftCodeCounts[staff.id]?.[item.shift.code] || 0;
+                      if (item.shift.isCool3Total) {
+                        const minC3 = Number(staff.minCool3 ?? 0);
+                        const maxC3 = Number(staff.maxCool3 ?? 5);
+                        const isOverC3 = cnt > maxC3;
+                        const isUnderC3 = minC3 > 0 && cnt < minC3;
+                        return (
+                          <td
+                            key={`${item.groupId}_${item.shift.code}`}
+                            className={`w-[24px] min-w-[24px] px-0.5 py-0.5 border border-gray-400 text-center text-[10px] font-extrabold ${
+                              isOverC3
+                                ? 'bg-red-100 text-red-700'
+                                : isUnderC3
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-purple-50 text-purple-900'
+                            }`}
+                          >
+                            {cnt > 0 ? cnt : <span className="text-gray-400 font-normal">0</span>}
+                          </td>
+                        );
+                      }
+                      return (
+                        <td
+                          key={`${item.groupId}_${item.shift.code}`}
+                          className="w-[24px] min-w-[24px] px-0.5 py-0.5 border border-gray-400 text-center text-[10px] font-bold bg-white"
+                        >
+                          {cnt > 0 ? (
+                            <span className={item.shift.text || 'text-gray-800'}>{cnt}</span>
+                          ) : (
+                            <span className="text-gray-300 font-normal">-</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </>
+                )}
               </tr>
             ))}
           </tbody>
@@ -16072,6 +16209,16 @@ ${messageText}`;
                     )}
                   </div>
 
+                  <label className="inline-flex items-center gap-1 cursor-pointer text-gray-700 font-bold">
+                    <input
+                      type="checkbox"
+                      checked={printShowMarks}
+                      onChange={e => setPrintShowMarks(e.target.checked)}
+                      className="rounded text-blue-600"
+                    />
+                    マークを表示（希望・班固定・スキル）
+                  </label>
+
                   <label className="inline-flex items-center gap-1 cursor-pointer text-gray-700">
                     <input
                       type="checkbox"
@@ -16081,6 +16228,34 @@ ${messageText}`;
                     />
                     氏名の下に役職・雇用形態を表示
                   </label>
+
+                  {printOrientation === 'landscape' && (
+                    <div className="flex items-center gap-1.5 bg-indigo-50 px-2 py-1 rounded border border-indigo-200">
+                      <span className="font-bold text-indigo-800 text-[11px]">横印刷・個人集計:</span>
+                      <button
+                        type="button"
+                        onClick={() => setAdminCountDisplayMode('slot')}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                          adminCountDisplayMode === 'slot'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        シフト表示別
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminCountDisplayMode('facility')}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                          adminCountDisplayMode === 'facility'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        施設別
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* 用紙プレビュー領域 */}
@@ -16090,7 +16265,7 @@ ${messageText}`;
                       {printPaperMetrics.label} {printOrientation === 'landscape' ? '横' : '縦'}（{printPaperMetrics.widthMm}×{printPaperMetrics.heightMm}mm）
                     </span>
                     <span className="bg-white/90 px-2 py-0.5 rounded border border-gray-300">
-                      対象: 職員 {printStaffList.length}名分（集計行・残業列・希望マーク非表示）
+                      対象: 職員 {printStaffList.length}名分（マーク:{printShowMarks ? '表示' : '非表示'}{printOrientation === 'landscape' ? ` ／ 個人集計[${adminCountDisplayMode === 'slot' ? 'シフト表示別' : '施設別'}]を表示` : ''}）
                     </span>
                     {overflowsPaper && (
                       <span className="bg-rose-100 text-rose-700 border border-rose-300 px-2 py-0.5 rounded font-bold">
