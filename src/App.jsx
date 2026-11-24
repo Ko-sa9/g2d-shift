@@ -7174,14 +7174,218 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           return staffEntry;
         });
 
+        // #1 ①対策: 各日の出勤人数が必要人数合計に対して偏らないよう、AI実行前に今週の公休(空欄休み)をプログラムでフラット配分
+        const facilityCatsInBuild = Object.values(categoryDefs)
+          .filter(cat => cat && resolveCategoryKind(cat) === 'facility');
+        const dailyTargetFacilityTotal = {};
+        const dailyRequiredLeaders = {};
+        const dailyPlannedWorking = {};
+        const dailyPlannedLeaders = {};
+
+        targetWeek.days.forEach(d => {
+          const dayTargets = exactTargetCountsByDay[d] || {};
+          dailyTargetFacilityTotal[d] = Object.values(dayTargets).reduce((sum, n) => sum + (n || 0), 0);
+
+          let reqLeaders = 0;
+          facilityCatsInBuild.forEach(cat => {
+            const hasActiveShiftOnDay = Object.values(shiftDefs).some(
+              sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id && (dayTargets[sd.code] || 0) > 0
+            );
+            const hasExistingInCatOnDay = weeklyStaffList.some(st => {
+              const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+              return Boolean(exCode && shiftDefs[exCode]?.category === cat.id && isAiAssignableFacilityShiftDef(exCode, shiftDefs, categoryDefs));
+            });
+            if (hasActiveShiftOnDay || hasExistingInCatOnDay) {
+              reqLeaders += getFacilitySkillTarget(cat.id, 'isLeader') || 0;
+            }
+          });
+          dailyRequiredLeaders[d] = reqLeaders;
+
+          let plannedW = 0;
+          let plannedL = 0;
+          weeklyStaffList.forEach(st => {
+            const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+            const worksExistingFacility = Boolean(exCode && isAiAssignableFacilityShiftDef(exCode, shiftDefs, categoryDefs));
+            const assignableDay = !st.excludeFromAi && st.thisWeekPlan.assignableDaysInThisWeek.includes(d);
+            if (worksExistingFacility || assignableDay) {
+              plannedW++;
+              if (st.skills?.isLeader) plannedL++;
+            }
+          });
+          dailyPlannedWorking[d] = plannedW;
+          dailyPlannedLeaders[d] = plannedL;
+        });
+
+        const wouldWeekWorkExceedStreak = (stEntry, blankSet) => {
+          let streak = stEntry.thisWeekPlan.enteringWorkStreak || 0;
+          for (const d of targetWeek.days) {
+            const exCode = stEntry.thisWeekPlan.existingShiftsInThisWeek?.[d];
+            if (exCode && shiftDefs[exCode]) {
+              const exDef = shiftDefs[exCode];
+              if (getEffectiveShiftType(exDef, categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(exDef, categoryDefs)) {
+                streak++;
+                if (streak > maxStreak) return true;
+              } else {
+                streak = 0;
+              }
+            } else if (!stEntry.excludeFromAi && stEntry.thisWeekPlan.assignableDaysInThisWeek.includes(d) && !blankSet.has(d)) {
+              streak++;
+              if (streak > maxStreak) return true;
+            } else {
+              streak = 0;
+            }
+          }
+          return false;
+        };
+
+        const plannedBlanksByStaffId = {};
+        const staffBlankSpecs = weeklyStaffList.map(st => {
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const minBlanks = st.thisWeekPlan.mustKeepBlankDaysMinInThisWeek || 0;
+          let maxBlanks = minBlanks;
+          if (!st.excludeFromAi && st.contractWorkDaysMin !== undefined && assignable.length > 0) {
+            const existingWorkInThisWeek = Object.values(st.thisWeekPlan.existingShiftsInThisWeek || {}).filter(
+              c => c && shiftDefs[c] && getEffectiveShiftType(shiftDefs[c], categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(shiftDefs[c], categoryDefs)
+            ).length;
+            const minRequiredNew = targetWeek.isFullWeek
+              ? Math.max(0, Math.min(targetWeek.days.length, st.contractWorkDaysMin) - existingWorkInThisWeek)
+              : 0;
+            maxBlanks = Math.max(minBlanks, assignable.length - minRequiredNew);
+          }
+          plannedBlanksByStaffId[st.id] = new Set();
+          return {
+            st,
+            minBlanks: Math.min(assignable.length, minBlanks),
+            maxBlanks: Math.min(assignable.length, maxBlanks),
+            isStreakRestricted: st.thisWeekPlan.maxAllowedConsecutiveFromWeekStart < assignable.length,
+          };
+        });
+
+        // 連勤余裕が少ないスタッフ・割当可能日が少ないスタッフから優先し、同条件内はシャッフルして公休曜日を均等配分
+        const mandatoryQueue = shuffleArray(staffBlankSpecs.filter(sp => sp.minBlanks > 0)).sort((a, b) => {
+          if (a.isStreakRestricted !== b.isStreakRestricted) return a.isStreakRestricted ? -1 : 1;
+          return a.st.thisWeekPlan.assignableDaysInThisWeek.length - b.st.thisWeekPlan.assignableDaysInThisWeek.length;
+        });
+
+        mandatoryQueue.forEach(spec => {
+          const { st, minBlanks } = spec;
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const chosen = plannedBlanksByStaffId[st.id];
+
+          for (let step = 0; step < minBlanks; step++) {
+            const remaining = assignable.filter(d => !chosen.has(d));
+            if (remaining.length === 0) break;
+
+            let candidates = remaining;
+            if (step === minBlanks - 1) {
+              const streakSafe = remaining.filter(d => {
+                const testSet = new Set(chosen);
+                testSet.add(d);
+                return !wouldWeekWorkExceedStreak(st, testSet);
+              });
+              if (streakSafe.length > 0) candidates = streakSafe;
+            } else {
+              const maxAfterPick = st.thisWeekPlan.maxAllowedConsecutiveFromWeekStart || 0;
+              if (chosen.size === 0 && maxAfterPick === 0 && remaining.includes(firstDay)) {
+                candidates = [firstDay];
+              }
+            }
+
+            let bestDay = candidates[0];
+            let bestScore = -Infinity;
+            candidates.forEach(d => {
+              const surplus = dailyPlannedWorking[d] - dailyTargetFacilityTotal[d];
+              let score = surplus * 10;
+              if (weekCalendar[d]?.isHoliday && surplus >= 0) {
+                score += 4;
+              }
+              if (st.skills?.isLeader) {
+                if (dailyPlannedLeaders[d] - 1 < dailyRequiredLeaders[d]) {
+                  score -= 1000;
+                } else {
+                  score += (dailyPlannedLeaders[d] - dailyRequiredLeaders[d]) * 2.5;
+                }
+              }
+              score += Math.random() * 0.5;
+              if (score > bestScore) {
+                bestScore = score;
+                bestDay = d;
+              }
+            });
+
+            chosen.add(bestDay);
+            dailyPlannedWorking[bestDay]--;
+            if (st.skills?.isLeader) {
+              dailyPlannedLeaders[bestDay]--;
+            }
+          }
+        });
+
+        // 週3〜4日契約などの幅があるパート職員は、人数に余剰がある日がある場合のみ上限範囲内で空欄公休を追加調整
+        const flexibleQueue = shuffleArray(staffBlankSpecs.filter(sp => sp.maxBlanks > sp.minBlanks));
+        flexibleQueue.forEach(spec => {
+          const { st, maxBlanks } = spec;
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const chosen = plannedBlanksByStaffId[st.id];
+
+          while (chosen.size < maxBlanks) {
+            const remaining = assignable.filter(d => !chosen.has(d));
+            const surplusDays = remaining.filter(d => {
+              if (dailyPlannedWorking[d] - dailyTargetFacilityTotal[d] <= 0) return false;
+              if (st.skills?.isLeader && dailyPlannedLeaders[d] - 1 < dailyRequiredLeaders[d]) return false;
+              const testSet = new Set(chosen);
+              testSet.add(d);
+              return !wouldWeekWorkExceedStreak(st, testSet);
+            });
+            if (surplusDays.length === 0) break;
+
+            surplusDays.sort((a, b) => {
+              const sa = dailyPlannedWorking[a] - dailyTargetFacilityTotal[a];
+              const sb = dailyPlannedWorking[b] - dailyTargetFacilityTotal[b];
+              return sb - sa;
+            });
+            const pick = surplusDays[0];
+            chosen.add(pick);
+            dailyPlannedWorking[pick]--;
+            if (st.skills?.isLeader) {
+              dailyPlannedLeaders[pick]--;
+            }
+          }
+        });
+
+        weeklyStaffList.forEach(st => {
+          const blankSet = plannedBlanksByStaffId[st.id] || new Set();
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const plannedBlankOffDaysInThisWeek = Array.from(blankSet).sort((a, b) => a - b);
+          const plannedWorkDaysInThisWeek = assignable.filter(d => !blankSet.has(d));
+          st.thisWeekPlan.plannedBlankOffDaysInThisWeek = plannedBlankOffDaysInThisWeek;
+          st.thisWeekPlan.plannedWorkDaysInThisWeek = plannedWorkDaysInThisWeek;
+          if (st.thisWeekPlan.rotationGuide?.dailyFacilityPreferenceHint) {
+            plannedBlankOffDaysInThisWeek.forEach(d => {
+              delete st.thisWeekPlan.rotationGuide.dailyFacilityPreferenceHint[d];
+            });
+          }
+        });
+
+        const dailyHeadcountBalancePlan = {};
+        targetWeek.days.forEach(d => {
+          dailyHeadcountBalancePlan[d] = {
+            targetFacilityTotal: dailyTargetFacilityTotal[d],
+            plannedWorkingFacility: dailyPlannedWorking[d],
+            surplus: dailyPlannedWorking[d] - dailyTargetFacilityTotal[d],
+            plannedLeaders: dailyPlannedLeaders[d],
+            requiredLeaders: dailyRequiredLeaders[d],
+          };
+        });
+
         // AIが名簿の上から機械的に「AAAA, FFFF」と固めて割り当てる癖を断ち切るため、
-        // 週データの職員配列順をシャッフルし、日ごとの割り当て検討順もランダム化する（※職員IDキー出力のため画面上の名簿順は変わらない）
+        // 週データの職員配列順をシャッフルし、日ごとの割り当て検討順も事前計算した出勤予定者ベースでランダム化する
         const shuffledWeeklyStaffList = shuffleArray(weeklyStaffList);
         const dailyShuffledStaffOrder = {};
         targetWeek.days.forEach(d => {
           dailyShuffledStaffOrder[d] = shuffleArray(
             weeklyStaffList
-              .filter(st => !st.excludeFromAi && st.thisWeekPlan.assignableDaysInThisWeek.includes(d))
+              .filter(st => !st.excludeFromAi && (st.thisWeekPlan.plannedWorkDaysInThisWeek || []).includes(d))
               .map(st => st.id)
           );
         });
@@ -7197,6 +7401,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             isFullWeek: targetWeek.isFullWeek,
             calendar: weekCalendar,
             exactTargetCountsByDay,
+            dailyHeadcountBalancePlan,
             currentDailySummary: weekDailySummary,
             dailyShuffledStaffOrder,
           },
@@ -7233,14 +7438,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 祝日が「空欄（休み）」になった職員は、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントし、基本は残り5日間を出勤にします（ただし同じ週に休・年休・振休・公出等の休み希望がある場合は、祝日の空欄と合わせて週4日以下の出勤になっても構いません）。祝日に出勤した職員は、同じ週に休・振休等がなければ他の平日に1日「空欄の公休」を残して5日出勤とし、別週に「振休」が入っている場合はその振休を該当週の休み1日分として扱います（同週に他の休み希望があれば週4日以下の出勤で可）。
          - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）は管理者・個人・OPE班入力用のためAI配置対象外です（新規出力禁止・既存変更禁止）。
          - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
-      3. 今週の週休確保（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
-         - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak"（今週初日の直前までの連勤数）と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" を必ず守ってください（0の場合は今週初日 ${firstDay}日 を必ず空欄休みにすること）。
-         - AIが休ませる日（週休枠の公休・振替休にあたる日）には休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
-         - 各職員の "thisWeekPlan" にある:
-           ・mustKeepBlankDaysMinInThisWeek（assignableDaysInThisWeek のうち必ず空欄のまま残すべき最低日数）
-           ・recommendedNewWorkDaysInThisWeek（今週AIが新規に割り当てる出勤日数の目安）
-           を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
-         - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。契約日数を1日でも超過したり不足したりしないよう、"recommendedNewWorkDaysInThisWeek" と "mustKeepBlankDaysMinInThisWeek" を最優先で守ってください。
+      3. 事前フラット配分済みの今週の週休計画（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
+         - 特定の曜日に公休が重なって人数不足が起きないよう、各日の必要人数合計（targetCounts）とリーダー最低人数を考慮して「今週の公休予定日（thisWeekPlan.plannedBlankOffDaysInThisWeek）」と「今週の出勤予定日（thisWeekPlan.plannedWorkDaysInThisWeek）」をプログラムで事前バランス配分済みです（日別の全体見通しは targetWeek.dailyHeadcountBalancePlan、当日の出勤候補順は targetWeek.dailyShuffledStaffOrder を参照）。
+         - [絶対] カスタム条件で該当職員に別曜日の休み・出勤が明示指定されている場合を除き、原則として **plannedBlankOffDaysInThisWeek は空欄のまま残し（"shift" に出力しない）**、**plannedWorkDaysInThisWeek の日に出勤シフトを割り当ててください**。
+         - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak" と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" および "mustKeepBlankDaysMinInThisWeek"・"recommendedNewWorkDaysInThisWeek" を必ず厳守してください。
+         - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。
       4. 3クール上限・下限と連続3クール禁止（★絶対厳守★）:
          - 現在のシステム設定における3クールシフト（${cool3DescStr}）は、各職員の "thisWeekPlan.maxAllowedNewCool3InThisWeek" および "cumulativeStatsSoFar.remainingCool3" を1回でも超えて割り当てることは絶対禁止です（0回の職員には絶対に3クールを入れないこと）。
          - "thisWeekPlan.mustAssignNewCool3MinInThisWeek" が1回以上ある職員（3クール月間下限 "minCool3" 達成のため今週割り当てが必要な職員）には、"thisWeekPlan.recommendedNewCool3InThisWeek" に従って他の職員より最優先で3クール枠を割り当ててください。
