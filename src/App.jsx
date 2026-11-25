@@ -593,11 +593,16 @@ const extractColorHue = (classStr = '', ignoreGray = true) => {
   return null;
 };
 
-const resolveLightBgFromShiftOrCategory = (shiftDef, categoryDef) => {
-  const shiftHue = extractColorHue(shiftDef?.text, true);
-  if (shiftHue) return LIGHT_BG_CLASS_BY_HUE[shiftHue];
+// 各施設のリーダー背景色は施設固有の色で固定し、シフトの文字色（shiftDef.text）を変えても変動しないようにする
+const resolveLightBgFromShiftOrCategory = (_shiftDef, categoryDef) => {
   const catHue = extractColorHue(categoryDef?.color, true);
   if (catHue) return LIGHT_BG_CLASS_BY_HUE[catHue];
+  const id = String(categoryDef?.id || '').trim();
+  const lbl = String(categoryDef?.label || '').trim();
+  if (id === 'saka' || lbl.includes('坂')) return 'bg-blue-100';
+  if (id === 'kimi' || lbl.includes('君')) return 'bg-green-100';
+  if (id === 'kikuri' || lbl.includes('木')) return 'bg-yellow-100';
+  if (id === 'jinkuri' || lbl.includes('じん') || lbl.includes('腎')) return 'bg-purple-100';
   return 'bg-blue-100';
 };
 
