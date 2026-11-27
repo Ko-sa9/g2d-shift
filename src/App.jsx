@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell, FileSpreadsheet, ClipboardCopy } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell, FileSpreadsheet, ClipboardCopy, FileUp } from 'lucide-react';
 import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport';
+import { parseShiftExcelArrayBuffer, computeExcelImportPlan } from './utils/excelImport';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
@@ -2137,8 +2138,13 @@ export default function WorkScheduleApp() {
   const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
   const printSheetMeasureRef = useRef(null);
   const [excelCopyDone, setExcelCopyDone] = useState(false);
+  const [excelMenuAnchor, setExcelMenuAnchor] = useState(null);
+  const [excelImportPreview, setExcelImportPreview] = useState(null);
+  const [excelImportMode, setExcelImportMode] = useState('overwrite_all');
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
   const [headerNotice, setHeaderNotice] = useState(null);
   const [headerTooltip, setHeaderTooltip] = useState(null);
+  const excelFileInputRef = useRef(null);
   const headerNoticeTimerRef = useRef(null);
   const excelCopyDoneTimerRef = useRef(null);
 
@@ -9544,6 +9550,101 @@ ${messageText}`;
     }
   };
 
+  const handleToggleExcelMenu = (e) => {
+    e.stopPropagation();
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (excelMenuAnchor) {
+      setExcelMenuAnchor(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuWidth = 236;
+    const left = typeof window !== 'undefined'
+      ? Math.min(Math.max(rect.left, 8), window.innerWidth - menuWidth - 8)
+      : rect.left;
+    setExcelMenuAnchor({
+      left,
+      top: rect.bottom + 6,
+    });
+  };
+
+  const handleTriggerExcelImport = () => {
+    hideHeaderTooltip();
+    setExcelMenuAnchor(null);
+    setActivePopup(null);
+    if (excelFileInputRef.current) {
+      excelFileInputRef.current.value = '';
+      excelFileInputRef.current.click();
+    }
+  };
+
+  const handleExcelFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const parsed = parseShiftExcelArrayBuffer({
+        arrayBuffer,
+        fileName: file.name,
+        staffList: displayStaffList,
+        daysArray,
+        shiftDefs,
+        isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+        isUpperShift: (def) => getEffectiveShiftType(def, categoryDefs) === 'shift',
+      });
+      setExcelImportMode('overwrite_all');
+      setExcelImportPreview(parsed);
+    } catch (err) {
+      console.error('Excel import parse error:', err);
+      showHeaderNotice(err?.message || 'Excelファイルの読み込みに失敗しました。');
+    } finally {
+      if (excelFileInputRef.current) {
+        excelFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const excelImportPlan = useMemo(() => {
+    if (!excelImportPreview) return null;
+    return computeExcelImportPlan({
+      parsedResult: excelImportPreview,
+      currentShiftData: shiftData,
+      mode: excelImportMode,
+    });
+  }, [excelImportPreview, shiftData, excelImportMode]);
+
+  const handleConfirmExcelImport = async () => {
+    if (!excelImportPreview || !excelImportPlan || isImportingExcel) return;
+    setIsImportingExcel(true);
+    try {
+      const modeLabel = excelImportMode === 'overwrite_all' ? 'すべて上書き' : '空欄のみ反映';
+      recordAdminUndoSnapshot(null, {
+        label: 'Excel読込',
+        detail: `${excelImportPreview.fileName}（${modeLabel}・${excelImportPlan.totalChanges}セル）`,
+      });
+      setShiftData(excelImportPlan.nextShifts);
+      // 上段シフトのみ更新し、下段タスク・希望履歴・理由・ベル・リーダー等はそのまま保持
+      await saveSchedule(
+        excelImportPlan.nextShifts,
+        taskData,
+        userInputs,
+        bellData,
+        leaderData,
+        changeRequests
+      );
+      showHeaderNotice(
+        `Excel読込完了（${excelImportPlan.affectedStaffCount}名・${excelImportPlan.totalChanges}セル反映）`
+      );
+      setExcelImportPreview(null);
+    } catch (err) {
+      console.error('Excel import apply error:', err);
+      showHeaderNotice('Excel読み込みの保存に失敗しました。');
+    } finally {
+      setIsImportingExcel(false);
+    }
+  };
+
   // --- 管理者編集の戻る・進む（Undo / Redo） ---
   const cloneScheduleSnapshot = (snap) => ({
     shifts: JSON.parse(JSON.stringify(snap?.shifts || {})),
@@ -10026,6 +10127,7 @@ ${messageText}`;
             return;
           }
           setActivePopup(null);
+          setExcelMenuAnchor(null);
         }}
       >
         <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
@@ -10179,32 +10281,42 @@ ${messageText}`;
                </button>
                <button
                  type="button"
-                 onClick={handleExportExcel}
-                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel出力（inシート形式 .xlsx）')}
+                 onClick={handleToggleExcelMenu}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel出力 / 貼り付け用コピー')}
                  onMouseLeave={hideHeaderTooltip}
-                 onFocus={(e) => showHeaderTooltip(e, 'Excel出力（inシート形式 .xlsx）')}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel出力 / 貼り付け用コピー')}
                  onBlur={hideHeaderTooltip}
-                 aria-label="Excel出力"
-                 className="flex items-center justify-center w-9 h-9 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded transition font-bold border border-emerald-300 shadow-sm shrink-0"
-               >
-                 <FileSpreadsheet size={17} />
-               </button>
-               <button
-                 type="button"
-                 onClick={handleCopyShiftCodesForExcel}
-                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel貼付用コピー（1日〜末日のコードのみ）')}
-                 onMouseLeave={hideHeaderTooltip}
-                 onFocus={(e) => showHeaderTooltip(e, 'Excel貼付用コピー（1日〜末日のコードのみ）')}
-                 onBlur={hideHeaderTooltip}
-                 aria-label="Excel貼付用コピー"
+                 aria-label="Excel出力 / 貼り付け用コピー"
+                 aria-expanded={Boolean(excelMenuAnchor)}
                  className={`flex items-center justify-center w-9 h-9 rounded transition font-bold border shadow-sm shrink-0 ${
                    excelCopyDone
                      ? 'bg-emerald-600 text-white border-emerald-600'
-                     : 'bg-teal-50 hover:bg-teal-100 text-teal-700 border-teal-300'
+                     : excelMenuAnchor
+                       ? 'bg-emerald-100 text-emerald-800 border-emerald-400 ring-2 ring-emerald-200'
+                       : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300'
                  }`}
                >
-                 {excelCopyDone ? <Check size={17} /> : <ClipboardCopy size={17} />}
+                 {excelCopyDone ? <Check size={17} /> : <FileSpreadsheet size={17} />}
                </button>
+               <button
+                 type="button"
+                 onClick={handleTriggerExcelImport}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel読込（inシート .xls / .xlsx）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel読込（inシート .xls / .xlsx）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="Excel読込"
+                 className="flex items-center justify-center w-9 h-9 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded transition font-bold border border-sky-300 shadow-sm shrink-0"
+               >
+                 <FileUp size={17} />
+               </button>
+               <input
+                 ref={excelFileInputRef}
+                 type="file"
+                 accept=".xls,.xlsx"
+                 onChange={handleExcelFileSelected}
+                 className="hidden"
+               />
              </>
            ) : (
              <button
@@ -17032,6 +17144,229 @@ ${messageText}`;
           </div>
         </div>
       </>
+    )}
+    {excelMenuAnchor && (
+      <div
+        className="fixed z-[9998] print:hidden w-[236px] bg-white rounded-lg shadow-xl border border-gray-200 py-1.5"
+        style={{ left: `${excelMenuAnchor.left}px`, top: `${excelMenuAnchor.top}px` }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-3 py-1 text-[11px] font-bold text-gray-400 border-b border-gray-100">
+          Excel出力メニュー
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setExcelMenuAnchor(null);
+            handleExportExcel();
+          }}
+          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-emerald-50 transition"
+        >
+          <FileSpreadsheet size={16} className="text-emerald-600 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-gray-800">Excelファイル出力 (.xlsx)</div>
+            <div className="text-[11px] text-gray-500">inシート形式で表をダウンロード</div>
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setExcelMenuAnchor(null);
+            handleCopyShiftCodesForExcel();
+          }}
+          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-teal-50 transition border-t border-gray-100"
+        >
+          <ClipboardCopy size={16} className="text-teal-600 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-gray-800">Excel貼付用コピー</div>
+            <div className="text-[11px] text-gray-500">1日〜末日のコードのみコピー</div>
+          </div>
+        </button>
+      </div>
+    )}
+    {excelImportPreview && excelImportPlan && (
+      <div
+        className="fixed inset-0 z-[9990] print:hidden bg-black/50 flex items-center justify-center p-3 sm:p-4"
+        onClick={() => { if (!isImportingExcel) setExcelImportPreview(null); }}
+      >
+        <div
+          className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-xl max-h-[88vh] flex flex-col overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 py-3 border-b border-gray-200 bg-sky-50 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileUp size={18} className="text-sky-700 shrink-0" />
+              <div className="min-w-0">
+                <h3 className="font-bold text-sm sm:text-base text-gray-800 truncate">
+                  Excel読込プレビュー
+                </h3>
+                <p className="text-xs text-gray-600 truncate">
+                  {excelImportPreview.fileName} ／ シート「{excelImportPreview.sheetName}」
+                  {excelImportPreview.detectedYear && excelImportPreview.detectedMonth
+                    ? `（${excelImportPreview.detectedYear}年${excelImportPreview.detectedMonth}月）`
+                    : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { if (!isImportingExcel) setExcelImportPreview(null); }}
+              className="p-1.5 rounded hover:bg-sky-100 text-gray-500 transition"
+              aria-label="閉じる"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="p-4 overflow-y-auto space-y-4 text-xs sm:text-sm">
+            {excelImportPreview.detectedYear &&
+              excelImportPreview.detectedMonth &&
+              (excelImportPreview.detectedYear !== year || excelImportPreview.detectedMonth !== month) && (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    Excel内の年月（<strong>{excelImportPreview.detectedYear}年{excelImportPreview.detectedMonth}月</strong>）と、現在Webで表示中の月（<strong>{year}年{month}月</strong>）が異なります。意図した月かご確認ください。
+                  </div>
+                </div>
+              )}
+
+            <div className="space-y-2">
+              <div className="font-bold text-gray-700 text-xs">既存セル・空欄セルの反映方法</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition ${
+                    excelImportMode === 'overwrite_all'
+                      ? 'border-sky-500 bg-sky-50 ring-1 ring-sky-300'
+                      : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="excelImportMode"
+                    checked={excelImportMode === 'overwrite_all'}
+                    onChange={() => setExcelImportMode('overwrite_all')}
+                    className="mt-0.5 accent-sky-600"
+                  />
+                  <div>
+                    <div className="font-bold text-gray-800 text-xs">すべて上書き（空欄もクリア）</div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      Excelの内容で上段を上書きし、Excelが空欄の日もクリアします
+                    </div>
+                  </div>
+                </label>
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition ${
+                    excelImportMode === 'fill_empty_only'
+                      ? 'border-sky-500 bg-sky-50 ring-1 ring-sky-300'
+                      : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="excelImportMode"
+                    checked={excelImportMode === 'fill_empty_only'}
+                    onChange={() => setExcelImportMode('fill_empty_only')}
+                    className="mt-0.5 accent-sky-600"
+                  />
+                  <div>
+                    <div className="font-bold text-gray-800 text-xs">空欄セルのみ反映</div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      Webで現在空欄の日のみ入力し、既存入力はそのまま残します
+                    </div>
+                  </div>
+                </label>
+              </div>
+              <p className="text-[11px] text-gray-500">
+                ※上段シフトのみ更新されます。下段タスクおよびスタッフ本人の希望履歴・理由は消さずに保持されます（反映後も「戻る・履歴」で元に戻せます）。
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                <div className="text-[11px] text-gray-500">一致職員</div>
+                <div className="text-base font-extrabold text-gray-800">{excelImportPreview.matchedStaffRows.length}名</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+                <div className="text-[11px] text-emerald-700">新規入力</div>
+                <div className="text-base font-extrabold text-emerald-800">{excelImportPlan.fillCount}件</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-sky-50 border border-sky-200 text-center">
+                <div className="text-[11px] text-sky-700">上書き</div>
+                <div className="text-base font-extrabold text-sky-800">{excelImportPlan.overwriteCount}件</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-center">
+                <div className="text-[11px] text-rose-700">空欄クリア</div>
+                <div className="text-base font-extrabold text-rose-800">{excelImportPlan.clearCount}件</div>
+              </div>
+            </div>
+
+            {excelImportMode === 'fill_empty_only' && excelImportPlan.skippedExistingCount > 0 && (
+              <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                既存入力があるためスキップされるセル：<strong>{excelImportPlan.skippedExistingCount}件</strong>
+              </div>
+            )}
+
+            {excelImportPreview.matchedStaffRows.length === 0 && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium">
+                現在表示中の職員と一致する氏名がシート「{excelImportPreview.sheetName}」内に見つかりませんでした。
+              </div>
+            )}
+
+            {excelImportPreview.unmatchedNames.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5">
+                <div className="font-bold text-amber-900 text-xs mb-1">
+                  Web側の表示職員と一致しなかった氏名（{excelImportPreview.unmatchedNames.length}名・スキップ）
+                </div>
+                <div className="text-[11px] text-amber-800 max-h-20 overflow-y-auto leading-relaxed">
+                  {excelImportPreview.unmatchedNames.map((u) => `${u.name}(行${u.excelRowNum})`).join('、')}
+                </div>
+              </div>
+            )}
+
+            {excelImportPreview.unknownCells.length > 0 && (
+              <div className="rounded-lg border border-orange-200 bg-orange-50/70 p-2.5">
+                <div className="font-bold text-orange-900 text-xs mb-1">
+                  Webのシフト設定に該当しない値（{excelImportPreview.unknownCells.length}件・スキップ）
+                </div>
+                <div className="text-[11px] text-orange-800 max-h-24 overflow-y-auto space-y-0.5">
+                  {excelImportPreview.unknownCells.slice(0, 30).map((item, idx) => (
+                    <div key={idx}>
+                      {item.staffName} {item.day}日: 「{item.rawValue}」
+                    </div>
+                  ))}
+                  {excelImportPreview.unknownCells.length > 30 && (
+                    <div>…ほか {excelImportPreview.unknownCells.length - 30} 件</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setExcelImportPreview(null)}
+              disabled={isImportingExcel}
+              className="px-3.5 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 font-bold text-xs sm:text-sm transition"
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmExcelImport}
+              disabled={
+                isImportingExcel ||
+                excelImportPreview.matchedStaffRows.length === 0 ||
+                excelImportPlan.totalChanges === 0
+              }
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-45 text-white font-bold text-xs sm:text-sm shadow-sm transition"
+            >
+              {isImportingExcel ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+              <span>反映する（{excelImportPlan.totalChanges}セル）</span>
+            </button>
+          </div>
+        </div>
+      </div>
     )}
     {headerTooltip && (
       <div
