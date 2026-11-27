@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell, FileSpreadsheet, ClipboardCopy } from 'lucide-react';
+import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
@@ -2135,6 +2136,11 @@ export default function WorkScheduleApp() {
   const [printShowMarks, setPrintShowMarks] = useState(false);
   const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
   const printSheetMeasureRef = useRef(null);
+  const [excelCopyDone, setExcelCopyDone] = useState(false);
+  const [headerNotice, setHeaderNotice] = useState(null);
+  const [headerTooltip, setHeaderTooltip] = useState(null);
+  const headerNoticeTimerRef = useRef(null);
+  const excelCopyDoneTimerRef = useRef(null);
 
   // 管理者編集用の戻る・進む（Undo / Redo）履歴
   const [undoHistory, setUndoHistory] = useState({ past: [], future: [] });
@@ -9416,6 +9422,127 @@ ${messageText}`;
     setShowPrintModal(true);
   };
 
+  useEffect(() => {
+    return () => {
+      if (headerNoticeTimerRef.current) clearTimeout(headerNoticeTimerRef.current);
+      if (excelCopyDoneTimerRef.current) clearTimeout(excelCopyDoneTimerRef.current);
+    };
+  }, []);
+
+  const showHeaderNotice = (message) => {
+    setHeaderNotice(message);
+    if (headerNoticeTimerRef.current) clearTimeout(headerNoticeTimerRef.current);
+    headerNoticeTimerRef.current = setTimeout(() => {
+      setHeaderNotice(null);
+    }, 3200);
+  };
+
+  const showHeaderTooltip = (e, label) => {
+    if (!label || !e?.currentTarget) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rawCenterX = rect.left + rect.width / 2;
+    const clampedX = typeof window !== 'undefined'
+      ? Math.min(Math.max(rawCenterX, 90), window.innerWidth - 90)
+      : rawCenterX;
+    setHeaderTooltip({
+      label,
+      x: clampedX,
+      y: rect.bottom + 8,
+    });
+  };
+
+  const hideHeaderTooltip = () => {
+    setHeaderTooltip(null);
+  };
+
+  const handleExportExcel = () => {
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (displayStaffList.length === 0) {
+      showHeaderNotice('出力対象の職員が表示されていません。');
+      return;
+    }
+    try {
+      const xlsxBytes = buildShiftExcelXlsxBytes({
+        year,
+        month,
+        daysArray,
+        staffList: displayStaffList,
+        shiftData,
+        shiftDefs,
+        isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+        getDayOfWeek,
+        sheetName: 'in',
+      });
+      const blob = new Blob([xlsxBytes], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const activeTeam = TEAMS.find((t) => t.id === currentView);
+      const teamSuffix = activeTeam && activeTeam.id !== 'all' ? `_${activeTeam.label}` : '';
+      a.href = url;
+      a.download = `シフト表_${year}年${String(month).padStart(2, '0')}月${teamSuffix}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showHeaderNotice(`Excel出力完了（${displayStaffList.length}名分・inシート形式）`);
+    } catch (err) {
+      console.error('Excel export error:', err);
+      showHeaderNotice('Excel出力に失敗しました。');
+    }
+  };
+
+  const handleCopyShiftCodesForExcel = async () => {
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (displayStaffList.length === 0) {
+      showHeaderNotice('コピー対象の職員が表示されていません。');
+      return;
+    }
+    const tsv = buildShiftCodeTsv({
+      staffList: displayStaffList,
+      daysArray,
+      shiftData,
+      shiftDefs,
+      isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+    });
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(tsv);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = tsv;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (err) {
+        console.error('Clipboard fallback copy error:', err);
+      }
+    }
+    if (copied) {
+      setExcelCopyDone(true);
+      if (excelCopyDoneTimerRef.current) clearTimeout(excelCopyDoneTimerRef.current);
+      excelCopyDoneTimerRef.current = setTimeout(() => setExcelCopyDone(false), 2200);
+      showHeaderNotice(`1日〜${daysArray.length}日のコードをコピーしました（${displayStaffList.length}名分・Excelのinタブに貼付可）`);
+    } else {
+      showHeaderNotice('クリップボードへのコピーに失敗しました。');
+    }
+  };
+
   // --- 管理者編集の戻る・進む（Undo / Redo） ---
   const cloneScheduleSnapshot = (snap) => ({
     shifts: JSON.parse(JSON.stringify(snap?.shifts || {})),
@@ -9924,25 +10051,33 @@ ${messageText}`;
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end ml-auto">
            {appUser.role === 'admin' && (
              <div className="flex items-center bg-gray-50 rounded-lg p-0.5 border border-gray-300 shadow-sm shrink-0">
                <button
                  type="button"
-                 onClick={handleUndoSchedule}
+                 onClick={() => { hideHeaderTooltip(); handleUndoSchedule(); }}
                  disabled={undoHistory.past.length === 0}
+                 onMouseEnter={(e) => showHeaderTooltip(e, undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="戻る"
                  className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                 title={undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません'}
                >
                  <ChevronLeft size={16} />
-                 <span className="hidden xl:inline">戻る</span>
+                 <span>戻る</span>
                </button>
                <div className="w-px h-4 bg-gray-300" />
                <button
                  type="button"
-                 onClick={() => setShowUndoHistoryModal(true)}
+                 onClick={() => { hideHeaderTooltip(); setShowUndoHistoryModal(true); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, '作業の履歴を確認・状態移行')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, '作業の履歴を確認・状態移行')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="履歴"
                  className="flex items-center gap-1 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 transition font-bold text-xs"
-                 title="作業の履歴（誰の何日を変更したか）を確認し、選択した状態に移行します"
                >
                  <Clock size={14} className="text-indigo-600 shrink-0" />
                  <span>履歴</span>
@@ -9955,37 +10090,64 @@ ${messageText}`;
                <div className="w-px h-4 bg-gray-300" />
                <button
                  type="button"
-                 onClick={handleRedoSchedule}
+                 onClick={() => { hideHeaderTooltip(); handleRedoSchedule(); }}
                  disabled={undoHistory.future.length === 0}
+                 onMouseEnter={(e) => showHeaderTooltip(e, undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="進む"
                  className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                 title={undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません'}
                >
-                 <span className="hidden xl:inline">進む</span>
+                 <span>進む</span>
                  <ChevronRight size={16} />
                </button>
              </div>
            )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <>
-               <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
-                 {isAiLoading ? <Loader2 className="animate-spin" size={16}/> : <Sparkles size={16} className="sm:w-4 sm:h-4"/>} <span className="hidden md:inline text-sm">AI作成</span>
-               </button>
-               <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0" title="AIチャット">
-                 <Bot size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">AIチャット</span>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenAutoFill(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'AI自動作成')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'AI自動作成')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="AI自動作成"
+                 className="flex items-center justify-center w-9 h-9 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0"
+                 disabled={isAiLoading}
+               >
+                 {isAiLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
                </button>
                <button
-                 onClick={handleOpenValidationModal}
-                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); setShowAiModal(true); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'AIチャット')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'AIチャット')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="AIチャット"
+                 className="flex items-center justify-center w-9 h-9 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0"
+               >
+                 <Bot size={17} />
+               </button>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenValidationModal(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'シフト検算チェック（連勤・3クール・必要人数・必須スキル）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'シフト検算チェック（連勤・3クール・必要人数・必須スキル）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="シフト検算チェック"
+                 className={`relative flex items-center justify-center h-9 px-2.5 gap-1 rounded transition font-bold border shadow-sm shrink-0 ${
                    liveValidationReport.hardStaffViolationCount > 0
                      ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
                      : liveValidationReport.filledOperatingDaysCount > 0 && liveValidationReport.totalActionableCount === 0
                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
                        : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200'
                  }`}
-                 title="シフト検算チェック（連勤・3クール・必要人数・必須スキルを一括確認）"
                >
-                 <ShieldCheck size={16} className="sm:w-4 sm:h-4" />
-                 <span className="hidden md:inline text-sm">検算チェック</span>
+                 <ShieldCheck size={17} />
                  {liveValidationReport.hardStaffViolationCount > 0 ? (
                    <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] leading-tight">
                      {liveValidationReport.hardStaffViolationCount}
@@ -10000,72 +10162,149 @@ ${messageText}`;
                </button>
              </>
            )}
-           <button
-             type="button"
-             onClick={handleOpenPrintModal}
-             className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
-             title="全体表を印刷（A4・B4・A3サイズ調整対応）"
-           >
-             <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
-           </button>
+           {appUser.role === 'admin' ? (
+             <>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenPrintModal(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, '全体表を印刷（A4・B4・A3）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, '全体表を印刷（A4・B4・A3）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="全体表を印刷"
+                 className="flex items-center justify-center w-9 h-9 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+               >
+                 <Printer size={17} />
+               </button>
+               <button
+                 type="button"
+                 onClick={handleExportExcel}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel出力（inシート形式 .xlsx）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel出力（inシート形式 .xlsx）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="Excel出力"
+                 className="flex items-center justify-center w-9 h-9 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded transition font-bold border border-emerald-300 shadow-sm shrink-0"
+               >
+                 <FileSpreadsheet size={17} />
+               </button>
+               <button
+                 type="button"
+                 onClick={handleCopyShiftCodesForExcel}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel貼付用コピー（1日〜末日のコードのみ）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel貼付用コピー（1日〜末日のコードのみ）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="Excel貼付用コピー"
+                 className={`flex items-center justify-center w-9 h-9 rounded transition font-bold border shadow-sm shrink-0 ${
+                   excelCopyDone
+                     ? 'bg-emerald-600 text-white border-emerald-600'
+                     : 'bg-teal-50 hover:bg-teal-100 text-teal-700 border-teal-300'
+                 }`}
+               >
+                 {excelCopyDone ? <Check size={17} /> : <ClipboardCopy size={17} />}
+               </button>
+             </>
+           ) : (
+             <button
+               type="button"
+               onClick={handleOpenPrintModal}
+               className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+               title="全体表を印刷（A4・B4・A3サイズ調整対応）"
+             >
+               <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
+             </button>
+           )}
            {appUser.role === 'admin' && isMasterAdmin && (
-             <button onClick={() => setShowAdminChangeRequestsModal(true)}
-                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
-                  pendingChangeRequests.length > 0
-                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                }`}
-                title="締切後の勤務変更申請の確認と承認"
-              >
-                <RefreshCw size={16} className="sm:w-4 sm:h-4" />
-                <span className="hidden md:inline text-sm">変更申請</span>
-                {pendingChangeRequests.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
-                    {pendingChangeRequests.length}
-                  </span>
-                )}
-              </button>
+             <button
+               type="button"
+               onClick={() => { hideHeaderTooltip(); setShowAdminChangeRequestsModal(true); }}
+               onMouseEnter={(e) => showHeaderTooltip(e, '締切後の勤務変更申請の確認・承認')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, '締切後の勤務変更申請の確認・承認')}
+               onBlur={hideHeaderTooltip}
+               aria-label="変更申請"
+               className={`flex items-center justify-center h-9 px-2.5 gap-1 rounded transition font-bold border shadow-sm shrink-0 ${
+                 pendingChangeRequests.length > 0
+                   ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                   : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+               }`}
+             >
+               <RefreshCw size={17} />
+               {pendingChangeRequests.length > 0 && (
+                 <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                   {pendingChangeRequests.length}
+                 </span>
+               )}
+             </button>
            )}
            {appUser.role === 'admin' && (
              <button
                type="button"
-               onClick={handleResetSchedule}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
-               title={isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+               onClick={() => { hideHeaderTooltip(); handleResetSchedule(); }}
+               onMouseEnter={(e) => showHeaderTooltip(e, isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`)}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`)}
+               onBlur={hideHeaderTooltip}
+               aria-label="全消去"
+               className="flex items-center justify-center w-9 h-9 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
              >
-               <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
+               <Trash2 size={17} />
              </button>
            )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <button
+               type="button"
                onClick={() => {
+                 hideHeaderTooltip();
                  setEditingShift(null);
                  handleAddNewShift();
                  setShowSettingsModal(true);
                }}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-               title="設定"
+               onMouseEnter={(e) => showHeaderTooltip(e, '設定')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, '設定')}
+               onBlur={hideHeaderTooltip}
+               aria-label="設定"
+               className="flex items-center justify-center w-9 h-9 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
              >
-               <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
+               <Settings size={17} />
              </button>
            )}
            {appUser.role === 'admin' && !isMasterAdmin && (
              <button
+               type="button"
                onClick={() => {
+                 hideHeaderTooltip();
                  setTargetAdminKey(appUser.initialView);
                  setNewPassword('');
                  setShowPasswordChangeModal(true);
                }}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-               title="パスワード変更"
+               onMouseEnter={(e) => showHeaderTooltip(e, 'パスワード変更')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, 'パスワード変更')}
+               onBlur={hideHeaderTooltip}
+               aria-label="パスワード変更"
+               className="flex items-center justify-center w-9 h-9 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
              >
-               <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
+               <Key size={17} />
              </button>
            )}
            {appUser.role === 'admin' && (
              <>
-               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
-               <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
+               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-0.5"></div>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleLogout(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'ログアウト')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'ログアウト')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="ログアウト"
+                 className="flex items-center justify-center w-9 h-9 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition shrink-0"
+               >
+                 <LogOut size={17} />
+               </button>
              </>
            )}
            {appUser.role === 'staff' && (
@@ -16792,6 +17031,20 @@ ${messageText}`;
           </div>
         </div>
       </>
+    )}
+    {headerTooltip && (
+      <div
+        className="fixed z-[9999] pointer-events-none print:hidden -translate-x-1/2 px-2.5 py-1.5 rounded-md bg-slate-900/95 text-white text-xs font-medium shadow-lg whitespace-nowrap"
+        style={{ left: `${headerTooltip.x}px`, top: `${headerTooltip.y}px` }}
+      >
+        {headerTooltip.label}
+      </div>
+    )}
+    {headerNotice && (
+      <div className="fixed bottom-5 right-5 z-[9999] print:hidden flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900/95 text-white text-xs sm:text-sm font-medium shadow-xl border border-slate-700">
+        <Check size={16} className="text-emerald-400 shrink-0" />
+        <span>{headerNotice}</span>
+      </div>
     )}
     </>
   );
