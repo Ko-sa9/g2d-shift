@@ -2,9 +2,10 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallba
 import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell, FileSpreadsheet, ClipboardCopy, FileUp } from 'lucide-react';
 import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport';
 import { parseShiftExcelArrayBuffer, computeExcelImportPlan } from './utils/excelImport';
+import { validateShiftCode, migrateMasterDataShiftCode, migrateScheduleDocShiftCode } from './utils/shiftCodeMigration';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // ------------------------------------------------------------------
@@ -2142,6 +2143,7 @@ export default function WorkScheduleApp() {
   const [excelImportPreview, setExcelImportPreview] = useState(null);
   const [excelImportMode, setExcelImportMode] = useState('overwrite_all');
   const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const [isMigratingShiftCode, setIsMigratingShiftCode] = useState(false);
   const [headerNotice, setHeaderNotice] = useState(null);
   const [headerTooltip, setHeaderTooltip] = useState(null);
   const excelFileInputRef = useRef(null);
@@ -4283,22 +4285,33 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     }
   };
 
-  const saveShiftConfig = () => {
-    if (!isMasterAdmin) return;
-    if (!editingShift || !editingShift.code || !editingShift.label) {
+  const saveShiftConfig = async () => {
+    if (!isMasterAdmin || isMigratingShiftCode) return;
+    if (!editingShift || !editingShift.label || !String(editingShift.label).trim()) {
       alert('コードと表示名は必須です');
       return;
     }
-    // 既存シフトの編集時はデータ孤立防止のため作成時の内部コード(originalCode)を維持し、新規作成時はコード重複をチェックする
-    const fixedCode = editingShift.originalCode ? editingShift.originalCode : editingShift.code.trim();
-    if (!editingShift.originalCode && shiftDefs[fixedCode]) {
-      alert(`コード "${fixedCode}" は既に他のシフトで使用されています。別のコードを指定してください。`);
+    const oldCode = editingShift.originalCode || null;
+    const validation = validateShiftCode(editingShift.code, shiftDefs, oldCode);
+    if (!validation.ok) {
+      alert(validation.error);
       return;
     }
+    const nextCode = validation.code;
+    const isNewShiftCreation = !oldCode;
+    const isCodeRenamed = Boolean(oldCode && nextCode !== oldCode);
+
+    if (isCodeRenamed) {
+      const ok = window.confirm(
+        `シフトコードを「${oldCode}」→「${nextCode}」へ変更します。\n\n保存済みの全月シフト・希望履歴・変更申請・除外シフト・必要人数設定などの旧コードも自動で一括置換されます（戻る履歴はリセットされます）。\n実行してよろしいですか？`
+      );
+      if (!ok) return;
+    }
+
     const newDefs = { ...shiftDefs };
     const cleanShift = { ...editingShift };
     delete cleanShift.originalCode;
-    cleanShift.code = fixedCode;
+    cleanShift.code = nextCode;
     const catKind = getCategoryKindById(cleanShift.category, categoryDefs);
     cleanShift.type = catKind === 'role' ? 'task' : (cleanShift.type || 'shift');
     if (cleanShift.type === 'shift') {
@@ -4323,14 +4336,101 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       delete cleanShift.shiftSlot;
       delete cleanShift.offSubType;
     }
-    if (newDefs[cleanShift.code]?.order === undefined) {
+
+    const prevDef = oldCode ? newDefs[oldCode] : newDefs[nextCode];
+    if (prevDef?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
     } else {
-      cleanShift.order = newDefs[cleanShift.code].order;
+      cleanShift.order = prevDef.order;
     }
-    const isNewShiftCreation = !editingShift.originalCode;
-    newDefs[cleanShift.code] = cleanShift;
+
+    if (isCodeRenamed) {
+      delete newDefs[oldCode];
+    }
+    newDefs[nextCode] = cleanShift;
+
+    if (isCodeRenamed) {
+      setIsMigratingShiftCode(true);
+      try {
+        // 1. マスタ設定内の参照（必要人数・除外シフト・休みカウント対象・班別許可リスト）を一括置換
+        const masterMigration = migrateMasterDataShiftCode({
+          oldCode,
+          newCode: nextCode,
+          targetCounts,
+          staffList,
+          adminSettings,
+        });
+        const masterUpdates = { shiftDefs: newDefs };
+        if (masterMigration.targetCountsChanged) masterUpdates.targetCounts = masterMigration.nextTargetCounts;
+        if (masterMigration.staffListChanged) masterUpdates.staffList = masterMigration.nextStaffList;
+        if (masterMigration.adminSettingsChanged) masterUpdates.adminSettings = masterMigration.nextAdminSettings;
+
+        setShiftDefs(newDefs);
+        if (masterMigration.targetCountsChanged) setTargetCounts(masterMigration.nextTargetCounts);
+        if (masterMigration.staffListChanged) setStaffList(masterMigration.nextStaffList);
+        if (masterMigration.adminSettingsChanged) setAdminSettings(masterMigration.nextAdminSettings);
+        await saveMasterData(masterUpdates);
+
+        // 2. 保存済み全月スケジュール（shifts / tasks / userInputs / changeRequests）を一括置換
+        let migratedMonthCount = 0;
+        if (authUser) {
+          const schedulesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'schedules');
+          const snap = await getDocs(schedulesColRef);
+          const updatePromises = [];
+          snap.forEach((docSnap) => {
+            const res = migrateScheduleDocShiftCode(docSnap.data(), oldCode, nextCode);
+            if (res.changed) {
+              migratedMonthCount++;
+              updatePromises.push(updateDoc(docSnap.ref, res.updates));
+            }
+          });
+          if (updatePromises.length > 0) {
+            await Promise.all(updatePromises);
+          }
+        }
+
+        // 3. 現在表示中のローカル状態＆前月シフトも即時反映し、旧コード復活防止のため戻る履歴をリセット
+        const currentLocalRes = migrateScheduleDocShiftCode(
+          { shifts: shiftData, tasks: taskData, userInputs, changeRequests },
+          oldCode,
+          nextCode
+        );
+        if (currentLocalRes.updates.shifts) setShiftData(currentLocalRes.updates.shifts);
+        if (currentLocalRes.updates.tasks) setTaskData(currentLocalRes.updates.tasks);
+        if (currentLocalRes.updates.userInputs) setUserInputs(currentLocalRes.updates.userInputs);
+        if (currentLocalRes.updates.changeRequests) setChangeRequests(currentLocalRes.updates.changeRequests);
+
+        const prevLocalRes = migrateScheduleDocShiftCode(
+          { shifts: prevMonthShiftData },
+          oldCode,
+          nextCode
+        );
+        if (prevLocalRes.updates.shifts) setPrevMonthShiftData(prevLocalRes.updates.shifts);
+
+        const emptyHistory = { past: [], future: [] };
+        undoHistoryRef.current = emptyHistory;
+        setUndoHistory(emptyHistory);
+        setShowUndoHistoryModal(false);
+        setActivePopup(null);
+
+        setEditingShift({
+          ...cleanShift,
+          facilityTargets: cleanShift.facilityTargets ? { ...cleanShift.facilityTargets } : {},
+          originalCode: cleanShift.code,
+        });
+        alert(
+          `保存しました（コード「${oldCode}」→「${nextCode}」へ変更し、保存済みスケジュール ${migratedMonthCount}ヶ月分と各種設定を一括置換しました）`
+        );
+      } catch (err) {
+        console.error('Shift code migration error:', err);
+        alert(`コード変更の一括置換中にエラーが発生しました: ${err?.message || err}`);
+      } finally {
+        setIsMigratingShiftCode(false);
+      }
+      return;
+    }
+
     setShiftDefs(newDefs);
     // 新規シフト作成時に「休み」「希望」カテゴリまたは「公出」であれば、休み希望カウント対象(countedOffShifts)にも自動追加
     if (
@@ -4345,12 +4445,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           countedOffShifts: [...currentCounted, cleanShift.code],
         };
         setAdminSettings(nextAdminSettings);
-        saveMasterData({ shiftDefs: newDefs, adminSettings: nextAdminSettings });
+        await saveMasterData({ shiftDefs: newDefs, adminSettings: nextAdminSettings });
       } else {
-        saveMasterData({ shiftDefs: newDefs });
+        await saveMasterData({ shiftDefs: newDefs });
       }
     } else {
-      saveMasterData({ shiftDefs: newDefs }); // ★修正
+      await saveMasterData({ shiftDefs: newDefs }); // ★修正
     }
     alert('保存しました');
     setEditingShift({
@@ -13632,18 +13732,26 @@ ${messageText}`;
                               </div>
                               <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">コード（内部キー・英数字可）</label>
+                                  <label className="text-xs font-bold text-gray-500">コード（内部キー・Excel出力コード兼用）</label>
                                   <input
                                     type="text"
-                                    className="w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
+                                    className={`w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed ${
+                                      editingShift.originalCode && (editingShift.code || '').trim() !== editingShift.originalCode
+                                        ? 'border-amber-400 bg-amber-50/50'
+                                        : ''
+                                    }`}
                                     value={editingShift.code || ''}
-                                    disabled={Boolean(editingShift.originalCode)}
+                                    disabled={isMigratingShiftCode}
                                     onChange={e => setEditingShift({ ...editingShift, code: e.target.value.trim() })}
                                     placeholder="例: 1, A, S1 など"
                                   />
-                                  {editingShift.originalCode && (
-                                    <p className="text-[10px] text-gray-400 mt-1">※作成後は過去データ保護のためコード変更不可（表示名は変更可能）</p>
-                                  )}
+                                  {editingShift.originalCode && (editingShift.code || '').trim() !== editingShift.originalCode ? (
+                                    <p className="text-[10px] text-amber-700 font-bold mt-1 leading-snug">
+                                      ※「{editingShift.originalCode}」→「{(editingShift.code || '').trim() || '(未入力)'}」へ変更します。保存時に全月のデータ・各種設定も自動で一括置換されます。
+                                    </p>
+                                  ) : editingShift.originalCode ? (
+                                    <p className="text-[10px] text-gray-400 mt-1">※変更して保存すると全月のデータ・関連設定も自動で一括置換されます</p>
+                                  ) : null}
                                 </div>
                                 <div>
                                   <label className="text-xs font-bold text-gray-500">表示名（勤務表・チャット上の表記）</label>
@@ -13875,9 +13983,26 @@ ${messageText}`;
                                   <span className="text-sm font-bold text-gray-700">シフト希望に表示する</span>
                                 </label>
                               </div>
-                              <div className="flex justify-between pt-4 mt-4">
-                                {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
-                                <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 ml-auto">保存</button>
+                              <div className="flex justify-between items-center pt-4 mt-4">
+                                {editingShift.originalCode && (
+                                  <button
+                                    type="button"
+                                    disabled={isMigratingShiftCode}
+                                    onClick={() => deleteShiftConfig(editingShift.originalCode)}
+                                    className="text-red-500 text-sm hover:underline disabled:opacity-40"
+                                  >
+                                    削除
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isMigratingShiftCode}
+                                  onClick={saveShiftConfig}
+                                  className="flex items-center gap-1.5 px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 disabled:opacity-50 ml-auto transition"
+                                >
+                                  {isMigratingShiftCode && <Loader2 size={15} className="animate-spin" />}
+                                  <span>{isMigratingShiftCode ? '一括置換中...' : '保存'}</span>
+                                </button>
                               </div>
                             </div>
                           );
