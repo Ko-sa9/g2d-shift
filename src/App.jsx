@@ -112,9 +112,9 @@ const PRINT_PX_PER_MM = 96 / 25.4;
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
-  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (最高性能・推論重視・推奨)' },
-  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (標準高速)' },
-  { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite (最速・軽量)' },
+  { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon (最高性能・推論重視・推奨)' },
+  { value: 'gemini-4-neon', label: 'Gemini 4 Neon (高性能・バランス型)' },
+  { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen (最速・軽量・無料枠対応)' },
 ];
 
 const CATEGORY_KIND_OPTIONS = [
@@ -1891,8 +1891,8 @@ const remaining = 42 - days.length;
 
 // 共通のAI呼び出し関数（API経由）
 // アプリ内の各機能からAIを利用する際の窓口となる関数です
-// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-4-argon を使用します
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-4-argon", options = {}) => { 
+// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-4-carbon を使用します
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-4-carbon", options = {}) => { 
   // デバッグ用に実行時のモデル名をコンソールに記録し、どのモデルが呼ばれたか確認できるようにします
   console.log("Model:", model, "バックエンド経由でAIを呼び出します"); 
 
@@ -2217,7 +2217,7 @@ export default function WorkScheduleApp() {
     baseSecPerWeek: 11,
   });
 
-  const [aiModel, setAiModel] = useState('gemini-4-argon'); 
+  const [aiModel, setAiModel] = useState('gemini-4-carbon'); 
   const chatEndRef = useRef(null);
 
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
@@ -6595,7 +6595,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
     const isProModel =
       String(aiModel || '').toLowerCase().includes('pro') ||
-      String(aiModel || '').toLowerCase().includes('argon');
+      String(aiModel || '').toLowerCase().includes('argon') ||
+      String(aiModel || '').toLowerCase().includes('carbon');
     const baseSecPerWeek = isProModel ? 26 : 11;
     const startedAtMs = Date.now();
     autoFillTimingRef.current = {

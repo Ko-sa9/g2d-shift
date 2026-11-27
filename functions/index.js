@@ -12,16 +12,17 @@ exports.callGeminiAPI = functions.https.onCall(
     const systemInstruction = String(requestData.systemInstruction || "").trim();
     const responseMimeType = requestData.responseMimeType || null;
 
-    // デフォルトは最高性能モデル（gemini-4-argon）を使用します
+    // デフォルトは最新最高性能モデル（gemini-4-carbon）を使用します
     const ALLOWED_MODELS = new Set([
+      "gemini-4-carbon",
+      "gemini-4-neon",
+      "gemini-4-hydrogen",
       "gemini-4-argon",
       "gemini-3.8-flash",
       "gemini-3.5-flash-lite",
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
     ]);
     const requestedModel = String(requestData.model || "").trim();
-    const primaryModel = ALLOWED_MODELS.has(requestedModel) ? requestedModel : "gemini-4-argon";
+    const primaryModel = ALLOWED_MODELS.has(requestedModel) ? requestedModel : "gemini-4-carbon";
 
     const apiKey = process.env.GEMINI_API_KEY;
 
@@ -63,9 +64,9 @@ exports.callGeminiAPI = functions.https.onCall(
         };
       }
 
-      // APIへ通信を行います（万一指定モデルがAPI側で未提供(404)の場合は安定版Flashへ自動フォールバック）
+      // APIへ通信を行います（万一指定モデルがAPI側で未提供(404)の場合は安定版モデルへ自動フォールバック）
       const fallbackCandidates = Array.from(
-        new Set([primaryModel, "gemini-3.8-flash", "gemini-2.5-flash"])
+        new Set([primaryModel, "gemini-4-hydrogen", "gemini-3.8-flash"])
       );
       let response = null;
       for (let i = 0; i < fallbackCandidates.length; i++) {
