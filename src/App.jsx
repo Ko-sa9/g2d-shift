@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell } from 'lucide-react';
+import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, MessageSquare, X, Send, Loader2, Edit2, Check, RotateCcw, RefreshCw, AlertTriangle, User, LogOut, Calendar as CalendarIcon, Lock, Users, Clock, Key, GripVertical, Settings, ShieldCheck, Activity, Zap, Heart, Star, ListFilter, Eraser, Palette, ArrowUp, ArrowDown, Bot, Database, HelpCircle, Wand2, Printer, Bell, FileSpreadsheet, ClipboardCopy, FileUp } from 'lucide-react';
+import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport';
+import { parseShiftExcelArrayBuffer, computeExcelImportPlan } from './utils/excelImport';
+import { validateShiftCode, migrateMasterDataShiftCode, migrateScheduleDocShiftCode } from './utils/shiftCodeMigration';
+import { WheelTimeInput, WheelDurationInput } from './components/WheelTimePicker';
+import { buildUndoHistoryKey, loadUndoHistory, saveUndoHistory, deleteUndoHistory, clearAllUndoHistories } from './utils/undoHistoryStorage';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
+import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 // ------------------------------------------------------------------
@@ -111,9 +116,10 @@ const PRINT_PX_PER_MM = 96 / 25.4;
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
-  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (最高性能・推論重視・推奨)' },
-  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (標準高速)' },
-  { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite (最速・軽量)' },
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (高精度・バランス推奨)' },
+  { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon (最高性能・深層推論)' },
+  { value: 'gemini-4-neon', label: 'Gemini 4 Neon (高速・バランス型)' },
+  { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen (最速・軽量・無料枠対応)' },
 ];
 
 const CATEGORY_KIND_OPTIONS = [
@@ -135,9 +141,7 @@ const SHIFT_WORK_SLOTS = [
 
 const CONTRACT_WORK_DAY_OPTIONS = [0, 1, 2, 3, 4, 5];
 const COOL3_LIMIT_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-const OVERTIME_HOUR_OPTIONS = Array.from({ length: 25 }, (_, i) => i * 0.5);
-const TIME_HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
-const TIME_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+// 残業・開始/終了時刻は WheelTimePicker（1分刻みドラムロール式）を使用
 const FACILITY_POWER_TARGET_OPTIONS = Array.from({ length: 41 }, (_, i) => i * 5);
 const SHIFT_TARGET_COUNT_OPTIONS = Array.from({ length: 21 }, (_, i) => i);
 const SKILL_TARGET_COUNT_OPTIONS = [0, 1, 2, 3, 4, 5];
@@ -155,57 +159,7 @@ const buildNumericOptions = (baseOptions, currentValue) => {
   return [...baseOptions, num].sort((a, b) => a - b);
 };
 
-// 時・分のプルダウンで時刻 ("HH:MM") を選択するコンポーネント
-const TimeSelectInput = ({ value, onChange, className = '' }) => {
-  const parts = typeof value === 'string' && value.includes(':') ? value.split(':') : ['', ''];
-  const curHour = parts[0] ? parts[0].padStart(2, '0') : '';
-  const curMin = parts[1] ? parts[1].padStart(2, '0') : '';
-  const hourOpts = curHour && !TIME_HOUR_OPTIONS.includes(curHour)
-    ? [curHour, ...TIME_HOUR_OPTIONS]
-    : TIME_HOUR_OPTIONS;
-  const minOpts = curMin && !TIME_MINUTE_OPTIONS.includes(curMin)
-    ? [...TIME_MINUTE_OPTIONS, curMin].sort()
-    : TIME_MINUTE_OPTIONS;
 
-  return (
-    <div className={`flex items-center gap-1 ${className}`}>
-      <select
-        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center"
-        value={curHour}
-        onChange={e => {
-          const nextH = e.target.value;
-          if (!nextH) {
-            onChange('');
-          } else {
-            onChange(`${nextH}:${curMin || '00'}`);
-          }
-        }}
-      >
-        <option value="">--</option>
-        {hourOpts.map(h => (
-          <option key={h} value={h}>{h}</option>
-        ))}
-      </select>
-      <span className="text-xs font-bold text-gray-500">:</span>
-      <select
-        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center disabled:bg-gray-100 disabled:text-gray-400"
-        value={curHour ? (curMin || '00') : ''}
-        disabled={!curHour}
-        onChange={e => {
-          const nextM = e.target.value || '00';
-          if (curHour) {
-            onChange(`${curHour}:${nextM}`);
-          }
-        }}
-      >
-        {!curHour && <option value="">--</option>}
-        {minOpts.map(m => (
-          <option key={m} value={m}>{m}</option>
-        ))}
-      </select>
-    </div>
-  );
-};
 
 const INITIAL_STAFF = [
   { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234', maxCool3: 5 },
@@ -593,11 +547,16 @@ const extractColorHue = (classStr = '', ignoreGray = true) => {
   return null;
 };
 
-const resolveLightBgFromShiftOrCategory = (shiftDef, categoryDef) => {
-  const shiftHue = extractColorHue(shiftDef?.text, true);
-  if (shiftHue) return LIGHT_BG_CLASS_BY_HUE[shiftHue];
+// 各施設のリーダー背景色は施設固有の色で固定し、シフトの文字色（shiftDef.text）を変えても変動しないようにする
+const resolveLightBgFromShiftOrCategory = (_shiftDef, categoryDef) => {
   const catHue = extractColorHue(categoryDef?.color, true);
   if (catHue) return LIGHT_BG_CLASS_BY_HUE[catHue];
+  const id = String(categoryDef?.id || '').trim();
+  const lbl = String(categoryDef?.label || '').trim();
+  if (id === 'saka' || lbl.includes('坂')) return 'bg-blue-100';
+  if (id === 'kimi' || lbl.includes('君')) return 'bg-green-100';
+  if (id === 'kikuri' || lbl.includes('木')) return 'bg-yellow-100';
+  if (id === 'jinkuri' || lbl.includes('じん') || lbl.includes('腎')) return 'bg-purple-100';
   return 'bg-blue-100';
 };
 
@@ -656,6 +615,14 @@ const isJinkuriFacilityCategory = (cat) => {
   const id = String(cat.id || '').trim();
   const lbl = String(cat.label || '').trim();
   return id === 'jinkuri' || lbl.includes('じん') || lbl.includes('腎');
+};
+
+// 木クリ施設カテゴリかどうかを判定（2クール以下施設のうちリーダー1名以上必須の対象）
+const isKikuriFacilityCategory = (cat) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
+  const id = String(cat.id || '').trim().toLowerCase();
+  const lbl = String(cat.label || '').trim();
+  return id === 'kikuri' || lbl.includes('木クリ') || lbl.includes('木更津');
 };
 
 // 役割（タスク）に設定された施設別の必要人数マップ（じんクリは _mwf / _tts 分割対応・1名以上）を取得
@@ -805,6 +772,132 @@ const getFacilityTargetPowerScore = (cat, adminSettings = {}) => {
   return 0;
 };
 
+// 案A: 固定の30点・40点ではなく、その日の出勤スタッフ全体の1人あたり平均スコアと各施設の人数比から動的に期待スコア・施設間偏りを算出
+const evaluateDailyFacilityPowerBalance = ({
+  facilityCats = [],
+  shiftDefs = {},
+  categoryDefs = {},
+  actualHeadcountByCat = {},
+  powerScoreByCat = {},
+  readTargetCount = () => 0,
+  adminSettings = {},
+  fallbackStaffAvgScore = 10,
+}) => {
+  const enabledCats = facilityCats.filter(cat => getFacilityTargetPowerScore(cat, adminSettings) > 0);
+  let totalAssignedHc = 0;
+  let totalAssignedScore = 0;
+  const catStats = {};
+
+  enabledCats.forEach(cat => {
+    const codes = Object.values(shiftDefs)
+      .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
+      .map(sd => sd.code);
+    const targetHc = codes.reduce((sum, c) => sum + readTargetCount(c), 0);
+    const actualHc = actualHeadcountByCat[cat.id] || 0;
+    const actualScore = powerScoreByCat[cat.id] || 0;
+    const isActive = targetHc > 0 || actualHc > 0;
+    if (actualHc > 0) {
+      totalAssignedHc += actualHc;
+      totalAssignedScore += actualScore;
+    }
+    catStats[cat.id] = {
+      catId: cat.id,
+      label: cat.label,
+      targetHc,
+      actualHc,
+      actualScore,
+      actualAvg: actualHc > 0 ? actualScore / actualHc : 0,
+      isActive,
+      isEnabled: true,
+    };
+  });
+
+  const dayAvgScore = totalAssignedHc > 0 ? totalAssignedScore / totalAssignedHc : fallbackStaffAvgScore;
+  const activeWithStaff = Object.values(catStats).filter(st => st.isActive && st.actualHc > 0);
+  const maxFacAvg = activeWithStaff.length > 0 ? Math.max(...activeWithStaff.map(st => st.actualAvg)) : dayAvgScore;
+  const minFacAvg = activeWithStaff.length > 0 ? Math.min(...activeWithStaff.map(st => st.actualAvg)) : dayAvgScore;
+  const maxFacObj = activeWithStaff.find(st => st.actualAvg === maxFacAvg) || null;
+
+  const byCat = {};
+  const imbalancedItems = [];
+
+  facilityCats.forEach(cat => {
+    const st = catStats[cat.id];
+    if (!st) {
+      const actualHc = actualHeadcountByCat[cat.id] || 0;
+      const actualScore = powerScoreByCat[cat.id] || 0;
+      byCat[cat.id] = {
+        catId: cat.id,
+        label: cat.label,
+        isEnabled: false,
+        isActive: actualHc > 0,
+        actualHc,
+        targetHc: 0,
+        actualScore,
+        expectedScore: 0,
+        actualAvg: actualHc > 0 ? Number((actualScore / actualHc).toFixed(1)) : 0,
+        dayAvg: Number(dayAvgScore.toFixed(1)),
+        diffFromDayAvg: 0,
+        isImbalancedLow: false,
+        isImbalancedHigh: false,
+      };
+      return;
+    }
+
+    const refHc = st.actualHc > 0 ? st.actualHc : st.targetHc;
+    const expectedScore = refHc > 0 ? Math.round(dayAvgScore * refHc) : 0;
+    const diffFromDayAvg = st.actualHc > 0 ? st.actualAvg - dayAvgScore : 0;
+    const gapFromMax = st.actualHc > 0 ? maxFacAvg - st.actualAvg : 0;
+
+    // 2施設以上稼働している日に、1人あたり平均が当日全体平均より0.9点以上低い、または最高施設と1.6点以上差がある場合は「低スコア偏り」
+    const isImbalancedLow =
+      activeWithStaff.length >= 2 &&
+      st.actualHc > 0 &&
+      (dayAvgScore - st.actualAvg >= 0.9 || gapFromMax >= 1.6);
+
+    const isImbalancedHigh =
+      activeWithStaff.length >= 2 &&
+      st.actualHc > 0 &&
+      (st.actualAvg - dayAvgScore >= 1.0 || (st.actualAvg === maxFacAvg && maxFacAvg - minFacAvg >= 1.6));
+
+    byCat[cat.id] = {
+      catId: cat.id,
+      label: cat.label,
+      isEnabled: true,
+      isActive: st.isActive,
+      actualHc: st.actualHc,
+      targetHc: st.targetHc,
+      actualScore: st.actualScore,
+      expectedScore,
+      actualAvg: Number(st.actualAvg.toFixed(1)),
+      dayAvg: Number(dayAvgScore.toFixed(1)),
+      diffFromDayAvg: Number(diffFromDayAvg.toFixed(1)),
+      isImbalancedLow,
+      isImbalancedHigh,
+      highFacilityLabel: maxFacObj && maxFacObj.catId !== cat.id ? maxFacObj.label : null,
+      highFacilityAvg: maxFacObj ? Number(maxFacObj.actualAvg.toFixed(1)) : Number(dayAvgScore.toFixed(1)),
+    };
+
+    if (isImbalancedLow) {
+      const highHint =
+        maxFacObj && maxFacObj.catId !== cat.id
+          ? `（当日平均${dayAvgScore.toFixed(1)}点/人・${maxFacObj.label}平均${maxFacObj.actualAvg.toFixed(1)}点に高スコア集中）`
+          : `（当日平均${dayAvgScore.toFixed(1)}点/人）`;
+      imbalancedItems.push(
+        `${cat.label} ${st.actualScore}/目安${expectedScore}点 [平均${st.actualAvg.toFixed(1)}点]${highHint}`
+      );
+    }
+  });
+
+  return {
+    dayAvgScore: Number(dayAvgScore.toFixed(1)),
+    maxFacAvg: Number(maxFacAvg.toFixed(1)),
+    minFacAvg: Number(minFacAvg.toFixed(1)),
+    byCat,
+    imbalancedItems,
+  };
+};
+
 const resolveFacilitySkillTarget = (cat, skillKey, adminSettings = {}) => {
   if (!cat || resolveCategoryKind(cat) !== 'facility') return 0;
   const customMap = adminSettings?.facilitySkillTargets;
@@ -897,7 +990,7 @@ const buildShiftSystemReferenceText = (shiftDefs = {}, categoryDefs = {}, adminS
     const headerExtras = [];
     if (kind === 'facility') {
       const pTarget = getFacilityTargetPowerScore(cat, adminSettings);
-      headerExtras.push(pTarget > 0 ? `目標スコア:${pTarget}点以上` : 'スコア判定なし');
+      headerExtras.push(pTarget > 0 ? 'パワーバランス均等化対象（当日平均スコア×人数比）' : 'スコア判定なし');
       const reqSkills = STAFF_SKILLS
         .map(sk => ({ label: sk.label, cnt: resolveFacilitySkillTarget(cat, sk.key, adminSettings) }))
         .filter(x => x.cnt > 0)
@@ -1612,24 +1705,112 @@ const evaluateScheduleValidation = ({
       }
     }
 
-    // (b) 施設別必須スキルチェック（リーダー等）
+    // (b) 施設別必須スキルチェック（3クール枠内リーダー必須 ＆ 2クール以下は木クリのみリーダー必須）
     const skItems = [];
     facilityCats.forEach(cat => {
-      const catShiftCodes = Object.values(shiftDefs)
-        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-        .map(sd => sd.code);
+      const catShiftDefs = Object.values(shiftDefs)
+        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id);
+      const catShiftCodes = catShiftDefs.map(sd => sd.code);
       if (catShiftCodes.length === 0) return;
 
       const catTargetHc = catShiftCodes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
       const catActualHc = actualHeadcountByCat[cat.id] || 0;
       if (catTargetHc === 0 && catActualHc === 0) return;
 
+      const catHasAnyCool3Def = catShiftDefs.some(sd => cool3Set.has(sd.code));
+      const activeCool3DefsToday = catShiftDefs.filter(
+        sd => cool3Set.has(sd.code) && (readTargetCount(sd.code, d) > 0 || (codeCounts[sd.code] || 0) > 0)
+      );
+
       STAFF_SKILLS.forEach(sk => {
+        if (sk.key === 'isLeader') {
+          // ① 3クールがある施設で当日3クール枠が稼働している場合: 「3クール枠の中に」リーダー1名以上必須
+          if (activeCool3DefsToday.length > 0) {
+            activeCool3DefsToday.forEach(c3Def => {
+              const c3LeaderActual = staffList.filter(
+                s => shiftsMap?.[s.id]?.[d] === c3Def.code && s.skills?.isLeader
+              ).length;
+              if (c3LeaderActual < 1) {
+                const sameDayNonC3Leaders = staffList.filter(s => {
+                  const sc = shiftsMap?.[s.id]?.[d];
+                  return Boolean(sc && !cool3Set.has(sc) && s.skills?.isLeader && isShiftAllowed(s, c3Def.code));
+                });
+                const blankLeaders = staffList.filter(
+                  s => s.skills?.isLeader && canSafelyFillBlankOnDay(s, d) && isShiftAllowed(s, c3Def.code)
+                );
+                const isAiFixable = sameDayNonC3Leaders.length > 0 || blankLeaders.length > 0;
+                const hint = sameDayNonC3Leaders.length > 0
+                  ? '同日の日勤・2クールにリーダー保持者あり'
+                  : blankLeaders.length > 0
+                    ? '未割当のリーダー保持者あり'
+                    : '';
+                skItems.push({
+                  catId: cat.id,
+                  catLabel: `${cat.label}(${c3Def.label})`,
+                  skillKey: 'isLeader',
+                  skillLabel: '3クール内リーダー',
+                  actual: c3LeaderActual,
+                  target: 1,
+                  isAiFixable,
+                  hint,
+                });
+                if (isAiFixable) {
+                  aiRepairableItems.push(
+                    `[3クール内リーダー不足] ${month}/${d}(${dowLabel}): ${cat.label}の3クール「${c3Def.label}」(コード:"${c3Def.code}")内にリーダーが0名です（${hint}）。同日の通常シフトにいるリーダー保持者と入れ替えて必ず3クール内にリーダーを1名以上確保してください。`
+                  );
+                }
+              }
+            });
+            return;
+          }
+
+          // ② 2クールまでの施設は「木クリ」のみリーダー1名以上必須（3クール施設の3クール非稼働日は設定値に従う）
+          if (!catHasAnyCool3Def && !isKikuriFacilityCategory(cat)) {
+            return;
+          }
+          const reqLeaderMin = isKikuriFacilityCategory(cat) ? Math.max(1, readSkillMin(cat.id, 'isLeader')) : readSkillMin(cat.id, 'isLeader');
+          if (reqLeaderMin <= 0) return;
+          const actualLeader = skillCountsByCat[cat.id]?.isLeader || 0;
+          if (actualLeader < reqLeaderMin) {
+            const surplusCats = facilityCats
+              .filter(other => {
+                if (other.id === cat.id) return false;
+                const otherActual = skillCountsByCat[other.id]?.isLeader || 0;
+                return otherActual > 1;
+              })
+              .map(other => `${other.label}(${skillCountsByCat[other.id]?.isLeader}名)`);
+            const blankLeaders = staffList.filter(
+              s => s.skills?.isLeader && canSafelyFillBlankOnDay(s, d)
+            );
+            const isAiFixable = surplusCats.length > 0 || blankLeaders.length > 0;
+            const hint = surplusCats.length > 0
+              ? `同日の${surplusCats.join('・')}に余剰あり`
+              : blankLeaders.length > 0
+                ? '未割当のリーダー保持者あり'
+                : '';
+            skItems.push({
+              catId: cat.id,
+              catLabel: cat.label,
+              skillKey: 'isLeader',
+              skillLabel: sk.label,
+              actual: actualLeader,
+              target: reqLeaderMin,
+              isAiFixable,
+              hint,
+            });
+            if (isAiFixable) {
+              aiRepairableItems.push(
+                `[必須スキル不足] ${month}/${d}(${dowLabel}): ${cat.label} の リーダー が ${actualLeader}/${reqLeaderMin}名 です（${hint}）。同日の余剰リーダーと配置を入れ替えて必ず1名以上確保してください。`
+              );
+            }
+          }
+          return;
+        }
+
         const reqMin = readSkillMin(cat.id, sk.key);
         if (reqMin <= 0) return;
         const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
         if (actual < reqMin) {
-          // 同日の他施設に余剰保持者がいるか、または当日の未ロック空欄に保持者がいるか判定
           const surplusCats = facilityCats
             .filter(other => {
               if (other.id === cat.id) return false;
@@ -1678,26 +1859,28 @@ const evaluateScheduleValidation = ({
       });
     }
 
-    // (c) 目標パワースコア参考チェック（各施設の実際のカテゴリ設定・目標スコア設定を動的参照）
-    const pItems = [];
-    facilityCats.forEach(cat => {
-      const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
-      if (targetScore <= 0) return;
-      const codes = Object.values(shiftDefs)
-        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-        .map(sd => sd.code);
-      const tSum = codes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
-      const isActive = tSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
-      const actualScore = powerScoreByCat[cat.id] || 0;
-      if (isActive && actualScore < targetScore) {
-        pItems.push(`${cat.label} ${actualScore}/${targetScore}点`);
-      }
+    // (c) パワーバランス参考チェック（案A: 当日出勤者の施設間1人あたり平均スコアと人数比の動的目安で偏りを検出）
+    const activePoolForAvg = staffList.filter(s => !s.excludeFromAi);
+    const avgPool = activePoolForAvg.length > 0 ? activePoolForAvg : staffList;
+    const fallbackStaffAvgScore =
+      avgPool.length > 0
+        ? avgPool.reduce((sum, s) => sum + (staffPowerMap[s.id] || 0), 0) / avgPool.length
+        : 10;
+    const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+      facilityCats,
+      shiftDefs,
+      categoryDefs,
+      actualHeadcountByCat,
+      powerScoreByCat,
+      readTargetCount: (c) => readTargetCount(c, d),
+      adminSettings,
+      fallbackStaffAvgScore,
     });
-    if (pItems.length > 0) {
+    if (dayPowerBalance.imbalancedItems.length > 0) {
       dailyPowerShortages.push({
         day: d,
         dowLabel,
-        items: pItems,
+        items: dayPowerBalance.imbalancedItems,
       });
     }
   });
@@ -1757,7 +1940,7 @@ const remaining = 42 - days.length;
 
 // 共通のAI呼び出し関数（API経由）
 // アプリ内の各機能からAIを利用する際の窓口となる関数です
-// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-4-argon を使用します
+// 引数でモデル指定が省略された場合は、デフォルトで gemini-4-argon を使用します
 const callGemini = async (prompt, systemInstruction = "", model = "gemini-4-argon", options = {}) => { 
   // デバッグ用に実行時のモデル名をコンソールに記録し、どのモデルが呼ばれたか確認できるようにします
   console.log("Model:", model, "バックエンド経由でAIを呼び出します"); 
@@ -1999,12 +2182,26 @@ export default function WorkScheduleApp() {
   const [printManualScale, setPrintManualScale] = useState(100);
   const [printTeamFilter, setPrintTeamFilter] = useState('all');
   const [printShowJobTitle, setPrintShowJobTitle] = useState(false);
+  const [printShowMarks, setPrintShowMarks] = useState(false);
   const [printMeasuredSize, setPrintMeasuredSize] = useState({ width: 1100, height: 600 });
   const printSheetMeasureRef = useRef(null);
+  const [excelCopyDone, setExcelCopyDone] = useState(false);
+  const [excelMenuAnchor, setExcelMenuAnchor] = useState(null);
+  const [excelImportPreview, setExcelImportPreview] = useState(null);
+  const [excelImportMode, setExcelImportMode] = useState('overwrite_all');
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const [isMigratingShiftCode, setIsMigratingShiftCode] = useState(false);
+  const [headerNotice, setHeaderNotice] = useState(null);
+  const [headerTooltip, setHeaderTooltip] = useState(null);
+  const excelFileInputRef = useRef(null);
+  const headerNoticeTimerRef = useRef(null);
+  const excelCopyDoneTimerRef = useRef(null);
 
   // 管理者編集用の戻る・進む（Undo / Redo）履歴
   const [undoHistory, setUndoHistory] = useState({ past: [], future: [] });
   const undoHistoryRef = useRef({ past: [], future: [] });
+  const activeUndoHistoryKeyRef = useRef(null);
+  const [showUndoHistoryModal, setShowUndoHistoryModal] = useState(false);
   const scheduleSnapshotRef = useRef({
     shifts: {},
     tasks: {},
@@ -2017,7 +2214,7 @@ export default function WorkScheduleApp() {
   const [currentView, setCurrentView] = useState('all'); 
   const [overallSubViewMode, setOverallSubViewMode] = useState('monthly'); // 'monthly' | 'daily'
   const [selectedDailyViewDay, setSelectedDailyViewDay] = useState(1);
-  const [adminCountDisplayMode, setAdminCountDisplayMode] = useState('facility'); // 'facility' (<施設別>) | 'slot' (<シフト表示別>)
+  const [adminCountDisplayMode, setAdminCountDisplayMode] = useState('slot'); // 'slot' (<シフト表示別>) | 'facility' (<施設別>)
 
 // 設定モーダル内のタブ管理
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -2140,30 +2337,6 @@ export default function WorkScheduleApp() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         
-        const loadedStaffList = (data.staffList || []).map(s => ({
-          ...s,
-          loginId: s.loginId || '',
-          skills: s.skills || {},
-          minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
-          maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5, 
-          contractWorkDaysMin:
-            s.contractWorkDaysMin !== undefined && s.contractWorkDaysMin !== ''
-              ? s.contractWorkDaysMin
-              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
-                ? s.contractWorkDays
-                : null,
-          contractWorkDaysMax:
-            s.contractWorkDaysMax !== undefined && s.contractWorkDaysMax !== ''
-              ? s.contractWorkDaysMax
-              : s.contractWorkDays !== undefined && s.contractWorkDays !== ''
-                ? s.contractWorkDays
-                : null,
-          excludeFromAi: s.excludeFromAi || false,
-          excludedCategories: Array.isArray(s.excludedCategories) ? s.excludedCategories : [],
-          excludedShifts: Array.isArray(s.excludedShifts) ? s.excludedShifts : [],
-          requestNote: s.requestNote || '',
-        }));
-
         const loadedCategoryDefs = { ...(data.categoryDefs || DEFAULT_CATEGORY_DEFS) };
         let existingMeCat = Object.values(loadedCategoryDefs).find(c => c && resolveCategoryKind(c) === 'me');
         if (!existingMeCat) {
@@ -2183,6 +2356,36 @@ export default function WorkScheduleApp() {
               type: rawShiftDefs[k].type || (catKind === 'role' || k.startsWith('task_') ? 'task' : 'shift'),
             };
           }
+        });
+
+        const loadedStaffList = (data.staffList || []).map(s => {
+          const restStaff = { ...s };
+          delete restStaff.contractWorkDays;
+          const resolvedMin =
+            s.contractWorkDaysMin !== undefined
+              ? (s.contractWorkDaysMin !== '' ? s.contractWorkDaysMin : null)
+              : (s.contractWorkDays !== undefined && s.contractWorkDays !== '' ? s.contractWorkDays : null);
+          const resolvedMax =
+            s.contractWorkDaysMax !== undefined
+              ? (s.contractWorkDaysMax !== '' ? s.contractWorkDaysMax : null)
+              : (s.contractWorkDays !== undefined && s.contractWorkDays !== '' ? s.contractWorkDays : null);
+          return {
+            ...restStaff,
+            loginId: s.loginId || '',
+            skills: s.skills || {},
+            minCool3: s.minCool3 !== undefined ? s.minCool3 : 0,
+            maxCool3: s.maxCool3 !== undefined ? s.maxCool3 : 5,
+            contractWorkDaysMin: resolvedMin,
+            contractWorkDaysMax: resolvedMax,
+            excludeFromAi: s.excludeFromAi || false,
+            excludedCategories: (Array.isArray(s.excludedCategories) ? s.excludedCategories : []).filter(
+              cid => loadedCategoryDefs[cid] && resolveCategoryKind(loadedCategoryDefs[cid]) === 'facility'
+            ),
+            excludedShifts: (Array.isArray(s.excludedShifts) ? s.excludedShifts : []).filter(
+              c => isAiAssignableFacilityShiftDef(c, loadedShiftDefs, loadedCategoryDefs)
+            ),
+            requestNote: s.requestNote || '',
+          };
         });
         const existingMeShifts = Object.values(loadedShiftDefs).filter(
           s => s && isMeShiftDef(s.code, loadedShiftDefs, loadedCategoryDefs)
@@ -2445,7 +2648,12 @@ export default function WorkScheduleApp() {
       return { shift: rawEntry };
     }
     if (typeof rawEntry === 'object') {
-      return { ...rawEntry };
+      const cloned = { ...rawEntry };
+      if (cloned.teamShiftBy === 'opera') cloned.teamShiftBy = 'ope';
+      if (cloned.teamTaskBy === 'opera') cloned.teamTaskBy = 'ope';
+      if (cloned.editedShiftBy === 'opera') cloned.editedShiftBy = 'ope';
+      if (cloned.editedTaskBy === 'opera') cloned.editedTaskBy = 'ope';
+      return cloned;
     }
     return {};
   };
@@ -2515,11 +2723,9 @@ export default function WorkScheduleApp() {
       if (todayStr > deadlineStr) {
         return true;
       }
-    } else if (adminSettings.deadline && todayStr > adminSettings.deadline) {
-      return true;
     }
     return false;
-  }, [year, month, adminSettings.deadlineDay, adminSettings.deadline]);
+  }, [year, month, adminSettings.deadlineDay]);
 
   // カテゴリ3(B案): スタッフ用の勤務変更・交換申請モーダルを開く初期化ヘルパー
   const openStaffChangeRequestModal = (initialDay = 1, defaultMode = 'swap') => {
@@ -2937,7 +3143,13 @@ export default function WorkScheduleApp() {
   // 管理者が「希望履歴そのもの」を取り消すハンドラ
   const handleClearUserRequest = (staffId, day, type = 'shift') => {
     if (appUser?.role === 'admin') {
-      recordAdminUndoSnapshot();
+      const targetStaff = staffList.find(s => s.id === staffId);
+      const reqCode = type === 'shift' ? getUserRequestedShift(staffId, day) : getUserRequestedTask(staffId, day);
+      const reqLabel = reqCode ? (shiftDefs[reqCode]?.label || reqCode) : '希望';
+      recordAdminUndoSnapshot(null, {
+        label: `${targetStaff?.name || '職員'}（${month}/${day}）${type === 'shift' ? 'シフト' : 'タスク'}希望取消`,
+        detail: `${reqLabel} を取消`,
+      });
     }
     const currentShiftBefore = shiftData[staffId]?.[day];
     const currentTaskBefore = taskData[staffId]?.[day];
@@ -2982,7 +3194,7 @@ export default function WorkScheduleApp() {
 
   // 現在のシフト設定に整合した休み希望カウント対象コード一覧を解決
   // ※施設シフト以外の「委・日勤・3以外・出勤」は出勤希望扱いのため休み希望数カウントから常時除外
-  const resolveEffectiveCountedOffShifts = (settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
+  const resolveEffectiveCountedOffShifts = useCallback((settingsObj = adminSettings, defs = shiftDefs, cats = categoryDefs) => {
     const rawList = Array.isArray(settingsObj?.countedOffShifts) ? settingsObj.countedOffShifts : ['HOPE'];
     const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
     if (isUntouchedDefault) {
@@ -3000,7 +3212,7 @@ export default function WorkScheduleApp() {
     const existingMatched = rawList.filter(c => Boolean(defs[c]) && !isWorkRequestShiftDef(defs[c], cats));
     if (existingMatched.length > 0) return existingMatched;
     return rawList.filter(c => !defs[c] || !isWorkRequestShiftDef(defs[c], cats));
-  };
+  }, [adminSettings, shiftDefs, categoryDefs]);
 
   // 基本設定でカウント対象シフトをON/OFF切り替え
   const toggleCountedOffShift = (code) => {
@@ -3298,7 +3510,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           (entry.editedShiftBy !== loginAdminKey ||
             (activeTeamKey && entry.teamShiftBy !== activeTeamKey));
         if (changedShift || changedOwner) {
-          recordAdminUndoSnapshot();
+          const targetStaff = staffList.find(s => s.id === staffId);
+          const beforeLbl = currentShiftBefore ? (shiftDefs[currentShiftBefore]?.label || currentShiftBefore) : '空欄';
+          const afterLbl = toolCode ? (shiftDefs[toolCode]?.label || toolCode) : '空欄';
+          recordAdminUndoSnapshot(null, {
+            label: `${targetStaff?.name || '職員'}（${month}/${day}）シフト変更`,
+            detail: `${beforeLbl} → ${afterLbl}`,
+          });
         }
       }
 
@@ -3392,7 +3610,13 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           (entry.editedTaskBy !== loginAdminKey ||
             (activeTeamKey && entry.teamTaskBy !== activeTeamKey));
         if (changedTask || changedOwner) {
-          recordAdminUndoSnapshot();
+          const targetStaff = staffList.find(s => s.id === staffId);
+          const beforeLbl = currentTaskBefore ? (shiftDefs[currentTaskBefore]?.label || currentTaskBefore) : '空欄';
+          const afterLbl = toolCode ? (shiftDefs[toolCode]?.label || toolCode) : '空欄';
+          recordAdminUndoSnapshot(null, {
+            label: `${targetStaff?.name || '職員'}（${month}/${day}）タスク変更`,
+            detail: `${beforeLbl} → ${afterLbl}`,
+          });
         }
       }
 
@@ -3451,7 +3675,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
   // 緊急待機番(ベル)のタスク欄背景色（オレンジ）をタスク内容を変更せずにON/OFF切り替え
   const handleToggleBell = (staffId, day) => {
     if (!appUser || appUser.role !== 'admin') return;
-    recordAdminUndoSnapshot();
+    const targetStaff = staffList.find(s => s.id === staffId);
+    const wasBellOn = Boolean(bellData[staffId]?.[day]);
+    recordAdminUndoSnapshot(null, {
+      label: `${targetStaff?.name || '職員'}（${month}/${day}）緊急待機番`,
+      detail: wasBellOn ? 'ON → OFF' : 'OFF → ON',
+    });
     const loginAdminKey = getLoggedInAdminKey();
     const nextBells = { ...bellData };
     const staffBells = nextBells[staffId] ? { ...nextBells[staffId] } : {};
@@ -3500,7 +3729,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       return;
     }
 
-    recordAdminUndoSnapshot();
+    const targetStaff = staffList.find(s => s.id === staffId);
+    const wasLeaderOn = Boolean(leaderData[staffId]?.[day]);
+    recordAdminUndoSnapshot(null, {
+      label: `${targetStaff?.name || '職員'}（${month}/${day}）${cat?.label || ''}リーダー色`,
+      detail: wasLeaderOn ? 'ON → OFF' : 'OFF → ON',
+    });
     const loginAdminKey = getLoggedInAdminKey();
     const nextLeaders = { ...leaderData };
     const nextUserInputs = { ...userInputs };
@@ -3867,21 +4101,27 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
 
   const handleEditStaff = (staff) => {
     if (!isMasterAdmin) return;
-    const exCats = Array.isArray(staff.excludedCategories) ? staff.excludedCategories : [];
-    const exShifts = Array.isArray(staff.excludedShifts) ? staff.excludedShifts : [];
-    setTargetStaff({ 
-      ...staff, 
-      skills: staff.skills || {}, 
+    const exCats = (Array.isArray(staff.excludedCategories) ? staff.excludedCategories : []).filter(
+      cid => categoryDefs[cid] && resolveCategoryKind(categoryDefs[cid]) === 'facility'
+    );
+    const exShifts = (Array.isArray(staff.excludedShifts) ? staff.excludedShifts : []).filter(
+      c => isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)
+    );
+    const restStaff = { ...staff };
+    delete restStaff.contractWorkDays;
+    setTargetStaff({
+      ...restStaff,
+      skills: staff.skills || {},
       minCool3: staff.minCool3 !== undefined ? staff.minCool3 : 0,
       maxCool3: staff.maxCool3 !== undefined ? staff.maxCool3 : 5,
       contractWorkDaysMin:
-        staff.contractWorkDaysMin !== undefined && staff.contractWorkDaysMin !== ''
-          ? staff.contractWorkDaysMin
-          : staff.contractWorkDays ?? null,
+        staff.contractWorkDaysMin !== undefined
+          ? (staff.contractWorkDaysMin !== '' ? staff.contractWorkDaysMin : null)
+          : (staff.contractWorkDays ?? null),
       contractWorkDaysMax:
-        staff.contractWorkDaysMax !== undefined && staff.contractWorkDaysMax !== ''
-          ? staff.contractWorkDaysMax
-          : staff.contractWorkDays ?? null,
+        staff.contractWorkDaysMax !== undefined
+          ? (staff.contractWorkDaysMax !== '' ? staff.contractWorkDaysMax : null)
+          : (staff.contractWorkDays ?? null),
       excludeFromAi: staff.excludeFromAi || false,
       excludedCategories: exCats,
       excludedShifts: exShifts,
@@ -4093,22 +4333,33 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
     }
   };
 
-  const saveShiftConfig = () => {
-    if (!isMasterAdmin) return;
-    if (!editingShift || !editingShift.code || !editingShift.label) {
+  const saveShiftConfig = async () => {
+    if (!isMasterAdmin || isMigratingShiftCode) return;
+    if (!editingShift || !editingShift.label || !String(editingShift.label).trim()) {
       alert('コードと表示名は必須です');
       return;
     }
-    // 既存シフトの編集時はデータ孤立防止のため作成時の内部コード(originalCode)を維持し、新規作成時はコード重複をチェックする
-    const fixedCode = editingShift.originalCode ? editingShift.originalCode : editingShift.code.trim();
-    if (!editingShift.originalCode && shiftDefs[fixedCode]) {
-      alert(`コード "${fixedCode}" は既に他のシフトで使用されています。別のコードを指定してください。`);
+    const oldCode = editingShift.originalCode || null;
+    const validation = validateShiftCode(editingShift.code, shiftDefs, oldCode);
+    if (!validation.ok) {
+      alert(validation.error);
       return;
     }
+    const nextCode = validation.code;
+    const isNewShiftCreation = !oldCode;
+    const isCodeRenamed = Boolean(oldCode && nextCode !== oldCode);
+
+    if (isCodeRenamed) {
+      const ok = window.confirm(
+        `シフトコードを「${oldCode}」→「${nextCode}」へ変更します。\n\n保存済みの全月シフト・希望履歴・変更申請・除外シフト・必要人数設定などの旧コードも自動で一括置換されます（戻る履歴はリセットされます）。\n実行してよろしいですか？`
+      );
+      if (!ok) return;
+    }
+
     const newDefs = { ...shiftDefs };
     const cleanShift = { ...editingShift };
     delete cleanShift.originalCode;
-    cleanShift.code = fixedCode;
+    cleanShift.code = nextCode;
     const catKind = getCategoryKindById(cleanShift.category, categoryDefs);
     cleanShift.type = catKind === 'role' ? 'task' : (cleanShift.type || 'shift');
     if (cleanShift.type === 'shift') {
@@ -4133,14 +4384,102 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
       delete cleanShift.shiftSlot;
       delete cleanShift.offSubType;
     }
-    if (newDefs[cleanShift.code]?.order === undefined) {
+
+    const prevDef = oldCode ? newDefs[oldCode] : newDefs[nextCode];
+    if (prevDef?.order === undefined) {
       const maxOrder = Math.max(0, ...Object.values(newDefs).map(s => s.order || 0));
       cleanShift.order = maxOrder + 1;
     } else {
-      cleanShift.order = newDefs[cleanShift.code].order;
+      cleanShift.order = prevDef.order;
     }
-    const isNewShiftCreation = !editingShift.originalCode;
-    newDefs[cleanShift.code] = cleanShift;
+
+    if (isCodeRenamed) {
+      delete newDefs[oldCode];
+    }
+    newDefs[nextCode] = cleanShift;
+
+    if (isCodeRenamed) {
+      setIsMigratingShiftCode(true);
+      try {
+        // 1. マスタ設定内の参照（必要人数・除外シフト・休みカウント対象・班別許可リスト）を一括置換
+        const masterMigration = migrateMasterDataShiftCode({
+          oldCode,
+          newCode: nextCode,
+          targetCounts,
+          staffList,
+          adminSettings,
+        });
+        const masterUpdates = { shiftDefs: newDefs };
+        if (masterMigration.targetCountsChanged) masterUpdates.targetCounts = masterMigration.nextTargetCounts;
+        if (masterMigration.staffListChanged) masterUpdates.staffList = masterMigration.nextStaffList;
+        if (masterMigration.adminSettingsChanged) masterUpdates.adminSettings = masterMigration.nextAdminSettings;
+
+        setShiftDefs(newDefs);
+        if (masterMigration.targetCountsChanged) setTargetCounts(masterMigration.nextTargetCounts);
+        if (masterMigration.staffListChanged) setStaffList(masterMigration.nextStaffList);
+        if (masterMigration.adminSettingsChanged) setAdminSettings(masterMigration.nextAdminSettings);
+        await saveMasterData(masterUpdates);
+
+        // 2. 保存済み全月スケジュール（shifts / tasks / userInputs / changeRequests）を一括置換
+        let migratedMonthCount = 0;
+        if (authUser) {
+          const schedulesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'schedules');
+          const snap = await getDocs(schedulesColRef);
+          const updatePromises = [];
+          snap.forEach((docSnap) => {
+            const res = migrateScheduleDocShiftCode(docSnap.data(), oldCode, nextCode);
+            if (res.changed) {
+              migratedMonthCount++;
+              updatePromises.push(updateDoc(docSnap.ref, res.updates));
+            }
+          });
+          if (updatePromises.length > 0) {
+            await Promise.all(updatePromises);
+          }
+        }
+
+        // 3. 現在表示中のローカル状態＆前月シフトも即時反映し、旧コード復活防止のため戻る履歴をリセット
+        const currentLocalRes = migrateScheduleDocShiftCode(
+          { shifts: shiftData, tasks: taskData, userInputs, changeRequests },
+          oldCode,
+          nextCode
+        );
+        if (currentLocalRes.updates.shifts) setShiftData(currentLocalRes.updates.shifts);
+        if (currentLocalRes.updates.tasks) setTaskData(currentLocalRes.updates.tasks);
+        if (currentLocalRes.updates.userInputs) setUserInputs(currentLocalRes.updates.userInputs);
+        if (currentLocalRes.updates.changeRequests) setChangeRequests(currentLocalRes.updates.changeRequests);
+
+        const prevLocalRes = migrateScheduleDocShiftCode(
+          { shifts: prevMonthShiftData },
+          oldCode,
+          nextCode
+        );
+        if (prevLocalRes.updates.shifts) setPrevMonthShiftData(prevLocalRes.updates.shifts);
+
+        const emptyHistory = { past: [], future: [] };
+        undoHistoryRef.current = emptyHistory;
+        setUndoHistory(emptyHistory);
+        setShowUndoHistoryModal(false);
+        clearAllUndoHistories(appId);
+        setActivePopup(null);
+
+        setEditingShift({
+          ...cleanShift,
+          facilityTargets: cleanShift.facilityTargets ? { ...cleanShift.facilityTargets } : {},
+          originalCode: cleanShift.code,
+        });
+        alert(
+          `保存しました（コード「${oldCode}」→「${nextCode}」へ変更し、保存済みスケジュール ${migratedMonthCount}ヶ月分と各種設定を一括置換しました）`
+        );
+      } catch (err) {
+        console.error('Shift code migration error:', err);
+        alert(`コード変更の一括置換中にエラーが発生しました: ${err?.message || err}`);
+      } finally {
+        setIsMigratingShiftCode(false);
+      }
+      return;
+    }
+
     setShiftDefs(newDefs);
     // 新規シフト作成時に「休み」「希望」カテゴリまたは「公出」であれば、休み希望カウント対象(countedOffShifts)にも自動追加
     if (
@@ -4155,12 +4494,12 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
           countedOffShifts: [...currentCounted, cleanShift.code],
         };
         setAdminSettings(nextAdminSettings);
-        saveMasterData({ shiftDefs: newDefs, adminSettings: nextAdminSettings });
+        await saveMasterData({ shiftDefs: newDefs, adminSettings: nextAdminSettings });
       } else {
-        saveMasterData({ shiftDefs: newDefs });
+        await saveMasterData({ shiftDefs: newDefs });
       }
     } else {
-      saveMasterData({ shiftDefs: newDefs }); // ★修正
+      await saveMasterData({ shiftDefs: newDefs }); // ★修正
     }
     alert('保存しました');
     setEditingShift({
@@ -4227,7 +4566,10 @@ const handleResetSchedule = () => {
         ? `${year}年${month}月の「AIが作成したシフト」のみをすべて消去しますか？\n\n※職員本人の希望入力、各班管理者の入力、および全体管理者が手動入力（固定）したシフト・タスク・待機番はすべてそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`
         : `「${adminLabel}」が編集した${year}年${month}月のシフト・タスク等を消去しますか？\n\n※職員本人の希望入力や、他の管理者が編集したシフトはそのまま残ります。\n（消去後もヘッダーの「<」ボタンで元に戻せます）`,
       onConfirm: () => {
-        recordAdminUndoSnapshot();
+        recordAdminUndoSnapshot(null, {
+          label: isMasterReset ? 'AI作成シフトを全消去' : `${adminLabel}の編集内容を全消去`,
+          detail: `${year}年${month}月`,
+        });
         const newShiftData = JSON.parse(JSON.stringify(shiftData || {}));
         const newTaskData = JSON.parse(JSON.stringify(taskData || {}));
         const newBellData = JSON.parse(JSON.stringify(bellData || {}));
@@ -4259,10 +4601,16 @@ const handleResetSchedule = () => {
             const entry = normalizeUserInputEntry(newUserInputs[staffId]?.[day], curShift, curTask);
 
             if (isMasterReset) {
-              // 全体管理者の全消去: AIが作成したシフト（＝本人希望でも管理者手動固定[teamShiftBy]でもないシフト）のみ消去
+              // 全体管理者の全消去: AIが作成したシフト（＝勤務施設シフトかつ本人希望でも管理者手動固定[teamShiftBy]でもAI除外職員でもないシフト）のみ消去
+              const staffObjForClear = staffList.find(s => s.id === staffId);
+              const isNonAiShift = Boolean(
+                curShift && shiftDefs[curShift] && !isAiAssignableFacilityShiftDef(curShift, shiftDefs, categoryDefs)
+              );
               const hasLockedAdminShift = Boolean(
                 (entry.teamShiftBy && TEAM_ADMIN_LABELS[entry.teamShiftBy]) ||
-                  isMeRoomShiftCode(curShift)
+                  isMeRoomShiftCode(curShift) ||
+                  isNonAiShift ||
+                  staffObjForClear?.excludeFromAi
               );
               const isStaffRequestShift = Boolean(entry.shift && curShift === entry.shift);
               if (curShift && !hasLockedAdminShift && !isStaffRequestShift) {
@@ -4434,7 +4782,58 @@ const handleResetSchedule = () => {
       );
       if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
 
+      const catShiftDefsForDay = catShiftCodes.map(c => shiftDefs[c]).filter(Boolean);
+      const catHasCool3 = catShiftDefsForDay.some(sd => isCool3ShiftDef(sd, categoryDefs));
+      const activeCool3ForDay = catShiftDefsForDay.filter(
+        sd =>
+          isCool3ShiftDef(sd, categoryDefs) &&
+          (getTargetCount(sd.code, day) > 0 || staffList.some(s => shiftsMap[s.id]?.[day] === sd.code))
+      );
+
       STAFF_SKILLS.forEach(sk => {
+        if (sk.key === 'isLeader') {
+          if (activeCool3ForDay.length > 0) {
+            activeCool3ForDay.forEach(c3Def => {
+              const c3LeaderCnt = staffList.filter(
+                s => shiftsMap[s.id]?.[day] === c3Def.code && s.skills?.isLeader
+              ).length;
+              if (c3LeaderCnt < 1) {
+                const item = {
+                  catId: cat.id,
+                  catLabel: `${cat.label}(${c3Def.label})`,
+                  skillKey: 'isLeader',
+                  skillLabel: '3クール内リーダー',
+                  actual: c3LeaderCnt,
+                  target: 1,
+                };
+                catShortages.push(item);
+                allShortages.push(item);
+              }
+            });
+            return;
+          }
+          if (!catHasCool3 && !isKikuriFacilityCategory(cat)) return;
+          const reqLeader = isKikuriFacilityCategory(cat)
+            ? Math.max(1, getFacilitySkillTarget(cat.id, 'isLeader', settingsObj))
+            : getFacilitySkillTarget(cat.id, 'isLeader', settingsObj);
+          if (reqLeader > 0) {
+            const actualL = skillCountsByCat[cat.id]?.isLeader || 0;
+            if (actualL < reqLeader) {
+              const item = {
+                catId: cat.id,
+                catLabel: cat.label,
+                skillKey: 'isLeader',
+                skillLabel: sk.label,
+                actual: actualL,
+                target: reqLeader,
+              };
+              catShortages.push(item);
+              allShortages.push(item);
+            }
+          }
+          return;
+        }
+
         const reqMin = getFacilitySkillTarget(cat.id, sk.key, settingsObj);
         if (reqMin > 0) {
           const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
@@ -5076,24 +5475,36 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
     });
 
-    // 現在のカテゴリ設定から目標パワースコア・必須スキル設定を動的整形
+    // 現在のカテゴリ設定からパワーバランス対象施設（案A: 当日平均スコア×人数比）と必須スキル設定を動的整形
+    const activeAiStaffForAvg = staffList.filter(s => !s.excludeFromAi);
+    const staffPoolForAvg = activeAiStaffForAvg.length > 0 ? activeAiStaffForAvg : staffList;
+    const overallStaffAvgPowerScore =
+      staffPoolForAvg.length > 0
+        ? Number((staffPoolForAvg.reduce((sum, s) => sum + (staffPowerMap[s.id] || 0), 0) / staffPoolForAvg.length).toFixed(1))
+        : 10;
+
     const categoriesMeta = {};
     const facilityPowerTargetsSummary = {};
     sortedCategories.forEach(cat => {
       const kind = resolveCategoryKind(cat);
       if (!includeTasks && kind === 'role') return;
       const targetPowerScore = kind === 'facility' ? getFacilityTargetPowerScore(cat, adminSettings) : 0;
+      const isPowerBalanceTarget = targetPowerScore > 0;
       categoriesMeta[cat.id] = {
         id: cat.id,
         label: cat.label,
         kind,
         order: cat.order ?? 99,
-        ...(kind === 'facility' ? { targetPowerScore } : {}),
+        ...(kind === 'facility' ? { isPowerBalanceTarget, referenceStaffAvgScore: overallStaffAvgPowerScore } : {}),
       };
       if (kind === 'facility') {
         facilityPowerTargetsSummary[cat.id] = {
           facilityLabel: cat.label,
           targetPowerScore,
+          isPowerBalanceTarget,
+          balanceRule: isPowerBalanceTarget
+            ? `当日出勤者の1人あたり平均スコア（全体平均目安:${overallStaffAvgPowerScore}点/人）×施設人数で施設間均等化`
+            : 'スコア判定なし',
         };
       }
     });
@@ -5163,22 +5574,30 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         shortages.push(`${sh.catLabel} 必須スキル[${sh.skillLabel}]: ${sh.actual}/${sh.target}名`);
       });
 
+      const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+        facilityCats,
+        shiftDefs,
+        categoryDefs,
+        actualHeadcountByCat,
+        powerScoreByCat: actualScoreByCat,
+        readTargetCount: (c) => getTargetCount(c, d),
+        adminSettings,
+        fallbackStaffAvgScore: overallStaffAvgPowerScore,
+      });
       const facilityPowerScores = {};
       facilityCats.forEach(cat => {
-        const targetScore = getFacilityTargetPowerScore(cat, adminSettings);
-        const actualScore = actualScoreByCat[cat.id] || 0;
-        const catShiftCodes = Object.values(shiftDefs)
-          .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-          .map(sd => sd.code);
-        const targetHcSum = catShiftCodes.reduce((sum, c) => sum + getTargetCount(c, d), 0);
-        const isActive = targetHcSum > 0 || (actualHeadcountByCat[cat.id] || 0) > 0;
+        const pBal = dayPowerBalance.byCat[cat.id];
         facilityPowerScores[cat.id] = {
           label: cat.label,
-          actualScore,
-          targetScore,
+          actualScore: pBal?.actualScore || 0,
+          expectedBalancedScore: pBal?.expectedScore || 0,
+          actualAvgPerPerson: pBal?.actualAvg || 0,
+          dayOverallAvgPerPerson: dayPowerBalance.dayAvgScore,
+          isPowerBalanceTarget: Boolean(pBal?.isEnabled),
+          isImbalancedLow: Boolean(pBal?.isImbalancedLow),
         };
-        if (targetScore > 0 && isActive && actualScore < targetScore) {
-          shortages.push(`${cat.label}スコア: ${actualScore}/${targetScore}点`);
+        if (pBal?.isEnabled && pBal?.isActive && pBal?.isImbalancedLow) {
+          shortages.push(`${cat.label}パワーバランス偏り: ${pBal.actualScore}/目安${pBal.expectedScore}点(平均${pBal.actualAvg}点 vs 当日平均${dayPowerBalance.dayAvgScore}点)`);
         }
       });
 
@@ -5409,15 +5828,25 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               // 勤務施設カテゴリのシフト以外の書き込みは禁止（ME室・その他[出勤/公出]・休み・希望はすべてブロック）
               if (!isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs)) return;
 
-              // Step 3: 3クール連続禁止ガード（前月最終日→1日の月またぎ、および月内の連続営業日）
+              // Step 3: 3クール連続禁止 ＆ 月間3クール上限（maxCool3）超過防止ガード
               if (cool3Set.has(code)) {
                 const prevDayIsCool3 =
                   (dayNum === 1 && staffCarry?.prevLastDayWasCool3) ||
                   (dayNum > 1 && !isSunday(year, month, dayNum - 1) && cool3Set.has(ns[staffId][dayNum - 1]));
                 const nextDayIsCool3 =
                   dayNum < maxDay && !isSunday(year, month, dayNum + 1) && cool3Set.has(ns[staffId][dayNum + 1]);
+                const wasAlreadyCool3OnThisDay = Boolean(ns[staffId]?.[dayNum] && cool3Set.has(ns[staffId][dayNum]));
+                const currentStaffCool3Count = Object.keys(ns[staffId] || {}).filter(dKey => {
+                  const dIdx = parseInt(dKey, 10);
+                  return !isNaN(dIdx) && !isSunday(year, month, dIdx) && cool3Set.has(ns[staffId][dKey]);
+                }).length;
+                const hasMaxCool3Limit = staffObj.maxCool3 !== undefined && staffObj.maxCool3 !== null;
+                const wouldExceedMaxCool3 =
+                  hasMaxCool3Limit &&
+                  !wasAlreadyCool3OnThisDay &&
+                  currentStaffCool3Count >= Number(staffObj.maxCool3);
 
-                if (prevDayIsCool3 || nextDayIsCool3) {
+                if (prevDayIsCool3 || nextDayIsCool3 || wouldExceedMaxCool3) {
                   const sameFacilityAlt = Object.values(shiftDefs)
                     .filter(
                       alt =>
@@ -5516,6 +5945,1428 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     } catch (e) {
       return { success: false, parsedOk: false, message: `JSONの解析に失敗しました: ${e.message}` };
     }
+  };
+
+  // AI自動作成後、個人の厳守ルール（3クール上下限・連続3クール禁止・最大連勤・週契約出勤日数・常勤所定出勤日数）を
+  // 90%〜100%クリアするよう安全に入れ替え・補正するローカルパス（足りない施設枠は無理に埋めず手動調整用に残す）
+  const enforcePersonalRulesAndCool3Bounds = (
+    baseShifts,
+    lockedBaselineShifts = shiftData,
+    scopeDaysSet = null
+  ) => {
+    const ns = {};
+    Object.keys(baseShifts || {}).forEach(sId => {
+      ns[sId] = { ...(baseShifts[sId] || {}) };
+    });
+
+    const maxDay = getDaysInMonth(year, month);
+    const maxStreak = Number(adminSettings?.maxConsecutiveWorkDays) || 5;
+    const closedRules = Array.isArray(adminSettings?.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
+    const cool3Codes = Object.values(shiftDefs)
+      .filter(sd => sd && isCool3ShiftDef(sd, categoryDefs))
+      .map(sd => sd.code);
+    const cool3Set = new Set(cool3Codes);
+
+    const isDayInScope = (d) => !scopeDaysSet || scopeDaysSet.has(d);
+    const hasScope = Boolean(scopeDaysSet && scopeDaysSet.size > 0);
+
+    const isEditable = (staff, d) => {
+      if (!staff || staff.excludeFromAi) return false;
+      if (!isDayInScope(d) || isSunday(year, month, d)) return false;
+      if (lockedBaselineShifts?.[staff.id]?.[d]) return false;
+      if (getUserRequestedShift(staff.id, d)) return false;
+      if (getTeamLockedShiftSource(staff.id, d, lockedBaselineShifts)) return false;
+      const curCode = ns[staff.id]?.[d];
+      if (curCode && shiftDefs[curCode] && !isAiAssignableFacilityShiftDef(curCode, shiftDefs, categoryDefs)) {
+        return false;
+      }
+      return true;
+    };
+
+    const isWorkCode = (code) => {
+      if (!code || !shiftDefs[code]) return false;
+      const def = shiftDefs[code];
+      return getEffectiveShiftType(def, categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(def, categoryDefs);
+    };
+
+    const isPaidLeave = (code) => {
+      if (!code || !shiftDefs[code]) return false;
+      return isPaidLeaveShiftDef(shiftDefs[code], categoryDefs);
+    };
+
+    const operatingDays = [];
+    const operatingWeeks = [];
+    let curWeek = [];
+    for (let d = 1; d <= maxDay; d++) {
+      if (isSunday(year, month, d)) {
+        if (curWeek.length > 0) {
+          operatingWeeks.push(curWeek);
+          curWeek = [];
+        }
+        continue;
+      }
+      operatingDays.push(d);
+      curWeek.push(d);
+    }
+    if (curWeek.length > 0) operatingWeeks.push(curWeek);
+
+    const operatingDaysCount = operatingDays.length;
+    const baseRegularOffMin = Math.floor(operatingDaysCount / 6);
+    const baseRegularOffMax = Math.ceil(operatingDaysCount / 6);
+    const standardWorkDaysMin = Math.max(0, operatingDaysCount - baseRegularOffMax);
+    const standardWorkDaysMax = Math.max(0, operatingDaysCount - baseRegularOffMin);
+
+    const allFacilityWorkCodes = Object.values(shiftDefs)
+      .filter(sd => sd && isAiAssignableFacilityShiftDef(sd.code, shiftDefs, categoryDefs))
+      .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+      .map(sd => sd.code);
+
+    const countCodeOnDay = (code, d) => {
+      let cnt = 0;
+      staffList.forEach(s => {
+        if (ns[s.id]?.[d] === code) cnt++;
+      });
+      return cnt;
+    };
+
+    const getStaffCool3Days = (staffId) => {
+      const days = [];
+      for (let d = 1; d <= maxDay; d++) {
+        if (isSunday(year, month, d)) continue;
+        const c = ns[staffId]?.[d];
+        if (c && cool3Set.has(c)) days.push(d);
+      }
+      return days;
+    };
+
+    const canTakeCool3OnDay = (staff, d, cool3Code) => {
+      if (!staff || !cool3Code || !cool3Set.has(cool3Code)) return false;
+      if (!isShiftAllowedForStaff(staff, cool3Code)) return false;
+      const carry = prevMonthCarryOver?.byStaff?.[staff.id];
+      if (d === 1 && carry?.prevLastDayWasCool3) return false;
+      if (d > 1 && !isSunday(year, month, d - 1) && cool3Set.has(ns[staff.id]?.[d - 1])) return false;
+      if (d < maxDay && !isSunday(year, month, d + 1) && cool3Set.has(ns[staff.id]?.[d + 1])) return false;
+      return true;
+    };
+
+    const wouldAddingWorkExceedStreak = (staff, d) => {
+      const carry = prevMonthCarryOver?.byStaff?.[staff.id];
+      const carryStreak = carry?.trailingWorkStreak || 0;
+      let before = 0;
+      let cur = d - 1;
+      let hitBreak = false;
+      while (cur >= 1 && !isSunday(year, month, cur)) {
+        if (isWorkCode(ns[staff.id]?.[cur])) {
+          before++;
+          cur--;
+        } else {
+          hitBreak = true;
+          break;
+        }
+      }
+      if (!hitBreak && cur === 0) before += carryStreak;
+
+      let after = 0;
+      let next = d + 1;
+      while (next <= maxDay && !isSunday(year, month, next)) {
+        if (isWorkCode(ns[staff.id]?.[next])) {
+          after++;
+          next++;
+        } else {
+          break;
+        }
+      }
+      return before + 1 + after > maxStreak;
+    };
+
+    const countStaffFacilityInMonth = (staffId, catId) => {
+      if (!catId) return 0;
+      let cnt = 0;
+      for (let dayIdx = 1; dayIdx <= maxDay; dayIdx++) {
+        if (isSunday(year, month, dayIdx)) continue;
+        const c = ns[staffId]?.[dayIdx];
+        if (c && shiftDefs[c]?.category === catId) cnt++;
+      }
+      return cnt;
+    };
+
+    const countStaffCodeInMonth = (staffId, code) => {
+      let cnt = 0;
+      for (let dayIdx = 1; dayIdx <= maxDay; dayIdx++) {
+        if (isSunday(year, month, dayIdx)) continue;
+        if (ns[staffId]?.[dayIdx] === code) cnt++;
+      }
+      return cnt;
+    };
+
+    const getAdjacentFacilitySet = (staffId, d) => {
+      const adj = new Set();
+      if (d === 1) {
+        const prevCat = prevMonthCarryOver?.byStaff?.[staffId]?.prevLastDayCategory;
+        if (prevCat) adj.add(prevCat);
+      } else if (!isSunday(year, month, d - 1)) {
+        const prevCode = ns[staffId]?.[d - 1];
+        if (prevCode && shiftDefs[prevCode]?.category) adj.add(shiftDefs[prevCode].category);
+      }
+      if (d < maxDay && !isSunday(year, month, d + 1)) {
+        const nextCode = ns[staffId]?.[d + 1];
+        if (nextCode && shiftDefs[nextCode]?.category) adj.add(shiftDefs[nextCode].category);
+      }
+      return adj;
+    };
+
+    const pickAllowedNonCool3ShiftForDay = (staff, d, preferredCategoryId = null) => {
+      const allowedNonCool3 = allFacilityWorkCodes.filter(
+        c => !cool3Set.has(c) && isShiftAllowedForStaff(staff, c)
+      );
+      if (allowedNonCool3.length === 0) return null;
+
+      const adjFacs = getAdjacentFacilitySet(staff.id, d);
+
+      // 不足枠がある場合は、前後日と施設が連続せず・本人の当月施設回数＆シフト回数が少ない枠を優先（固定order順による坂田偏りを防止）
+      const sortShortageBalanced = (list) =>
+        [...list].sort((a, b) => {
+          const catA = shiftDefs[a]?.category;
+          const catB = shiftDefs[b]?.category;
+          const adjPenaltyA = adjFacs.has(catA) ? 1 : 0;
+          const adjPenaltyB = adjFacs.has(catB) ? 1 : 0;
+          if (adjPenaltyA !== adjPenaltyB) return adjPenaltyA - adjPenaltyB;
+          const facCntA = countStaffFacilityInMonth(staff.id, catA);
+          const facCntB = countStaffFacilityInMonth(staff.id, catB);
+          if (facCntA !== facCntB) return facCntA - facCntB;
+          const deficitA = getTargetCount(a, d) - countCodeOnDay(a, d);
+          const deficitB = getTargetCount(b, d) - countCodeOnDay(b, d);
+          if (deficitA !== deficitB) return deficitB - deficitA;
+          return countStaffCodeInMonth(staff.id, a) - countStaffCodeInMonth(staff.id, b);
+        });
+
+      // 余剰時はオーバーが少ない枠かつ本人の当月施設・シフト回数が少ない枠へ分散（日勤だけに固定しない）
+      const sortSurplusBalanced = (list) =>
+        [...list].sort((a, b) => {
+          const surpA = countCodeOnDay(a, d) - getTargetCount(a, d);
+          const surpB = countCodeOnDay(b, d) - getTargetCount(b, d);
+          if (surpA !== surpB) return surpA - surpB;
+          const catA = shiftDefs[a]?.category;
+          const catB = shiftDefs[b]?.category;
+          const adjPenaltyA = adjFacs.has(catA) ? 1 : 0;
+          const adjPenaltyB = adjFacs.has(catB) ? 1 : 0;
+          if (adjPenaltyA !== adjPenaltyB) return adjPenaltyA - adjPenaltyB;
+          const facCntA = countStaffFacilityInMonth(staff.id, catA);
+          const facCntB = countStaffFacilityInMonth(staff.id, catB);
+          if (facCntA !== facCntB) return facCntA - facCntB;
+          const isDayA = resolveShiftWorkSlot(shiftDefs[a], categoryDefs) === 'day' ? 0 : 1;
+          const isDayB = resolveShiftWorkSlot(shiftDefs[b], categoryDefs) === 'day' ? 0 : 1;
+          if (isDayA !== isDayB) return isDayA - isDayB;
+          return countStaffCodeInMonth(staff.id, a) - countStaffCodeInMonth(staff.id, b);
+        });
+
+      if (preferredCategoryId) {
+        const sameFacShort = allowedNonCool3.filter(
+          c => shiftDefs[c]?.category === preferredCategoryId && countCodeOnDay(c, d) < getTargetCount(c, d)
+        );
+        if (sameFacShort.length > 0) return sortShortageBalanced(sameFacShort)[0];
+      }
+      const anyShort = allowedNonCool3.filter(c => countCodeOnDay(c, d) < getTargetCount(c, d));
+      if (anyShort.length > 0) return sortShortageBalanced(anyShort)[0];
+
+      if (preferredCategoryId) {
+        const sameFacAny = allowedNonCool3.filter(
+          c => shiftDefs[c]?.category === preferredCategoryId && getTargetCount(c, d) > 0
+        );
+        if (sameFacAny.length > 0) return sortSurplusBalanced(sameFacAny)[0];
+      }
+      const activeAllowed = allowedNonCool3.filter(c => getTargetCount(c, d) > 0);
+      return activeAllowed.length > 0
+        ? sortSurplusBalanced(activeAllowed)[0]
+        : sortSurplusBalanced(allowedNonCool3)[0];
+    };
+
+    let changedCount = 0;
+
+    // --- Phase 1: 配置制限外シフトの即時修正 ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      for (let d = 1; d <= maxDay; d++) {
+        if (!isEditable(s, d)) continue;
+        const code = ns[s.id]?.[d];
+        if (!code || !shiftDefs[code]) continue;
+        if (isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(s, code)) {
+          const alt = pickAllowedNonCool3ShiftForDay(s, d, shiftDefs[code].category);
+          if (alt) {
+            ns[s.id][d] = alt;
+          } else {
+            delete ns[s.id][d];
+          }
+          changedCount++;
+        }
+      }
+    });
+
+    // --- Phase 2: 連続出勤上限（maxStreak）超過・パート週契約上限超過・常勤フル6日週の公休確保 ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      ns[s.id] = { ...(ns[s.id] || {}) };
+      const partRange = getPartTimeWeeklyContractRange(s);
+
+      // 2-A: パート職員の週契約上限超過を空欄に戻す
+      if (partRange) {
+        operatingWeeks.forEach(wDays => {
+          if (hasScope && !wDays.some(wd => isDayInScope(wd))) return;
+          let wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          while (wWorkDays.length > partRange.max) {
+            const editableInWeek = wWorkDays.filter(wd => isEditable(s, wd));
+            if (editableInWeek.length === 0) break;
+            editableInWeek.sort((a, b) => {
+              const codeA = ns[s.id][a];
+              const codeB = ns[s.id][b];
+              const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+              const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+              if (surpA !== surpB) return surpB - surpA;
+              const c3A = cool3Set.has(codeA) ? 1 : 0;
+              const c3B = cool3Set.has(codeB) ? 1 : 0;
+              return c3A - c3B;
+            });
+            delete ns[s.id][editableInWeek[0]];
+            changedCount++;
+            wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          }
+        });
+      } else if (s.jobTitle !== 'パート') {
+        // 2-B: 常勤職員のフル6日週で週休（空欄・休・公出）が0日の場合は最低1日を空欄公休にする
+        operatingWeeks.forEach(wDays => {
+          if (wDays.length < 6) return;
+          if (hasScope && !wDays.every(wd => isDayInScope(wd))) return;
+          const wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          if (wWorkDays.length === 6) {
+            const editableInWeek = wWorkDays.filter(wd => isEditable(s, wd));
+            if (editableInWeek.length > 0) {
+              editableInWeek.sort((a, b) => {
+                const codeA = ns[s.id][a];
+                const codeB = ns[s.id][b];
+                const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+                const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+                if (surpA !== surpB) return surpB - surpA;
+                const c3A = cool3Set.has(codeA) ? 1 : 0;
+                const c3B = cool3Set.has(codeB) ? 1 : 0;
+                return c3A - c3B;
+              });
+              delete ns[s.id][editableInWeek[0]];
+              changedCount++;
+            }
+          }
+        });
+      }
+
+      // 2-C: 最大連勤超過（前月末からの通算含む）を分割して空欄公休にする
+      const carryStreak = prevMonthCarryOver?.byStaff?.[s.id]?.trailingWorkStreak || 0;
+      for (let guard = 0; guard < 10; guard++) {
+        let streakLen = carryStreak;
+        let runDays = [];
+        let broken = false;
+
+        const tryBreakRun = (daysArr, totalLen) => {
+          if (totalLen <= maxStreak || daysArr.length === 0) return false;
+          if (hasScope && !daysArr.some(wd => isDayInScope(wd))) return false;
+          const editableDays = daysArr.filter(wd => isEditable(s, wd));
+          if (editableDays.length === 0) return false;
+          const idealIdx = Math.floor(daysArr.length / 2);
+          editableDays.sort((a, b) => {
+            const distA = Math.abs(daysArr.indexOf(a) - idealIdx);
+            const distB = Math.abs(daysArr.indexOf(b) - idealIdx);
+            if (distA !== distB) return distA - distB;
+            const codeA = ns[s.id][a];
+            const codeB = ns[s.id][b];
+            const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+            const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+            return surpB - surpA;
+          });
+          delete ns[s.id][editableDays[0]];
+          changedCount++;
+          return true;
+        };
+
+        for (let d = 1; d <= maxDay; d++) {
+          if (isSunday(year, month, d)) {
+            if (tryBreakRun(runDays, streakLen)) {
+              broken = true;
+              break;
+            }
+            streakLen = 0;
+            runDays = [];
+            continue;
+          }
+          if (isWorkCode(ns[s.id]?.[d])) {
+            streakLen++;
+            runDays.push(d);
+          } else {
+            if (tryBreakRun(runDays, streakLen)) {
+              broken = true;
+              break;
+            }
+            streakLen = 0;
+            runDays = [];
+          }
+        }
+        if (!broken && tryBreakRun(runDays, streakLen)) {
+          broken = true;
+        }
+        if (!broken) break;
+      }
+    });
+
+    // --- Phase 3: 出勤日数不足（パートの週契約下限・常勤の空欄過多）の安全穴埋め ---
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      ns[s.id] = { ...(ns[s.id] || {}) };
+      const partRange = getPartTimeWeeklyContractRange(s);
+
+      const pickShiftToFillBlank = (staff, d) => {
+        const cool3Days = getStaffCool3Days(staff.id);
+        const minC3 = Number(staff.minCool3 || 0);
+        const maxC3 = staff.maxCool3 !== undefined && staff.maxCool3 !== null ? Number(staff.maxCool3) : 99;
+        const needsCool3 = cool3Days.length < minC3 && cool3Days.length < maxC3;
+
+        if (needsCool3) {
+          const adjFacs = getAdjacentFacilitySet(staff.id, d);
+          const shortCool3 = cool3Codes
+            .filter(c => canTakeCool3OnDay(staff, d, c) && countCodeOnDay(c, d) < getTargetCount(c, d))
+            .sort((a, b) => {
+              const catA = shiftDefs[a]?.category;
+              const catB = shiftDefs[b]?.category;
+              const adjA = adjFacs.has(catA) ? 1 : 0;
+              const adjB = adjFacs.has(catB) ? 1 : 0;
+              if (adjA !== adjB) return adjA - adjB;
+              return countStaffFacilityInMonth(staff.id, catA) - countStaffFacilityInMonth(staff.id, catB);
+            });
+          if (shortCool3.length > 0) return shortCool3[0];
+        }
+
+        const nonCool3 = pickAllowedNonCool3ShiftForDay(staff, d, null);
+        if (nonCool3) return nonCool3;
+
+        if (cool3Days.length < maxC3) {
+          const anyCool3 = cool3Codes.filter(c => canTakeCool3OnDay(staff, d, c));
+          if (anyCool3.length > 0) return anyCool3[0];
+        }
+        return null;
+      };
+
+      if (partRange) {
+        // 3-A: パート職員のフル6日週での週契約下限達成
+        operatingWeeks.forEach(wDays => {
+          if (wDays.length < 6) return;
+          if (hasScope && !wDays.every(wd => isDayInScope(wd))) return;
+          let wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          while (wWorkDays.length < partRange.min) {
+            const blankCandidates = wDays.filter(
+              wd => !ns[s.id]?.[wd] && isEditable(s, wd) && !wouldAddingWorkExceedStreak(s, wd)
+            );
+            if (blankCandidates.length === 0) break;
+            blankCandidates.sort((a, b) => {
+              const shortA = allFacilityWorkCodes.filter(
+                c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, a) < getTargetCount(c, a)
+              ).length;
+              const shortB = allFacilityWorkCodes.filter(
+                c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, b) < getTargetCount(c, b)
+              ).length;
+              return shortB - shortA;
+            });
+            const targetDay = blankCandidates[0];
+            const codeToFill = pickShiftToFillBlank(s, targetDay);
+            if (!codeToFill) break;
+            ns[s.id][targetDay] = codeToFill;
+            changedCount++;
+            wWorkDays = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+          }
+        });
+      } else if (!hasScope && s.jobTitle !== 'パート') {
+        // 3-B: 常勤職員の月間出勤日数不足（空欄公休の残しすぎ）を解消
+        let workDays = 0;
+        let paidLeaveDays = 0;
+        const regOffDaySet = new Set();
+        for (let d = 1; d <= maxDay; d++) {
+          if (isSunday(year, month, d)) continue;
+          const code = ns[s.id]?.[d];
+          const def = code ? shiftDefs[code] : null;
+          const reqShift = getUserRequestedShift(s.id, d);
+          if (!code || !def) {
+            if (reqShift && shiftDefs[reqShift] && isPaidLeave(reqShift)) paidLeaveDays++;
+            else if (reqShift && shiftDefs[reqShift] && isNonWorkOrKoushutsuShiftDef(shiftDefs[reqShift], categoryDefs)) regOffDaySet.add(d);
+            else if (isHoliday(year, month, d, closedRules)) regOffDaySet.add(d);
+          } else if (isNonWorkOrKoushutsuShiftDef(def, categoryDefs)) {
+            if (isPaidLeave(code)) paidLeaveDays++;
+            else regOffDaySet.add(d);
+          } else {
+            workDays++;
+          }
+        }
+        const excessSameWeekRegOffDays = operatingWeeks.reduce((acc, wDays) => {
+          const cnt = wDays.filter(wd => regOffDaySet.has(wd)).length;
+          return acc + Math.max(0, cnt - 1);
+        }, 0);
+        const targetMin = Math.max(0, standardWorkDaysMin - paidLeaveDays - excessSameWeekRegOffDays);
+        const targetMax = Math.max(targetMin, standardWorkDaysMax - paidLeaveDays - excessSameWeekRegOffDays);
+
+        while (workDays < targetMin) {
+          const candidateDays = [];
+          operatingWeeks.forEach(wDays => {
+            const nonWorkInWeek = wDays.filter(wd => !isWorkCode(ns[s.id]?.[wd]));
+            if (wDays.length === 6 && nonWorkInWeek.length <= 1) return;
+            wDays.forEach(wd => {
+              if (
+                !ns[s.id]?.[wd] &&
+                !isHoliday(year, month, wd, closedRules) &&
+                isEditable(s, wd) &&
+                !wouldAddingWorkExceedStreak(s, wd)
+              ) {
+                candidateDays.push(wd);
+              }
+            });
+          });
+          if (candidateDays.length === 0) break;
+          candidateDays.sort((a, b) => {
+            const shortA = allFacilityWorkCodes.filter(
+              c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, a) < getTargetCount(c, a)
+            ).length;
+            const shortB = allFacilityWorkCodes.filter(
+              c => isShiftAllowedForStaff(s, c) && countCodeOnDay(c, b) < getTargetCount(c, b)
+            ).length;
+            return shortB - shortA;
+          });
+          const dayToFill = candidateDays[0];
+          const codeToFill = pickShiftToFillBlank(s, dayToFill);
+          if (!codeToFill) break;
+          ns[s.id][dayToFill] = codeToFill;
+          workDays++;
+          changedCount++;
+        }
+
+        // 月間目安上限（targetMax）を超えている場合でも、必要人数割れ（穴）を作ってまで削除せず、余剰がある日のみ空欄公休へ戻す
+        while (workDays > targetMax) {
+          const surplusEditableWorkDays = [];
+          operatingWeeks.forEach(wDays => {
+            const wWork = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
+            if (wDays.length === 6 && wWork.length <= 5) return;
+            wWork.forEach(wd => {
+              if (!isEditable(s, wd)) return;
+              const curCode = ns[s.id][wd];
+              if (countCodeOnDay(curCode, wd) > getTargetCount(curCode, wd)) {
+                surplusEditableWorkDays.push(wd);
+              }
+            });
+          });
+          if (surplusEditableWorkDays.length === 0) break;
+          surplusEditableWorkDays.sort((a, b) => {
+            const codeA = ns[s.id][a];
+            const codeB = ns[s.id][b];
+            const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
+            const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
+            return surpB - surpA;
+          });
+          delete ns[s.id][surplusEditableWorkDays[0]];
+          workDays--;
+          changedCount++;
+        }
+      }
+    });
+
+    const countLeadersOnCode = (code, d) => {
+      let cnt = 0;
+      staffList.forEach(st => {
+        if (ns[st.id]?.[d] === code && st.skills?.isLeader) cnt++;
+      });
+      return cnt;
+    };
+
+    const countLeadersInFacility = (catId, d) => {
+      if (!catId) return 0;
+      let cnt = 0;
+      staffList.forEach(st => {
+        const c = ns[st.id]?.[d];
+        if (c && shiftDefs[c]?.category === catId && isWorkCode(c) && st.skills?.isLeader) {
+          cnt++;
+        }
+      });
+      return cnt;
+    };
+
+    const wouldRemovingBreakKikuriLeader = (staff, d, nextFacId = null) => {
+      if (!staff?.skills?.isLeader) return false;
+      const curCode = ns[staff.id]?.[d];
+      const curFacId = curCode ? shiftDefs[curCode]?.category : null;
+      if (!curFacId || curFacId === nextFacId) return false;
+      if (!isKikuriFacilityCategory(categoryDefs[curFacId])) return false;
+      return countLeadersInFacility(curFacId, d) <= 1;
+    };
+
+    // --- Phase 4: 連続3クール禁止（consecutive_cool3）および3クール月間上限超過（cool3_over_limit）の解消 ---
+    const replaceOrSwapOutCool3OnDay = (staff, d, { preserveCool3AndLeader = false } = {}) => {
+      const curCool3Code = ns[staff.id]?.[d];
+      if (!curCool3Code || !cool3Set.has(curCool3Code)) return false;
+      const facId = shiftDefs[curCool3Code]?.category;
+      const isSoleC3Leader =
+        Boolean(staff.skills?.isLeader) && countLeadersOnCode(curCool3Code, d) <= 1;
+
+      const swapPartners = staffList.filter(other => {
+        if (other.id === staff.id || other.excludeFromAi) return false;
+        if (!isEditable(other, d)) return false;
+        const otherCode = ns[other.id]?.[d];
+        if (!otherCode || !isWorkCode(otherCode) || cool3Set.has(otherCode)) return false;
+        if (!isShiftAllowedForStaff(staff, otherCode)) return false;
+        if (!canTakeCool3OnDay(other, d, curCool3Code)) return false;
+        // 3クール内の唯一のリーダーを外す場合は、相手もリーダー保持者の場合のみ許可（preserve時）
+        if (preserveCool3AndLeader && isSoleC3Leader && !other.skills?.isLeader) return false;
+        // 相手が木クリの唯一のリーダーで自分が非リーダーなら木クリのリーダーが0になるため除外
+        if (!staff.skills?.isLeader && wouldRemovingBreakKikuriLeader(other, d, facId)) return false;
+        const otherC3Count = getStaffCool3Days(other.id).length;
+        const otherMax = other.maxCool3 !== undefined && other.maxCool3 !== null ? Number(other.maxCool3) : 99;
+        return otherC3Count < otherMax;
+      });
+
+      if (swapPartners.length > 0) {
+        swapPartners.sort((a, b) => {
+          // 唯一リーダーのときは相手がリーダーであることを最優先（4-Aでもリーダー維持）
+          if (isSoleC3Leader) {
+            const aL = a.skills?.isLeader ? 1 : 0;
+            const bL = b.skills?.isLeader ? 1 : 0;
+            if (aL !== bL) return bL - aL;
+          }
+          const aSameFac = shiftDefs[ns[a.id][d]]?.category === facId ? 1 : 0;
+          const bSameFac = shiftDefs[ns[b.id][d]]?.category === facId ? 1 : 0;
+          if (aSameFac !== bSameFac) return bSameFac - aSameFac;
+          const aNeed = Math.max(0, Number(a.minCool3 || 0) - getStaffCool3Days(a.id).length);
+          const bNeed = Math.max(0, Number(b.minCool3 || 0) - getStaffCool3Days(b.id).length);
+          if (aNeed !== bNeed) return bNeed - aNeed;
+          const aRem = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+          const bRem = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+          return bRem - aRem;
+        });
+        const partner = swapPartners[0];
+        const partnerCode = ns[partner.id][d];
+        ns[staff.id][d] = partnerCode;
+        ns[partner.id][d] = curCool3Code;
+        changedCount++;
+        return true;
+      }
+
+      // preserveCool3AndLeader=true（月間上限調整時）は、3クール必要人数割れやリーダー不在を起こしてまで単純降格させない
+      if (preserveCool3AndLeader) {
+        if (isSoleC3Leader) return false;
+        if (countCodeOnDay(curCool3Code, d) <= getTargetCount(curCool3Code, d)) return false;
+      }
+
+      const fallbackNonCool3 = pickAllowedNonCool3ShiftForDay(staff, d, facId);
+      if (fallbackNonCool3) {
+        ns[staff.id][d] = fallbackNonCool3;
+        changedCount++;
+        return true;
+      }
+      return false;
+    };
+
+    // 4-A: 連続3クールの解消（絶対禁止ルール）
+    staffList.forEach(s => {
+      if (s.excludeFromAi) return;
+      const carry = prevMonthCarryOver?.byStaff?.[s.id];
+      if (cool3Set.has(ns[s.id]?.[1]) && carry?.prevLastDayWasCool3 && isEditable(s, 1)) {
+        replaceOrSwapOutCool3OnDay(s, 1, { preserveCool3AndLeader: false });
+      }
+      for (let d = 2; d <= maxDay; d++) {
+        if (isSunday(year, month, d) || isSunday(year, month, d - 1)) continue;
+        if (cool3Set.has(ns[s.id]?.[d]) && cool3Set.has(ns[s.id]?.[d - 1])) {
+          if (isEditable(s, d)) {
+            replaceOrSwapOutCool3OnDay(s, d, { preserveCool3AndLeader: false });
+          } else if (isEditable(s, d - 1)) {
+            replaceOrSwapOutCool3OnDay(s, d - 1, { preserveCool3AndLeader: false });
+          }
+        }
+      }
+    });
+
+    // 4-B: 3クール月間上限超過（maxCool3）の解消（※名簿順バイアスを防ぐためシャッフル順で処理）
+    shuffleArray(staffList).forEach(s => {
+      if (s.excludeFromAi) return;
+      if (s.maxCool3 === undefined || s.maxCool3 === null) return;
+      const maxLimit = Number(s.maxCool3);
+      const triedDays = new Set();
+      for (let guard = 0; guard < 15; guard++) {
+        const c3Days = getStaffCool3Days(s.id);
+        if (c3Days.length <= maxLimit) break;
+        const editableC3Days = c3Days.filter(d => isEditable(s, d) && !triedDays.has(d));
+        if (editableC3Days.length === 0) break;
+        editableC3Days.sort((a, b) => {
+          const soleA = s.skills?.isLeader && countLeadersOnCode(ns[s.id][a], a) <= 1 ? 1 : 0;
+          const soleB = s.skills?.isLeader && countLeadersOnCode(ns[s.id][b], b) <= 1 ? 1 : 0;
+          if (soleA !== soleB) return soleA - soleB;
+          const surpA = countCodeOnDay(ns[s.id][a], a) - getTargetCount(ns[s.id][a], a);
+          const surpB = countCodeOnDay(ns[s.id][b], b) - getTargetCount(ns[s.id][b], b);
+          return surpB - surpA;
+        });
+        const targetDay = editableC3Days[0];
+        triedDays.add(targetDay);
+        replaceOrSwapOutCool3OnDay(s, targetDay, { preserveCool3AndLeader: true });
+      }
+    });
+
+    // --- Phase 5: 3クール月間下限未達（minCool3）の引き上げ（名簿順バイアスを防ぐためシャッフル順で処理） ---
+    if (!hasScope) {
+      shuffleArray(staffList).forEach(s => {
+        if (s.excludeFromAi) return;
+        const minReq = Number(s.minCool3 || 0);
+        const maxLim = s.maxCool3 !== undefined && s.maxCool3 !== null ? Number(s.maxCool3) : 99;
+        if (minReq <= 0) return;
+
+        for (let guard = 0; guard < 15; guard++) {
+          const curC3Days = getStaffCool3Days(s.id);
+          if (curC3Days.length >= minReq || curC3Days.length >= maxLim) break;
+
+          const candidateWorkDays = [];
+          for (let d = 1; d <= maxDay; d++) {
+            if (!isEditable(s, d)) continue;
+            const curCode = ns[s.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) continue;
+            candidateWorkDays.push(d);
+          }
+          if (candidateWorkDays.length === 0) break;
+
+          let gainedCool3 = false;
+
+          // ステップA: 同じ日に必要人数未達の3クール枠があれば直接昇格（木クリ唯一リーダーを空けない場合のみ）
+          for (const d of candidateWorkDays) {
+            const curCode = ns[s.id][d];
+            const curFacId = shiftDefs[curCode]?.category;
+            const allowedShortC3 = cool3Codes
+              .filter(
+                c3 =>
+                  canTakeCool3OnDay(s, d, c3) &&
+                  countCodeOnDay(c3, d) < getTargetCount(c3, d) &&
+                  !wouldRemovingBreakKikuriLeader(s, d, shiftDefs[c3]?.category)
+              )
+              .sort((a, b) => {
+                const aSame = shiftDefs[a]?.category === curFacId ? 1 : 0;
+                const bSame = shiftDefs[b]?.category === curFacId ? 1 : 0;
+                return bSame - aSame;
+              });
+            if (allowedShortC3.length > 0) {
+              ns[s.id][d] = allowedShortC3[0];
+              changedCount++;
+              gainedCool3 = true;
+              break;
+            }
+          }
+          if (gainedCool3) continue;
+
+          // ステップB: 同じ日に3クール回数の余裕（cool3Count > minCool3）がある他職員と1対1スワップ（3クール内リーダー・木クリリーダー・ローテーション保護）
+          let bestSwap = null;
+          for (const d of candidateWorkDays) {
+            const curCode = ns[s.id][d];
+            const curFacId = shiftDefs[curCode]?.category;
+            staffList.forEach(donor => {
+              if (donor.id === s.id || donor.excludeFromAi) return;
+              if (!isEditable(donor, d)) return;
+              const donorC3Code = ns[donor.id]?.[d];
+              if (!donorC3Code || !cool3Set.has(donorC3Code)) return;
+              const donorC3Count = getStaffCool3Days(donor.id).length;
+              const donorMin = Number(donor.minCool3 || 0);
+              if (donorC3Count <= donorMin) return;
+              if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
+              if (!isShiftAllowedForStaff(donor, curCode)) return;
+              // donorが3クール唯一のリーダーで自分が非リーダーなら交換不可
+              if (!s.skills?.isLeader && donor.skills?.isLeader && countLeadersOnCode(donorC3Code, d) <= 1) return;
+              const donorFacId = shiftDefs[donorC3Code]?.category;
+              // 自分が木クリ唯一のリーダーでdonorが非リーダーなら交換不可
+              if (!donor.skills?.isLeader && wouldRemovingBreakKikuriLeader(s, d, donorFacId)) return;
+
+              const isSameFac = donorFacId === curFacId ? 1 : 0;
+              if (!isSameFac) {
+                const sAdj = getAdjacentFacilitySet(s.id, d);
+                const dAdj = getAdjacentFacilitySet(donor.id, d);
+                if (sAdj.has(donorFacId) || dAdj.has(curFacId)) return;
+              }
+              const donorSurplus = donorC3Count - donorMin;
+              const score = isSameFac * 100 + donorSurplus;
+              if (!bestSwap || score > bestSwap.score) {
+                bestSwap = { d, donor, donorC3Code, replacementForDonor: curCode, score };
+              }
+            });
+          }
+
+          if (bestSwap) {
+            ns[s.id][bestSwap.d] = bestSwap.donorC3Code;
+            ns[bestSwap.donor.id][bestSwap.d] = bestSwap.replacementForDonor;
+            changedCount++;
+            gainedCool3 = true;
+          }
+          if (!gainedCool3) break;
+        }
+      });
+    }
+
+    // --- Phase 6: 3クール必要人数の確実確保 ＆ 3クール枠内リーダー1名以上 ＆ 木クリリーダー1名以上の自動確保パス ---
+    const canSafelyAssignBlankStaffToWorkOnDay = (staff, d) => {
+      if (!staff || staff.excludeFromAi || ns[staff.id]?.[d] || !isEditable(staff, d)) return false;
+      if (wouldAddingWorkExceedStreak(staff, d)) return false;
+      const partRange = getPartTimeWeeklyContractRange(staff);
+      const wDays = operatingWeeks.find(w => w.includes(d));
+      if (wDays) {
+        const curWeekWork = wDays.filter(wd => isWorkCode(ns[staff.id]?.[wd])).length;
+        if (partRange && curWeekWork >= partRange.max) return false;
+        if (!partRange && staff.jobTitle !== 'パート' && wDays.length === 6) {
+          const otherOffs = wDays.filter(wd => wd !== d && !isWorkCode(ns[staff.id]?.[wd])).length;
+          if (otherOffs === 0) return false;
+        }
+      }
+      return true;
+    };
+
+    for (let d = 1; d <= maxDay; d++) {
+      if (!isDayInScope(d) || isSunday(year, month, d)) continue;
+
+      // 6-A: 各3クールシフトの必要人数を最優先で100%満たす（1手昇格＋2手玉突きリレー＋前後日3クール解除＋週内公休入替）
+      cool3Codes.forEach(c3Code => {
+        const target = getTargetCount(c3Code, d);
+        if (target <= 0) return;
+        const c3FacId = shiftDefs[c3Code]?.category;
+
+        for (let guard = 0; guard < 12; guard++) {
+          if (countCodeOnDay(c3Code, d) >= target) break;
+          const needsLeaderNow = countLeadersOnCode(c3Code, d) === 0;
+
+          // ① 同日に通常シフト（日勤・2クール）で出勤中の配置可能スタッフを3クールへ直接昇格（上限内）
+          let workingCands = shuffleArray(staffList).filter(cand => {
+            if (cand.excludeFromAi || !isEditable(cand, d)) return false;
+            const curCode = ns[cand.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) return false;
+            if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+            if (wouldRemovingBreakKikuriLeader(cand, d, c3FacId)) return false;
+            const cMax = cand.maxCool3 !== undefined && cand.maxCool3 !== null ? Number(cand.maxCool3) : 99;
+            return getStaffCool3Days(cand.id).length < cMax;
+          });
+
+          if (workingCands.length > 0) {
+            workingCands.sort((a, b) => {
+              if (needsLeaderNow) {
+                const aL = a.skills?.isLeader ? 1 : 0;
+                const bL = b.skills?.isLeader ? 1 : 0;
+                if (aL !== bL) return bL - aL;
+              }
+              const codeA = ns[a.id][d];
+              const codeB = ns[b.id][d];
+              const surpA = countCodeOnDay(codeA, d) - getTargetCount(codeA, d);
+              const surpB = countCodeOnDay(codeB, d) - getTargetCount(codeB, d);
+              if (surpA !== surpB) return surpB - surpA;
+              const remA = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+              const remB = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+              return remB - remA;
+            });
+            ns[workingCands[0].id][d] = c3Code;
+            changedCount++;
+            continue;
+          }
+
+          // ② 週休・連勤を守れる当日の空欄スタッフから直接補充（上限内）
+          const blankCands = shuffleArray(staffList).filter(cand => {
+            if (!canSafelyAssignBlankStaffToWorkOnDay(cand, d)) return false;
+            if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+            const cMax = cand.maxCool3 !== undefined && cand.maxCool3 !== null ? Number(cand.maxCool3) : 99;
+            return getStaffCool3Days(cand.id).length < cMax;
+          });
+          if (blankCands.length > 0) {
+            blankCands.sort((a, b) => {
+              if (needsLeaderNow) {
+                const aL = a.skills?.isLeader ? 1 : 0;
+                const bL = b.skills?.isLeader ? 1 : 0;
+                if (aL !== bL) return bL - aL;
+              }
+              const aRem = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+              const bRem = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+              return bRem - aRem;
+            });
+            ns[blankCands[0].id][d] = c3Code;
+            changedCount++;
+            continue;
+          }
+
+          // ③ 2手玉突きA（他施設3クールとのリレー補充）：他施設3クールのスタッフをc3Codeへ移し、空いた他施設3クールへ通常出勤者を昇格
+          let relayedOtherC3 = false;
+          for (const otherC3 of cool3Codes) {
+            if (otherC3 === c3Code || countCodeOnDay(otherC3, d) <= 0) continue;
+            const otherC3FacId = shiftDefs[otherC3]?.category;
+            const bridges = shuffleArray(staffList).filter(
+              b => !b.excludeFromAi && isEditable(b, d) && ns[b.id]?.[d] === otherC3 && canTakeCool3OnDay(b, d, c3Code)
+            );
+            for (const bridge of bridges) {
+              const bridgeSoleLeader = bridge.skills?.isLeader && countLeadersOnCode(otherC3, d) <= 1;
+              const feeders = shuffleArray(staffList).filter(f => {
+                if (f.id === bridge.id || f.excludeFromAi || !isEditable(f, d)) return false;
+                const fCode = ns[f.id]?.[d];
+                if (!fCode || !isWorkCode(fCode) || cool3Set.has(fCode)) return false;
+                if (bridgeSoleLeader && !f.skills?.isLeader) return false;
+                if (!canTakeCool3OnDay(f, d, otherC3)) return false;
+                if (wouldRemovingBreakKikuriLeader(f, d, otherC3FacId)) return false;
+                const fMax = f.maxCool3 !== undefined && f.maxCool3 !== null ? Number(f.maxCool3) : 99;
+                return getStaffCool3Days(f.id).length < fMax;
+              });
+              if (feeders.length > 0) {
+                ns[bridge.id][d] = c3Code;
+                ns[feeders[0].id][d] = otherC3;
+                changedCount += 2;
+                relayedOtherC3 = true;
+                break;
+              }
+            }
+            if (relayedOtherC3) break;
+          }
+          if (relayedOtherC3) continue;
+
+          // ④ 2手玉突きB（前日または翌日の3クールを他スタッフへ移して連続3クールブロックを解除し、当日c3Codeへ昇格）
+          let unblockedAdjC3 = false;
+          const adjBlockedWorkers = shuffleArray(staffList).filter(cand => {
+            if (cand.excludeFromAi || !isEditable(cand, d)) return false;
+            const curCode = ns[cand.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) return false;
+            if (!isShiftAllowedForStaff(cand, c3Code)) return false;
+            if ((cand.maxCool3 ?? 5) <= 0) return false;
+            if (wouldRemovingBreakKikuriLeader(cand, d, c3FacId)) return false;
+            const cMax = cand.maxCool3 !== undefined && cand.maxCool3 !== null ? Number(cand.maxCool3) : 99;
+            // 前日または翌日の3クールを1つ外せば回数は±0なので <= cMax まで対象にできる
+            return getStaffCool3Days(cand.id).length <= cMax;
+          });
+
+          for (const cand of adjBlockedWorkers) {
+            const carry = prevMonthCarryOver?.byStaff?.[cand.id];
+            if (d === 1 && carry?.prevLastDayWasCool3) continue;
+            const prevHasC3 = d > 1 && !isSunday(year, month, d - 1) && cool3Set.has(ns[cand.id]?.[d - 1]);
+            const nextHasC3 = d < maxDay && !isSunday(year, month, d + 1) && cool3Set.has(ns[cand.id]?.[d + 1]);
+            // 片側だけ隣接3クールがある場合のみ1回の入替で解除可能
+            if ((prevHasC3 && nextHasC3) || (!prevHasC3 && !nextHasC3)) continue;
+            const adjDay = prevHasC3 ? d - 1 : d + 1;
+            if (!isDayInScope(adjDay) || !isEditable(cand, adjDay)) continue;
+
+            const adjC3Code = ns[cand.id][adjDay];
+            const adjFacId = shiftDefs[adjC3Code]?.category;
+            const candSoleLeaderOnAdj = cand.skills?.isLeader && countLeadersOnCode(adjC3Code, adjDay) <= 1;
+
+            const helpersOnAdj = shuffleArray(staffList).filter(h => {
+              if (h.id === cand.id || h.excludeFromAi || !isEditable(h, adjDay)) return false;
+              const hCode = ns[h.id]?.[adjDay];
+              if (!hCode || !isWorkCode(hCode) || cool3Set.has(hCode)) return false;
+              if (candSoleLeaderOnAdj && !h.skills?.isLeader) return false;
+              if (!isShiftAllowedForStaff(cand, hCode)) return false;
+              if (!canTakeCool3OnDay(h, adjDay, adjC3Code)) return false;
+              if (!cand.skills?.isLeader && wouldRemovingBreakKikuriLeader(h, adjDay, adjFacId)) return false;
+              const hMax = h.maxCool3 !== undefined && h.maxCool3 !== null ? Number(h.maxCool3) : 99;
+              return getStaffCool3Days(h.id).length < hMax;
+            });
+
+            if (helpersOnAdj.length > 0) {
+              const helper = helpersOnAdj[0];
+              const helperOldCode = ns[helper.id][adjDay];
+              ns[cand.id][adjDay] = helperOldCode;
+              ns[helper.id][adjDay] = adjC3Code;
+              ns[cand.id][d] = c3Code;
+              changedCount += 3;
+              unblockedAdjC3 = true;
+              break;
+            }
+          }
+          if (unblockedAdjC3) continue;
+
+          // ⑤ 同週内の公休（空欄）日スワップ：当日休んでいる3クール可能スタッフの休みを同週の別曜日へ振り替えて当日c3Codeへ配置
+          let swappedWeeklyOff = false;
+          const curWeekDays = operatingWeeks.find(w => w.includes(d)) || [];
+          if (curWeekDays.length >= 2) {
+            const restingC3Staff = shuffleArray(staffList).filter(r => {
+              if (r.excludeFromAi || ns[r.id]?.[d] || !isEditable(r, d)) return false;
+              if (!canTakeCool3OnDay(r, d, c3Code)) return false;
+              const rMax = r.maxCool3 !== undefined && r.maxCool3 !== null ? Number(r.maxCool3) : 99;
+              return getStaffCool3Days(r.id).length < rMax;
+            });
+
+            const checkStreakSafeForStaff = (stObj) => {
+              let stLen = prevMonthCarryOver?.byStaff?.[stObj.id]?.trailingWorkStreak || 0;
+              for (let dayCheck = 1; dayCheck <= maxDay; dayCheck++) {
+                if (isSunday(year, month, dayCheck)) {
+                  stLen = 0;
+                  continue;
+                }
+                if (isWorkCode(ns[stObj.id]?.[dayCheck])) {
+                  stLen++;
+                  if (stLen > maxStreak) return false;
+                } else {
+                  stLen = 0;
+                }
+              }
+              return true;
+            };
+
+            for (const rStaff of restingC3Staff) {
+              for (const otherD of curWeekDays) {
+                if (otherD === d || !isDayInScope(otherD) || !isEditable(rStaff, otherD)) continue;
+                const rOtherCode = ns[rStaff.id]?.[otherD];
+                if (!rOtherCode || !isWorkCode(rOtherCode) || cool3Set.has(rOtherCode)) continue;
+                if (wouldRemovingBreakKikuriLeader(rStaff, otherD, null)) continue;
+
+                // パターンA: otherD に余剰があればそのまま休日を d -> otherD へ移動
+                if (countCodeOnDay(rOtherCode, otherD) > getTargetCount(rOtherCode, otherD)) {
+                  delete ns[rStaff.id][otherD];
+                  ns[rStaff.id][d] = c3Code;
+                  if (checkStreakSafeForStaff(rStaff)) {
+                    changedCount += 2;
+                    swappedWeeklyOff = true;
+                    break;
+                  }
+                  // ロールバック
+                  delete ns[rStaff.id][d];
+                  ns[rStaff.id][otherD] = rOtherCode;
+                }
+
+                // パターンB: 当日dに通常シフトで出ていて otherD が空欄休みの別スタッフと公休日を1対1交換
+                const offSwapPartners = shuffleArray(staffList).filter(p => {
+                  if (p.id === rStaff.id || p.excludeFromAi) return false;
+                  if (!isEditable(p, d) || !isEditable(p, otherD)) return false;
+                  if (ns[p.id]?.[otherD]) return false;
+                  const pTodayCode = ns[p.id]?.[d];
+                  if (!pTodayCode || !isWorkCode(pTodayCode) || cool3Set.has(pTodayCode)) return false;
+                  if (wouldRemovingBreakKikuriLeader(p, d, null)) return false;
+                  return isShiftAllowedForStaff(p, rOtherCode);
+                });
+
+                for (const pStaff of offSwapPartners) {
+                  const pOldTodayCode = ns[pStaff.id][d];
+                  delete ns[pStaff.id][d];
+                  ns[pStaff.id][otherD] = rOtherCode;
+                  delete ns[rStaff.id][otherD];
+                  ns[rStaff.id][d] = c3Code;
+
+                  if (checkStreakSafeForStaff(rStaff) && checkStreakSafeForStaff(pStaff)) {
+                    changedCount += 4;
+                    swappedWeeklyOff = true;
+                    break;
+                  }
+                  // ロールバック
+                  delete ns[rStaff.id][d];
+                  ns[rStaff.id][otherD] = rOtherCode;
+                  delete ns[pStaff.id][otherD];
+                  ns[pStaff.id][d] = pOldTodayCode;
+                }
+                if (swappedWeeklyOff) break;
+              }
+              if (swappedWeeklyOff) break;
+            }
+          }
+          if (swappedWeeklyOff) continue;
+
+          // ⑥ 最終手段：連続3クールにならない通常出勤者から最小超過で昇格して欠員を防ぐ
+          workingCands = shuffleArray(staffList).filter(cand => {
+            if (cand.excludeFromAi || !isEditable(cand, d)) return false;
+            const curCode = ns[cand.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) return false;
+            if ((cand.maxCool3 ?? 5) <= 0) return false;
+            if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+            if (wouldRemovingBreakKikuriLeader(cand, d, c3FacId)) return false;
+            return true;
+          });
+
+          if (workingCands.length === 0) break;
+
+          workingCands.sort((a, b) => {
+            if (needsLeaderNow) {
+              const aL = a.skills?.isLeader ? 1 : 0;
+              const bL = b.skills?.isLeader ? 1 : 0;
+              if (aL !== bL) return bL - aL;
+            }
+            const remA = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+            const remB = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+            return remB - remA;
+          });
+
+          ns[workingCands[0].id][d] = c3Code;
+          changedCount++;
+        }
+      });
+
+      // 6-B: 各3クール枠の中に必ずリーダー（isLeader）を1名以上確保する
+      cool3Codes.forEach(c3Code => {
+        if (getTargetCount(c3Code, d) <= 0 && countCodeOnDay(c3Code, d) <= 0) return;
+        if (countLeadersOnCode(c3Code, d) >= 1) return;
+
+        const c3FacId = shiftDefs[c3Code]?.category;
+        const editableNonLeadersInC3 = staffList.filter(
+          st => !st.excludeFromAi && isEditable(st, d) && ns[st.id]?.[d] === c3Code && !st.skills?.isLeader
+        );
+
+        // 方法①: 同日の日勤・2クールにいるリーダー保持者と1対1スワップ（同施設を最優先、上限内を優先）
+        if (editableNonLeadersInC3.length > 0) {
+          let bestLeaderSwap = null;
+          staffList.forEach(leaderCand => {
+            if (leaderCand.excludeFromAi || !leaderCand.skills?.isLeader || !isEditable(leaderCand, d)) return;
+            const lCode = ns[leaderCand.id]?.[d];
+            if (!lCode || !isWorkCode(lCode) || cool3Set.has(lCode)) return;
+            if ((leaderCand.maxCool3 ?? 5) <= 0) return;
+            if (!canTakeCool3OnDay(leaderCand, d, c3Code)) return;
+            if (wouldRemovingBreakKikuriLeader(leaderCand, d, c3FacId)) return;
+
+            const lMax = leaderCand.maxCool3 !== undefined && leaderCand.maxCool3 !== null ? Number(leaderCand.maxCool3) : 99;
+            const lRem = lMax - getStaffCool3Days(leaderCand.id).length;
+            const withinMax = lRem > 0 ? 1 : 0;
+            const sameFac = shiftDefs[lCode]?.category === c3FacId ? 1 : 0;
+
+            editableNonLeadersInC3.forEach(nonL => {
+              if (!isShiftAllowedForStaff(nonL, lCode)) return;
+              const score = withinMax * 1000 + sameFac * 100 + lRem;
+              if (!bestLeaderSwap || score > bestLeaderSwap.score) {
+                bestLeaderSwap = { leaderCand, nonL, lCode, score };
+              }
+            });
+          });
+
+          if (bestLeaderSwap) {
+            ns[bestLeaderSwap.leaderCand.id][d] = c3Code;
+            ns[bestLeaderSwap.nonL.id][d] = bestLeaderSwap.lCode;
+            changedCount++;
+            return;
+          }
+        }
+
+        // 方法②: 別の3クール枠にリーダーが2名以上いる場合、3クール同士で1対1スワップ
+        if (editableNonLeadersInC3.length > 0) {
+          let bestCrossC3Swap = null;
+          cool3Codes.forEach(otherC3 => {
+            if (otherC3 === c3Code || countLeadersOnCode(otherC3, d) < 2) return;
+            staffList.forEach(surplusLeader => {
+              if (
+                surplusLeader.excludeFromAi ||
+                !surplusLeader.skills?.isLeader ||
+                !isEditable(surplusLeader, d) ||
+                ns[surplusLeader.id]?.[d] !== otherC3
+              ) {
+                return;
+              }
+              if (!canTakeCool3OnDay(surplusLeader, d, c3Code)) return;
+              editableNonLeadersInC3.forEach(nonL => {
+                if (!canTakeCool3OnDay(nonL, d, otherC3)) return;
+                bestCrossC3Swap = { surplusLeader, nonL, otherC3 };
+              });
+            });
+          });
+
+          if (bestCrossC3Swap) {
+            ns[bestCrossC3Swap.surplusLeader.id][d] = c3Code;
+            ns[bestCrossC3Swap.nonL.id][d] = bestCrossC3Swap.otherC3;
+            changedCount++;
+          }
+        }
+      });
+
+      // 6-C: 2クールまでの施設のうち「木クリ」に必ずリーダーを1名以上確保する
+      Object.values(categoryDefs)
+        .filter(cat => isKikuriFacilityCategory(cat))
+        .forEach(kikuriCat => {
+          const kikuriShiftCodes = allFacilityWorkCodes.filter(c => shiftDefs[c]?.category === kikuriCat.id);
+          const kikuriTargetSum = kikuriShiftCodes.reduce((sum, c) => sum + getTargetCount(c, d), 0);
+          if (kikuriTargetSum <= 0) return;
+          if (countLeadersInFacility(kikuriCat.id, d) >= 1) return;
+
+          const editableNonLeadersInKikuri = staffList.filter(st => {
+            const c = ns[st.id]?.[d];
+            return Boolean(c && shiftDefs[c]?.category === kikuriCat.id && !st.excludeFromAi && isEditable(st, d) && !st.skills?.isLeader);
+          });
+          if (editableNonLeadersInKikuri.length === 0) return;
+
+          let bestKikuriSwap = null;
+          staffList.forEach(donorLeader => {
+            if (donorLeader.excludeFromAi || !donorLeader.skills?.isLeader || !isEditable(donorLeader, d)) return;
+            const dCode = ns[donorLeader.id]?.[d];
+            if (!dCode || !isWorkCode(dCode)) return;
+            const dFacId = shiftDefs[dCode]?.category;
+            if (dFacId === kikuriCat.id) return;
+
+            // donorが3クール唯一のリーダー、または他木クリ系施設の唯一リーダーなら除外
+            if (cool3Set.has(dCode) && countLeadersOnCode(dCode, d) <= 1) return;
+            if (isKikuriFacilityCategory(categoryDefs[dFacId]) && countLeadersInFacility(dFacId, d) <= 1) return;
+
+            editableNonLeadersInKikuri.forEach(kNonL => {
+              const kCode = ns[kNonL.id][d];
+              if (!isShiftAllowedForStaff(donorLeader, kCode)) return;
+              if (!isShiftAllowedForStaff(kNonL, dCode)) return;
+              if (cool3Set.has(dCode)) {
+                const kMax = kNonL.maxCool3 !== undefined && kNonL.maxCool3 !== null ? Number(kNonL.maxCool3) : 99;
+                if (!canTakeCool3OnDay(kNonL, d, dCode) || getStaffCool3Days(kNonL.id).length >= kMax) return;
+              }
+              const nonCool3Bonus = cool3Set.has(dCode) ? 0 : 50;
+              const score = nonCool3Bonus - countStaffFacilityInMonth(donorLeader.id, kikuriCat.id);
+              if (!bestKikuriSwap || score > bestKikuriSwap.score) {
+                bestKikuriSwap = { donorLeader, kNonL, dCode, kCode, score };
+              }
+            });
+          });
+
+          if (bestKikuriSwap) {
+            ns[bestKikuriSwap.donorLeader.id][d] = bestKikuriSwap.kCode;
+            ns[bestKikuriSwap.kNonL.id][d] = bestKikuriSwap.dCode;
+            changedCount++;
+          }
+        });
+    }
+
+    // --- Phase 7: 同一日・通常シフト間の施設ローテーション均等化 ＆ シフト種別分散スワップ（下段の木クリ固まり解消＋自然なランダム性付与） ---
+    // ※同一日の非3クール同士の1対1交換のみを行うため、各シフトの必要人数・3クール数・3クール内リーダー・週休・連勤数は100%不変
+    {
+      const facilityIds = Object.values(categoryDefs)
+        .filter(cat => cat && resolveCategoryKind(cat) === 'facility')
+        .map(cat => cat.id);
+
+      // 全体の施設別枠比率を計算（各施設の元々の規模に応じた自然な目標比率＋スタッフごとの微小ランダム揺らぎ）
+      const totalFacilitySlots = {};
+      let grandTotalSlots = 0;
+      facilityIds.forEach(fid => {
+        totalFacilitySlots[fid] = 0;
+      });
+      operatingDays.forEach(od => {
+        allFacilityWorkCodes.forEach(c => {
+          const fid = shiftDefs[c]?.category;
+          if (fid && totalFacilitySlots[fid] !== undefined) {
+            const t = getTargetCount(c, od);
+            totalFacilitySlots[fid] += t;
+            grandTotalSlots += t;
+          }
+        });
+      });
+
+      const baseFacilityShare = {};
+      facilityIds.forEach(fid => {
+        baseFacilityShare[fid] = grandTotalSlots > 0 ? totalFacilitySlots[fid] / grandTotalSlots : 1 / Math.max(1, facilityIds.length);
+      });
+
+      // 毎回作成するたびに自然なランダム性が出るよう、スタッフ×施設ごとにわずかな目標比率の揺らぎ(±6%)を持たせる
+      const staffTargetShareMap = {};
+      const staffFacCounts = {};
+      const staffSlotCounts = {};
+      const staffTotalFacWork = {};
+
+      staffList.forEach(st => {
+        staffFacCounts[st.id] = {};
+        staffSlotCounts[st.id] = { cool2: 0, day: 0, half: 0, other: 0 };
+        staffTotalFacWork[st.id] = 0;
+        facilityIds.forEach(fid => {
+          staffFacCounts[st.id][fid] = 0;
+        });
+
+        const allowedFacIds = facilityIds.filter(fid =>
+          allFacilityWorkCodes.some(c => shiftDefs[c]?.category === fid && isShiftAllowedForStaff(st, c))
+        );
+        const rawWeights = {};
+        let wSum = 0;
+        allowedFacIds.forEach(fid => {
+          const jitter = 0.88 + Math.random() * 0.24; // 0.88〜1.12 のランダム係数
+          const w = Math.max(0.05, (baseFacilityShare[fid] || 0.25) * jitter);
+          rawWeights[fid] = w;
+          wSum += w;
+        });
+        staffTargetShareMap[st.id] = {};
+        allowedFacIds.forEach(fid => {
+          staffTargetShareMap[st.id][fid] = wSum > 0 ? rawWeights[fid] / wSum : 1 / allowedFacIds.length;
+        });
+
+        for (let dayIdx = 1; dayIdx <= maxDay; dayIdx++) {
+          if (isSunday(year, month, dayIdx)) continue;
+          const c = ns[st.id]?.[dayIdx];
+          if (!c || !shiftDefs[c] || !isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)) continue;
+          const fid = shiftDefs[c].category;
+          if (staffFacCounts[st.id][fid] !== undefined) {
+            staffFacCounts[st.id][fid]++;
+            staffTotalFacWork[st.id]++;
+          }
+          if (!cool3Set.has(c)) {
+            const sl = resolveShiftWorkSlot(shiftDefs[c], categoryDefs) || 'other';
+            staffSlotCounts[st.id][sl] = (staffSlotCounts[st.id][sl] || 0) + 1;
+          }
+        }
+      });
+
+      const countSkillInFacOnDay = (catId, skillKey, dayNum) => {
+        let cnt = 0;
+        staffList.forEach(st => {
+          const c = ns[st.id]?.[dayNum];
+          if (c && shiftDefs[c]?.category === catId && isWorkCode(c) && st.skills?.[skillKey]) cnt++;
+        });
+        return cnt;
+      };
+
+      const canSafelySwapSameDayNonCool3 = (stA, codeA, stB, codeB, dayNum) => {
+        const facA = shiftDefs[codeA]?.category;
+        const facB = shiftDefs[codeB]?.category;
+        if (!isShiftAllowedForStaff(stA, codeB) || !isShiftAllowedForStaff(stB, codeA)) return false;
+        if (facA === facB) return true;
+
+        // 施設が変わる場合は、木クリのリーダーおよび各施設の必須スキル最低人数を割らないか確認
+        for (const sk of STAFF_SKILLS) {
+          const hasA = Boolean(stA.skills?.[sk.key]);
+          const hasB = Boolean(stB.skills?.[sk.key]);
+          if (hasA === hasB) continue;
+
+          if (hasA && !hasB) {
+            const reqA =
+              sk.key === 'isLeader'
+                ? isKikuriFacilityCategory(categoryDefs[facA])
+                  ? Math.max(1, getFacilitySkillTarget(facA, 'isLeader'))
+                  : getFacilitySkillTarget(facA, 'isLeader')
+                : getFacilitySkillTarget(facA, sk.key);
+            if (reqA > 0 && countSkillInFacOnDay(facA, sk.key, dayNum) - 1 < reqA) return false;
+          } else if (hasB && !hasA) {
+            const reqB =
+              sk.key === 'isLeader'
+                ? isKikuriFacilityCategory(categoryDefs[facB])
+                  ? Math.max(1, getFacilitySkillTarget(facB, 'isLeader'))
+                  : getFacilitySkillTarget(facB, 'isLeader')
+                : getFacilitySkillTarget(facB, sk.key);
+            if (reqB > 0 && countSkillInFacOnDay(facB, sk.key, dayNum) - 1 < reqB) return false;
+          }
+        }
+        return true;
+      };
+
+      const evalStaffPlacementCostOnDay = (stId, testCode, dayNum, customFacCounts = null, customSlotCounts = null) => {
+        const facId = shiftDefs[testCode]?.category;
+        const slot = resolveShiftWorkSlot(shiftDefs[testCode], categoryDefs) || 'other';
+        const fCounts = customFacCounts || staffFacCounts[stId];
+        const sCounts = customSlotCounts || staffSlotCounts[stId];
+        const totalW = Math.max(1, staffTotalFacWork[stId]);
+        const targetShares = staffTargetShareMap[stId] || {};
+        const allowedKeys = Object.keys(targetShares);
+
+        // ① 施設比率の偏りペナルティ（目標比率からのズレの二乗和 × 重み）
+        let facSkewCost = 0;
+        if (allowedKeys.length >= 2) {
+          allowedKeys.forEach(fid => {
+            const actualShare = (fCounts[fid] || 0) / totalW;
+            const diff = actualShare - (targetShares[fid] || 0);
+            facSkewCost += diff * diff * 32;
+          });
+        }
+
+        // ② 前後営業日と同一施設が連続するペナルティ（日替わりローテーション促進）
+        let streakCost = 0;
+        if (allowedKeys.length >= 2) {
+          let prevFac = null;
+          if (dayNum === 1) {
+            prevFac = prevMonthCarryOver?.byStaff?.[stId]?.prevLastDayCategory || null;
+          } else if (!isSunday(year, month, dayNum - 1)) {
+            const pc = ns[stId]?.[dayNum - 1];
+            if (pc && shiftDefs[pc]) prevFac = shiftDefs[pc].category;
+          }
+          let nextFac = null;
+          if (dayNum < maxDay && !isSunday(year, month, dayNum + 1)) {
+            const nc = ns[stId]?.[dayNum + 1];
+            if (nc && shiftDefs[nc]) nextFac = shiftDefs[nc].category;
+          }
+          if (prevFac && prevFac === facId) streakCost += 2.6;
+          if (nextFac && nextFac === facId) streakCost += 2.6;
+          if (prevFac && nextFac && prevFac === facId && nextFac === facId) streakCost += 2.0;
+        }
+
+        // ③ クール区分（2クール vs 日勤）の偏り＆連日同一クール区分ペナルティ
+        const c2 = sCounts.cool2 || 0;
+        const dy = sCounts.day || 0;
+        let slotStreak = 0;
+        if (dayNum > 1 && !isSunday(year, month, dayNum - 1)) {
+          const pc = ns[stId]?.[dayNum - 1];
+          if (pc && shiftDefs[pc] && (resolveShiftWorkSlot(shiftDefs[pc], categoryDefs) || 'other') === slot) {
+            slotStreak += 0.55;
+          }
+        }
+        if (dayNum < maxDay && !isSunday(year, month, dayNum + 1)) {
+          const nc = ns[stId]?.[dayNum + 1];
+          if (nc && shiftDefs[nc] && (resolveShiftWorkSlot(shiftDefs[nc], categoryDefs) || 'other') === slot) {
+            slotStreak += 0.55;
+          }
+        }
+        const slotImbalance = Math.abs(c2 - dy) * 0.25 + slotStreak;
+
+        return facSkewCost + streakCost + slotImbalance;
+      };
+
+      const scopedOpDays = operatingDays.filter(od => isDayInScope(od));
+      const passCount = hasScope ? 2 : 4;
+
+      for (let pass = 0; pass < passCount; pass++) {
+        let improvedInPass = false;
+        const shuffledDays = shuffleArray(scopedOpDays);
+
+        shuffledDays.forEach(d => {
+          const dayWorkers = shuffleArray(
+            staffList.filter(st => {
+              if (st.excludeFromAi || !isEditable(st, d)) return false;
+              const c = ns[st.id]?.[d];
+              return Boolean(c && isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs) && !cool3Set.has(c));
+            })
+          );
+
+          for (let i = 0; i < dayWorkers.length; i++) {
+            for (let j = i + 1; j < dayWorkers.length; j++) {
+              const stA = dayWorkers[i];
+              const stB = dayWorkers[j];
+              const codeA = ns[stA.id]?.[d];
+              const codeB = ns[stB.id]?.[d];
+              if (!codeA || !codeB || codeA === codeB) continue;
+
+              const facA = shiftDefs[codeA]?.category;
+              const facB = shiftDefs[codeB]?.category;
+              const slotA = resolveShiftWorkSlot(shiftDefs[codeA], categoryDefs) || 'other';
+              const slotB = resolveShiftWorkSlot(shiftDefs[codeB], categoryDefs) || 'other';
+              if (facA === facB && slotA === slotB) continue;
+
+              if (!canSafelySwapSameDayNonCool3(stA, codeA, stB, codeB, d)) continue;
+
+              const beforeCost =
+                evalStaffPlacementCostOnDay(stA.id, codeA, d) +
+                evalStaffPlacementCostOnDay(stB.id, codeB, d);
+
+              const nextFacCountsA = {
+                ...staffFacCounts[stA.id],
+                [facA]: (staffFacCounts[stA.id][facA] || 1) - 1,
+                [facB]: (staffFacCounts[stA.id][facB] || 0) + 1,
+              };
+              const nextFacCountsB = {
+                ...staffFacCounts[stB.id],
+                [facB]: (staffFacCounts[stB.id][facB] || 1) - 1,
+                [facA]: (staffFacCounts[stB.id][facA] || 0) + 1,
+              };
+              const nextSlotCountsA = {
+                ...staffSlotCounts[stA.id],
+                [slotA]: Math.max(0, (staffSlotCounts[stA.id][slotA] || 1) - 1),
+                [slotB]: (staffSlotCounts[stA.id][slotB] || 0) + 1,
+              };
+              const nextSlotCountsB = {
+                ...staffSlotCounts[stB.id],
+                [slotB]: Math.max(0, (staffSlotCounts[stB.id][slotB] || 1) - 1),
+                [slotA]: (staffSlotCounts[stB.id][slotA] || 0) + 1,
+              };
+
+              const afterCost =
+                evalStaffPlacementCostOnDay(stA.id, codeB, d, nextFacCountsA, nextSlotCountsA) +
+                evalStaffPlacementCostOnDay(stB.id, codeA, d, nextFacCountsB, nextSlotCountsB);
+
+              if (afterCost + 0.08 < beforeCost) {
+                ns[stA.id][d] = codeB;
+                ns[stB.id][d] = codeA;
+                staffFacCounts[stA.id] = nextFacCountsA;
+                staffFacCounts[stB.id] = nextFacCountsB;
+                staffSlotCounts[stA.id] = nextSlotCountsA;
+                staffSlotCounts[stB.id] = nextSlotCountsB;
+                changedCount++;
+                improvedInPass = true;
+              }
+            }
+          }
+        });
+
+        if (!improvedInPass) break;
+      }
+    }
+
+    return { nextShifts: ns, changedCount };
   };
 
 // 条件操作ハンドラ（Step 5: [絶対] strict / [なるべく] soft の2段階優先度対応）
@@ -5647,12 +7498,21 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
     let estRemSec = 0;
     if (timing.phase === 'init') {
-      estRemSec = Math.max(1, timing.totalBuildWeeks) * avgWeekSec + 8;
+      estRemSec = timing.isParallel
+        ? Math.round(avgWeekSec * 1.4) + 6
+        : Math.max(1, timing.totalBuildWeeks) * avgWeekSec + 8;
     } else if (timing.phase === 'building') {
-      const currentWeekRem = Math.max(4, avgWeekSec - stepElapsedSec);
-      const futureWeeksCount = Math.max(0, timing.totalBuildWeeks - timing.completedBuildWeeks - 1);
-      const postCheckBuffer = Math.max(5, Math.round(avgWeekSec * 0.5));
-      estRemSec = currentWeekRem + futureWeeksCount * avgWeekSec + postCheckBuffer;
+      if (timing.isParallel) {
+        const buildElapsedSec = Math.max(0, (now - (timing.buildStartMs || timing.currentStepStartMs || now)) / 1000);
+        const estParallelTotal = Math.max(12, Math.round((timing.baseSecPerWeek || avgWeekSec) * 1.45));
+        const remRatio = Math.max(0.15, (timing.totalBuildWeeks - timing.completedBuildWeeks) / Math.max(1, timing.totalBuildWeeks));
+        estRemSec = Math.max(4, Math.round(Math.max(4, estParallelTotal - buildElapsedSec) * (0.45 + 0.55 * remRatio))) + 5;
+      } else {
+        const currentWeekRem = Math.max(4, avgWeekSec - stepElapsedSec);
+        const futureWeeksCount = Math.max(0, timing.totalBuildWeeks - timing.completedBuildWeeks - 1);
+        const postCheckBuffer = Math.max(5, Math.round(avgWeekSec * 0.5));
+        estRemSec = currentWeekRem + futureWeeksCount * avgWeekSec + postCheckBuffer;
+      }
     } else if (timing.phase === 'validating') {
       estRemSec = 4;
     } else if (timing.phase === 'repairing') {
@@ -5711,14 +7571,18 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       userInputs: originalUserInputs,
     };
 
+    const modelLower = String(aiModel || '').toLowerCase();
     const isProModel =
-      String(aiModel || '').toLowerCase().includes('pro') ||
-      String(aiModel || '').toLowerCase().includes('argon');
-    const baseSecPerWeek = isProModel ? 26 : 11;
+      modelLower.includes('pro') ||
+      modelLower.includes('argon') ||
+      modelLower.includes('carbon');
+    const baseSecPerWeek = isProModel ? 24 : modelLower.includes('neon') ? 15 : 10;
     const startedAtMs = Date.now();
     autoFillTimingRef.current = {
       startTimeMs: startedAtMs,
       phase: 'init',
+      isParallel: false,
+      buildStartMs: startedAtMs,
       totalBuildWeeks: 4,
       completedBuildWeeks: 0,
       completedBuildMs: 0,
@@ -5733,7 +7597,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     setIsAiLoading(true);
     setAiProgress(2);
     setAiElapsedSec(0);
-    setAiRemainingText(isProModel ? 'あと約2分' : 'あと約1分');
+    setAiRemainingText(isProModel ? 'あと約1分30秒' : 'あと約45秒');
     setAiLoadingMessage('勤務表データを事前分析中...');
     setAiLoadingSubDetail('前月末からの連勤引き継ぎ・希望休・各班固定枠・目標人数を集計しています');
     setAutoFillValidationSummary(null);
@@ -5804,8 +7668,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         ? powerTargetEntries
             .map(([catId, fp]) =>
               fp.targetPowerScore > 0
-                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
-                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+                ? `${fp.facilityLabel}(${catId}): 当日平均×人数で均等化`
+                : `${fp.facilityLabel}(${catId}): スコア判定なし`
             )
             .join(' ／ ')
         : '設定なし';
@@ -5884,20 +7748,23 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       });
 
       const buildWeekIdxSet = new Set(weeksToBuild.map(w => w.weekIndex));
+      const buildStartAtMs = Date.now();
       autoFillTimingRef.current = {
         ...autoFillTimingRef.current,
         phase: weeksToBuild.length > 0 ? 'building' : 'validating',
+        isParallel: false,
+        buildStartMs: buildStartAtMs,
         totalBuildWeeks: weeksToBuild.length,
         completedBuildWeeks: 0,
         completedBuildMs: 0,
-        currentStepStartMs: Date.now(),
+        currentStepStartMs: buildStartAtMs,
       };
       setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
 
       setAutoFillSteps([
         {
           id: 'prep',
-          label: '事前分析（前月末引き継ぎ・希望休・各班固定の集計）',
+          label: '事前分析（前月末引き継ぎ・希望休・各班固定・目標人数の集計）',
           status: 'done',
           detail: '完了',
         },
@@ -5931,48 +7798,71 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       let totalUpdatedCells = 0;
       const weekErrors = [];
 
-      for (let wIdx = 0; wIdx < weeksToBuild.length; wIdx++) {
-        if (!isRunActive()) {
-          clearInterval(progressInterval);
-          clearInterval(timerInterval);
-          return;
+      const facilityCatsInBuild = Object.values(categoryDefs)
+        .filter(cat => cat && resolveCategoryKind(cat) === 'facility');
+
+      const wouldWeekWorkExceedStreak = (targetWeekDays, stEntry, blankSet) => {
+        let streak = stEntry.thisWeekPlan.enteringWorkStreak || 0;
+        for (const d of targetWeekDays) {
+          const exCode = stEntry.thisWeekPlan.existingShiftsInThisWeek?.[d];
+          if (exCode && shiftDefs[exCode]) {
+            const exDef = shiftDefs[exCode];
+            if (getEffectiveShiftType(exDef, categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(exDef, categoryDefs)) {
+              streak++;
+              if (streak > maxStreak) return true;
+            } else {
+              streak = 0;
+            }
+          } else if (!stEntry.excludeFromAi && stEntry.thisWeekPlan.assignableDaysInThisWeek.includes(d) && !blankSet.has(d)) {
+            streak++;
+            if (streak > maxStreak) return true;
+          } else {
+            streak = 0;
+          }
         }
+        return false;
+      };
+
+      let activeExecutionModel = aiModel;
+      // 第1週→最終週へ順番にビルドし、前週までの「実際の施設回数・クール区分回数・3クール消化実績・直近施設」を次週へ正確に引き継ぐ
+      for (let wIdx = 0; wIdx < weeksToBuild.length; wIdx++) {
+        if (!isRunActive()) break;
 
         const targetWeek = weeksToBuild[wIdx];
+        const remainingBuildWeeksCount = Math.max(1, weeksToBuild.length - wIdx);
         const weekStepId = `week_${targetWeek.weekIndex}`;
+        const firstDay = targetWeek.days[0];
+        const lastDay = targetWeek.days[targetWeek.days.length - 1];
+        const allowedWeekDaysSet = new Set(targetWeek.days);
+
         const weekStartedMs = Date.now();
         autoFillTimingRef.current = {
           ...autoFillTimingRef.current,
           phase: 'building',
           currentStepStartMs: weekStartedMs,
         };
-        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
-
-        const weekStartPct = Math.max(5, Math.round((wIdx / weeksToBuild.length) * 80));
-        progressCeiling = Math.max(weekStartPct + 3, Math.round(((wIdx + 1) / weeksToBuild.length) * 80) - 2);
-        setAiProgress(prev => Math.max(prev, weekStartPct));
+        progressCeiling = Math.min(80, Math.round(10 + ((wIdx + 0.85) / Math.max(1, weeksToBuild.length)) * 70));
+        setAiProgress(prev => Math.max(prev, Math.round(8 + (wIdx / Math.max(1, weeksToBuild.length)) * 70)));
+        updateStepItem(weekStepId, { status: 'active', detail: 'AI作成中...' });
         setAiLoadingMessage(
           `第${targetWeek.weekIndex}週（${targetWeek.label}）のシフトを作成中... (${wIdx + 1}/${weeksToBuild.length}週)`
         );
         setAiLoadingSubDetail(
-          targetWeek.weekIndex === 1
-            ? `前月末の連勤・公休引き継ぎを反映し、${skillReqSummaryText}・日替わり施設ローテーション・週休空欄を計算中`
-            : `第${targetWeek.weekIndex - 1}週までの出勤・施設回数・3クール実績を引き継ぎ、日替わり施設ローテーション・最大${maxStreak}連勤を計算中`
+          wIdx === 0
+            ? `前月末引き継ぎ・希望休・必要人数・${skillReqSummaryText}を踏まえて第1週を配置しています`
+            : '前週までの実際の施設・シフト回数と3クール実績を引き継ぎ、偏りなくローテーション配置しています'
         );
-        updateStepItem(weekStepId, { status: 'active', detail: 'AI計算中...' });
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
 
-        // 直前の週までに配置された出勤・空欄公休・3クール回数をリアルタイム反映した状態で当週データを生成（タスク定義・タスクロックは除外）
-        const weekAiData = prepareScheduleDataForAi(workingShifts, workingTasks, { includeTasks: false });
-        const firstDay = targetWeek.days[0];
-        const lastDay = targetWeek.days[targetWeek.days.length - 1];
-        const allowedWeekDaysSet = new Set(targetWeek.days);
+        // 前週までの確定済み workingShifts から最新の累積統計を再計算
+        const liveData = prepareScheduleDataForAi(workingShifts, workingTasks, { includeTasks: false });
 
         const weekCalendar = {};
         const weekDailySummary = {};
         const exactTargetCountsByDay = {};
         targetWeek.days.forEach(d => {
-          weekCalendar[d] = weekAiData.calendar[d];
-          weekDailySummary[d] = weekAiData.dailySummary[d];
+          weekCalendar[d] = liveData.calendar[d];
+          weekDailySummary[d] = liveData.dailySummary[d];
           const dayTargets = {};
           Object.keys(targetCounts || {}).forEach(code => {
             if (!isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs)) return;
@@ -5984,77 +7874,57 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
         const staffRequestsInWeek = {};
         const teamAdminLocksInWeek = {};
-        Object.keys(weekAiData.staffRequests || {}).forEach(sId => {
+        Object.keys(liveData.staffRequests || {}).forEach(sId => {
           const filtered = {};
           targetWeek.days.forEach(d => {
-            if (weekAiData.staffRequests[sId]?.[d]) filtered[d] = weekAiData.staffRequests[sId][d];
+            if (liveData.staffRequests[sId]?.[d]) filtered[d] = liveData.staffRequests[sId][d];
           });
           if (Object.keys(filtered).length > 0) staffRequestsInWeek[sId] = filtered;
         });
-        Object.keys(weekAiData.teamAdminLocks || {}).forEach(sId => {
+        Object.keys(liveData.teamAdminLocks || {}).forEach(sId => {
           const filtered = {};
           targetWeek.days.forEach(d => {
-            if (weekAiData.teamAdminLocks[sId]?.[d]) filtered[d] = weekAiData.teamAdminLocks[sId][d];
+            if (liveData.teamAdminLocks[sId]?.[d]) filtered[d] = liveData.teamAdminLocks[sId][d];
           });
           if (Object.keys(filtered).length > 0) teamAdminLocksInWeek[sId] = filtered;
         });
 
-        const weeklyStaffList = weekAiData.staff.map(st => {
-          // 当週初日の直前時点での連続出勤数・前日3クール有無を正確に算出
-          let enteringWorkStreak = 0;
-          if (firstDay === 1) {
-            enteringWorkStreak = st.prevMonthCarryOver?.trailingWorkStreak || 0;
-          } else {
-            let cursor = firstDay - 1;
-            let hitBreak = false;
-            while (cursor >= 1) {
-              if (isSunday(year, month, cursor)) {
-                hitBreak = true;
-                break;
-              }
-              const prevCode = workingShifts[st.id]?.[cursor];
-              if (
-                prevCode &&
-                shiftDefs[prevCode] &&
-                getEffectiveShiftType(shiftDefs[prevCode], categoryDefs) === 'shift' &&
-                !isNonWorkOrKoushutsuShiftDef(shiftDefs[prevCode], categoryDefs)
-              ) {
-                enteringWorkStreak++;
-                cursor--;
-              } else {
-                hitBreak = true;
-                break;
-              }
-            }
-            if (!hitBreak && cursor === 0) {
-              enteringWorkStreak += st.prevMonthCarryOver?.trailingWorkStreak || 0;
-            }
-          }
+        const baseStaffById = {};
+        const weeklyStaffList = liveData.staff.map(st => {
+          baseStaffById[st.id] = st;
+          const enteringWorkStreak = firstDay === 1 ? (st.prevMonthCarryOver?.trailingWorkStreak || 0) : 0;
+          const forbidCool3OnFirstDay = firstDay === 1 ? Boolean(st.prevMonthCarryOver?.forbidCool3OnDay1) : false;
 
-          const forbidCool3OnFirstDay =
-            firstDay === 1
-              ? Boolean(st.prevMonthCarryOver?.forbidCool3OnDay1)
-              : !isSunday(year, month, firstDay - 1) && cool3Set.has(workingShifts[st.id]?.[firstDay - 1]);
-
-          // 当週初日の直前営業日に入った施設を取得（日曜を挟む場合も直前の土曜出勤施設を参照し、週またぎでも同じ施設が連続しにくいようにする）
           let enteringLastFacilityId = null;
           let enteringLastFacilityLabel = null;
+          let enteringLastShiftCode = null;
           if (firstDay === 1) {
             enteringLastFacilityId = st.prevMonthCarryOver?.prevLastDayCategory || null;
             enteringLastFacilityLabel = st.prevMonthCarryOver?.prevLastDayFacilityLabel || null;
+            enteringLastShiftCode = st.prevMonthCarryOver?.prevLastDayCode || null;
           } else {
             for (let cursor = firstDay - 1; cursor >= 1; cursor--) {
               if (isSunday(year, month, cursor)) continue;
               const pCode = workingShifts[st.id]?.[cursor];
-              if (!pCode || !shiftDefs[pCode]) break;
+              if (!pCode || !shiftDefs[pCode]) continue;
               const pDef = shiftDefs[pCode];
-              if (isNonWorkOrKoushutsuShiftDef(pDef, categoryDefs)) break;
+              if (isNonWorkOrKoushutsuShiftDef(pDef, categoryDefs)) continue;
               if (getCategoryKindById(pDef.category, categoryDefs) === 'facility') {
                 enteringLastFacilityId = pDef.category;
                 enteringLastFacilityLabel = categoryDefs[pDef.category]?.label || pDef.category;
+                enteringLastShiftCode = pCode;
+                break;
               }
-              break;
             }
+          }
+
+          const shiftSlotCountsSoFar = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
+          for (let cursor = 1; cursor < firstDay; cursor++) {
+            if (isSunday(year, month, cursor)) continue;
+            const c = workingShifts[st.id]?.[cursor];
+            if (!c || !shiftDefs[c] || !isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)) continue;
+            const slot = resolveShiftWorkSlot(shiftDefs[c], categoryDefs) || 'other';
+            shiftSlotCountsSoFar[slot] = (shiftSlotCountsSoFar[slot] || 0) + 1;
           }
 
           const existingShiftsInThisWeek = {};
@@ -6087,19 +7957,21 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
           const holidayAssignableDaysInThisWeek = assignableDaysInThisWeek.filter(d => weekCalendar[d]?.isHoliday);
           let mustKeepBlankDaysMinInThisWeek = 0;
+          let maxOptionalBlanksInThisWeek = 0;
           let recommendedNewWorkDaysInThisWeek = '0日';
 
           const existingWorkInThisWeek = Object.values(existingShiftsInThisWeek).filter(
             c => c && shiftDefs[c] && getEffectiveShiftType(shiftDefs[c], categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(shiftDefs[c], categoryDefs)
           ).length;
 
+          const stPartContractRange = getPartTimeWeeklyContractRange(st);
           if (st.excludeFromAi || assignableDaysInThisWeek.length === 0) {
             mustKeepBlankDaysMinInThisWeek = 0;
+            maxOptionalBlanksInThisWeek = 0;
             recommendedNewWorkDaysInThisWeek = '0日（変更不可）';
-          } else if (st.jobTitle === 'パート' && (st.contractWorkDaysMin || st.contractWorkDaysMax)) {
-            // ★パート職員の週契約出勤日数（下限〜上限：絶対厳守ルール）
-            const wMin = Number(st.contractWorkDaysMin || st.contractWorkDaysMax);
-            const wMax = Number(st.contractWorkDaysMax || st.contractWorkDaysMin);
+          } else if (st.jobTitle === 'パート' && stPartContractRange) {
+            const wMin = stPartContractRange.min;
+            const wMax = stPartContractRange.max;
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
             const capByStreak = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
@@ -6110,6 +7982,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const recMax = Math.min(assignableDaysInThisWeek.length, capByStreak, maxAllowedNew);
             const recMin = Math.min(recMax, minRequiredNew);
             mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
+            maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - recMin);
             const rangeLbl = wMin === wMax ? `週${wMin}日` : `週${wMin}〜${wMax}日`;
             recommendedNewWorkDaysInThisWeek =
               recMin === recMax
@@ -6119,21 +7992,23 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
             mustKeepBlankDaysMinInThisWeek = streakNeedsOff ? 1 : 0;
+            maxOptionalBlanksInThisWeek = assignableDaysInThisWeek.length;
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = `0〜${maxNew}日（パート条件・必要人数に応じて配置）`;
           } else if (targetWeek.isFullWeek) {
-            // 月〜土のフル6日週: 週休枠の休み（休・年休・振休等）が未入力なら必ず1日を空欄公休（祝日の空欄休みを含む）として残し基本5日出勤とする。
-            // 既に休み希望・振休等が入っている週に祝日がある場合は、祝日が空欄休みなら週4日以下出勤、祝日出勤なら5日出勤を許容する。
             mustKeepBlankDaysMinInThisWeek = regOffInThisWeek === 0 ? 1 : 0;
+            maxOptionalBlanksInThisWeek = mustKeepBlankDaysMinInThisWeek;
             const recWork = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             if (holidayAssignableDaysInThisWeek.length > 0 && regOffInThisWeek + paidOffInThisWeek >= 1) {
               const minWorkWithHolidayOff = Math.max(0, recWork - holidayAssignableDaysInThisWeek.length);
+              maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - minWorkWithHolidayOff);
               recommendedNewWorkDaysInThisWeek =
                 minWorkWithHolidayOff === recWork
                   ? `${recWork}日`
-                  : `${minWorkWithHolidayOff}〜${recWork}日（祝日が空欄休みの場合は${minWorkWithHolidayOff}日出勤、祝日出勤の場合は${recWork}日出勤）`;
+                  : `${minWorkWithHolidayOff}〜${recWork}日（祝日に余剰があれば空欄休み可、人数が必要なら出勤）`;
             } else if (holidayAssignableDaysInThisWeek.length > 1 && regOffInThisWeek === 0) {
               const minWorkWithMultiHolOff = Math.max(0, assignableDaysInThisWeek.length - holidayAssignableDaysInThisWeek.length);
+              maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - minWorkWithMultiHolOff);
               recommendedNewWorkDaysInThisWeek =
                 minWorkWithMultiHolOff === recWork
                   ? `${recWork}日`
@@ -6142,7 +8017,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               recommendedNewWorkDaysInThisWeek = `${recWork}日`;
             }
           } else if (targetWeek.weekIndex === 1) {
-            // 月初の端数週（第1週）: 前月末からの連勤と月またぎ週の公休消化状況を反映
             const prevCarry = st.prevMonthCarryOver || {};
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
@@ -6152,23 +8026,29 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               !prevCarry.alreadyTookWeeklyOffInPrevMonthPart &&
               regOffInThisWeek === 0;
             mustKeepBlankDaysMinInThisWeek = streakNeedsOff || straddleNeedsOff ? 1 : 0;
+            maxOptionalBlanksInThisWeek = prevCarry.hasPrevSchedule
+              ? mustKeepBlankDaysMinInThisWeek
+              : Math.min(assignableDaysInThisWeek.length, mustKeepBlankDaysMinInThisWeek + 1);
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = prevCarry.hasPrevSchedule
               ? `${maxNew}日`
               : maxNew > 0
-                ? `${Math.max(0, maxNew - 1)}〜${maxNew}日（各日の必要人数に合わせて調整）`
+                ? `${Math.max(0, maxNew - 1)}〜${maxNew}日（必要人数を満たすよう優先配置）`
                 : '0日';
           } else {
-            // 月末の端数週（最終週）: 第1週〜前週までの実績出勤日数を踏まえ、月間目標出勤日数にピタリ収める
-            const remMin = Math.max(0, (st.currentStats.targetWorkDaysMin ?? 0) - st.currentStats.workDays);
-            const remMax = Math.max(0, (st.currentStats.targetWorkDaysMax ?? 0) - st.currentStats.workDays);
+            // 案2: 月末などの端数週では、連勤超過の恐れがない限り「強制空欄」にはせず、人数に余剰(surplus>0)がある日だけ公休を入れることで未入力穴を防ぐ
+            const workSoFar = st.currentStats?.workDays || 0;
+            const remMin = Math.max(0, (st.currentStats?.targetWorkDaysMin ?? 0) - workSoFar);
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
-            const capMax = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
+            mustKeepBlankDaysMinInThisWeek = streakNeedsOff ? 1 : 0;
+            const capMax = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             const recMin = Math.min(capMax, remMin);
-            const recMax = Math.max(recMin, Math.min(capMax, remMax));
-            mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
-            recommendedNewWorkDaysInThisWeek = recMin === recMax ? `${recMin}日` : `${recMin}〜${recMax}日`;
+            maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - recMin);
+            recommendedNewWorkDaysInThisWeek =
+              recMin === capMax
+                ? `${capMax}日`
+                : `${recMin}〜${capMax}日（必要人数を満たすことを優先し、余剰日のみ空欄休み）`;
           }
 
           const futurePreEnteredShifts = {};
@@ -6177,77 +8057,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const fReq = getUserRequestedShift(st.id, d);
             if (fCode) futurePreEnteredShifts[d] = fCode;
             else if (fReq) futurePreEnteredShifts[d] = `(希望空欄:${fReq})`;
-          }
-
-          // 複数施設に配置可能な職員について、日ごとに勤務地がバラけてローテーションし月間回数も平準化される推奨順ガイドを生成
-          let rotationGuide = null;
-          const allowedFacs = Array.isArray(st.allowedFacilities) ? st.allowedFacilities : [];
-          if (!st.excludeFromAi && allowedFacs.length >= 2 && assignableDaysInThisWeek.length > 0) {
-            const simCounts = {};
-            allowedFacs.forEach(fc => {
-              simCounts[fc.id] = st.currentStats?.facilityCounts?.[fc.label] || 0;
-            });
-
-            const dailyFacilityPreferenceHint = {};
-            let prevFacId = enteringLastFacilityId;
-            const enteringLastShiftCode =
-              firstDay > 1 && !isSunday(year, month, firstDay - 1)
-                ? workingShifts[st.id]?.[firstDay - 1] || null
-                : firstDay === 1
-                  ? prevMonthCarryOver.byStaff?.[st.id]?.prevLastDayCode || null
-                  : null;
-
-            targetWeek.days.forEach((d, idxInWeek) => {
-              const existingCode = existingShiftsInThisWeek[d];
-              if (existingCode && shiftDefs[existingCode]) {
-                const exDef = shiftDefs[existingCode];
-                if (getCategoryKindById(exDef.category, categoryDefs) === 'facility') {
-                  prevFacId = exDef.category;
-                } else if (isNonWorkOrKoushutsuShiftDef(exDef, categoryDefs)) {
-                  prevFacId = null;
-                }
-                return;
-              }
-              if (!assignableDaysInThisWeek.includes(d)) {
-                prevFacId = null;
-                return;
-              }
-
-              const nextDay = targetWeek.days[idxInWeek + 1];
-              const nextExistingCode = nextDay ? existingShiftsInThisWeek[nextDay] : null;
-              const nextExistingFacId =
-                nextExistingCode &&
-                shiftDefs[nextExistingCode] &&
-                getCategoryKindById(shiftDefs[nextExistingCode].category, categoryDefs) === 'facility'
-                  ? shiftDefs[nextExistingCode].category
-                  : null;
-
-              const rankedFacs = shuffleArray(allowedFacs).sort((a, b) => {
-                const aSamePrev = prevFacId && a.id === prevFacId ? 1 : 0;
-                const bSamePrev = prevFacId && b.id === prevFacId ? 1 : 0;
-                if (aSamePrev !== bSamePrev) return aSamePrev - bSamePrev;
-
-                const aSameNext = nextExistingFacId && a.id === nextExistingFacId ? 1 : 0;
-                const bSameNext = nextExistingFacId && b.id === nextExistingFacId ? 1 : 0;
-                if (aSameNext !== bSameNext) return aSameNext - bSameNext;
-
-                return (simCounts[a.id] || 0) - (simCounts[b.id] || 0);
-              });
-
-              dailyFacilityPreferenceHint[d] = rankedFacs.map(fc => fc.label);
-              const topFac = rankedFacs[0];
-              if (topFac) {
-                prevFacId = topFac.id;
-                simCounts[topFac.id] = (simCounts[topFac.id] || 0) + 1;
-              }
-            });
-
-            rotationGuide = {
-              enteringLastFacility: enteringLastFacilityLabel,
-              ...(enteringLastShiftCode ? { enteringLastShiftCode } : {}),
-              underusedFacilitiesFirst: st.currentStats.priorityFacilitiesToBalance,
-              dailyFacilityPreferenceHint,
-            };
           }
 
           const staffEntry = {
@@ -6259,20 +8068,26 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             powerScore: st.powerScore,
             minCool3: st.minCool3 ?? 0,
             maxCool3: st.maxCool3,
-            ...(st.contractWorkDaysMin || st.contractWorkDaysMax
+            ...(stPartContractRange
               ? {
-                  contractWorkDaysMin: st.contractWorkDaysMin ?? st.contractWorkDaysMax,
-                  contractWorkDaysMax: st.contractWorkDaysMax ?? st.contractWorkDaysMin,
+                  contractWorkDaysMin: stPartContractRange.min,
+                  contractWorkDaysMax: stPartContractRange.max,
                 }
               : {}),
             excludeFromAi: st.excludeFromAi,
             allowedWorkShifts: st.allowedWorkShifts,
             ...(allowedWeekDaysSet.has(1) ? { day1AllowedWorkShifts: st.day1AllowedWorkShifts } : {}),
             ...(targetWeek.weekIndex === 1 ? { prevMonthCarryOver: st.prevMonthCarryOver } : {}),
+            _enteringLastFacilityId: enteringLastFacilityId,
+            _enteringLastFacilityLabel: enteringLastFacilityLabel,
+            _enteringLastShiftCode: enteringLastShiftCode,
+            _forbidCool3OnFirstDay: forbidCool3OnFirstDay,
+            _maxOptionalBlanksInThisWeek: maxOptionalBlanksInThisWeek,
             cumulativeStatsSoFar: {
               workDaysInMonthSoFar: st.currentStats.workDays,
               targetMonthlyWorkDaysRange: st.currentStats.targetWorkDaysRange,
-              facilityCountsSoFar: st.currentStats.facilityCounts,
+              facilityCountsSoFar: { ...st.currentStats.facilityCounts },
+              shiftSlotCountsSoFar,
               cool3CountSoFar: st.currentStats.cool3Count,
               remainingCool3: st.currentStats.remainingCool3,
               remainingMinCool3Needed: st.currentStats.remainingMinCool3Needed,
@@ -6287,7 +8102,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               forbidCool3OnFirstDayOfWeek: forbidCool3OnFirstDay,
               mustKeepBlankDaysMinInThisWeek,
               recommendedNewWorkDaysInThisWeek,
-              ...(rotationGuide ? { rotationGuide } : {}),
             },
           };
 
@@ -6297,14 +8111,356 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           return staffEntry;
         });
 
-        // AIが名簿の上から機械的に「AAAA, FFFF」と固めて割り当てる癖を断ち切るため、
-        // 週データの職員配列順をシャッフルし、日ごとの割り当て検討順もランダム化する（※職員IDキー出力のため画面上の名簿順は変わらない）
+        // 今週の公休(空欄休み)を日別の必要人数・リーダー数に応じてフラット事前配分
+        const dailyTargetFacilityTotal = {};
+        const dailyRequiredLeaders = {};
+        const dailyPlannedWorking = {};
+        const dailyPlannedLeaders = {};
+
+        targetWeek.days.forEach(d => {
+          const dayTargets = exactTargetCountsByDay[d] || {};
+          dailyTargetFacilityTotal[d] = Object.values(dayTargets).reduce((sum, n) => sum + (n || 0), 0);
+
+          let reqLeaders = 0;
+          facilityCatsInBuild.forEach(cat => {
+            const hasActiveShiftOnDay = Object.values(shiftDefs).some(
+              sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id && (dayTargets[sd.code] || 0) > 0
+            );
+            const hasExistingInCatOnDay = weeklyStaffList.some(st => {
+              const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+              return Boolean(exCode && shiftDefs[exCode]?.category === cat.id && isAiAssignableFacilityShiftDef(exCode, shiftDefs, categoryDefs));
+            });
+            if (hasActiveShiftOnDay || hasExistingInCatOnDay) {
+              reqLeaders += getFacilitySkillTarget(cat.id, 'isLeader') || 0;
+            }
+          });
+          dailyRequiredLeaders[d] = reqLeaders;
+
+          let plannedW = 0;
+          let plannedL = 0;
+          weeklyStaffList.forEach(st => {
+            const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+            const worksExistingFacility = Boolean(exCode && isAiAssignableFacilityShiftDef(exCode, shiftDefs, categoryDefs));
+            const assignableDay = !st.excludeFromAi && st.thisWeekPlan.assignableDaysInThisWeek.includes(d);
+            if (worksExistingFacility || assignableDay) {
+              plannedW++;
+              if (st.skills?.isLeader) plannedL++;
+            }
+          });
+          dailyPlannedWorking[d] = plannedW;
+          dailyPlannedLeaders[d] = plannedL;
+        });
+
+        const plannedBlanksByStaffId = {};
+        const staffBlankSpecs = weeklyStaffList.map(st => {
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const minBlanks = Math.min(assignable.length, st.thisWeekPlan.mustKeepBlankDaysMinInThisWeek || 0);
+          const maxBlanks = Math.min(assignable.length, Math.max(minBlanks, st._maxOptionalBlanksInThisWeek ?? minBlanks));
+          plannedBlanksByStaffId[st.id] = new Set();
+          return {
+            st,
+            minBlanks,
+            maxBlanks,
+            isStreakRestricted: st.thisWeekPlan.maxAllowedConsecutiveFromWeekStart < assignable.length,
+          };
+        });
+
+        const mandatoryQueue = shuffleArray(staffBlankSpecs.filter(sp => sp.minBlanks > 0)).sort((a, b) => {
+          if (a.isStreakRestricted !== b.isStreakRestricted) return a.isStreakRestricted ? -1 : 1;
+          return a.st.thisWeekPlan.assignableDaysInThisWeek.length - b.st.thisWeekPlan.assignableDaysInThisWeek.length;
+        });
+
+        mandatoryQueue.forEach(spec => {
+          const { st, minBlanks } = spec;
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const chosen = plannedBlanksByStaffId[st.id];
+
+          for (let step = 0; step < minBlanks; step++) {
+            const remaining = assignable.filter(d => !chosen.has(d));
+            if (remaining.length === 0) break;
+
+            let candidates = remaining;
+            if (step === minBlanks - 1) {
+              const streakSafe = remaining.filter(d => {
+                const testSet = new Set(chosen);
+                testSet.add(d);
+                return !wouldWeekWorkExceedStreak(targetWeek.days, st, testSet);
+              });
+              if (streakSafe.length > 0) candidates = streakSafe;
+            } else {
+              const maxAfterPick = st.thisWeekPlan.maxAllowedConsecutiveFromWeekStart || 0;
+              if (chosen.size === 0 && maxAfterPick === 0 && remaining.includes(firstDay)) {
+                candidates = [firstDay];
+              }
+            }
+
+            let bestDay = candidates[0];
+            let bestScore = -Infinity;
+            candidates.forEach(d => {
+              const surplus = dailyPlannedWorking[d] - dailyTargetFacilityTotal[d];
+              let score = surplus * 10;
+              if (weekCalendar[d]?.isHoliday && surplus >= 0) {
+                score += 4;
+              }
+              if (st.skills?.isLeader) {
+                if (dailyPlannedLeaders[d] - 1 < dailyRequiredLeaders[d]) {
+                  score -= 1000;
+                } else {
+                  score += (dailyPlannedLeaders[d] - dailyRequiredLeaders[d]) * 2.5;
+                }
+              }
+              score += Math.random() * 0.5;
+              if (score > bestScore) {
+                bestScore = score;
+                bestDay = d;
+              }
+            });
+
+            chosen.add(bestDay);
+            dailyPlannedWorking[bestDay]--;
+            if (st.skills?.isLeader) {
+              dailyPlannedLeaders[bestDay]--;
+            }
+          }
+        });
+
+        const flexibleQueue = shuffleArray(staffBlankSpecs.filter(sp => sp.maxBlanks > sp.minBlanks));
+        flexibleQueue.forEach(spec => {
+          const { st, maxBlanks } = spec;
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const chosen = plannedBlanksByStaffId[st.id];
+
+          while (chosen.size < maxBlanks) {
+            const remaining = assignable.filter(d => !chosen.has(d));
+            const surplusDays = remaining.filter(d => {
+              if (dailyPlannedWorking[d] - dailyTargetFacilityTotal[d] <= 0) return false;
+              if (st.skills?.isLeader && dailyPlannedLeaders[d] - 1 < dailyRequiredLeaders[d]) return false;
+              const testSet = new Set(chosen);
+              testSet.add(d);
+              return !wouldWeekWorkExceedStreak(targetWeek.days, st, testSet);
+            });
+            if (surplusDays.length === 0) break;
+
+            surplusDays.sort((a, b) => {
+              const sa = dailyPlannedWorking[a] - dailyTargetFacilityTotal[a];
+              const sb = dailyPlannedWorking[b] - dailyTargetFacilityTotal[b];
+              return sb - sa;
+            });
+            const pick = surplusDays[0];
+            chosen.add(pick);
+            dailyPlannedWorking[pick]--;
+            if (st.skills?.isLeader) {
+              dailyPlannedLeaders[pick]--;
+            }
+          }
+        });
+
+        // 案2: 各施設の当日必要人数枠を踏まえ、「選択肢が狭い・3クールに入らない・下段のスタッフ」から先に日替わり施設枠を均等予約する
+        const simCountsByStaff = {};
+        const prevFacTrackerByStaff = {};
+        const recommendedFacByStaffDay = {};
+        const preferenceRankingByStaffDay = {};
+
+        weeklyStaffList.forEach(st => {
+          const baseSt = baseStaffById[st.id];
+          const blankSet = plannedBlanksByStaffId[st.id] || new Set();
+          const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
+          const plannedBlankOffDaysInThisWeek = Array.from(blankSet).sort((a, b) => a - b);
+          const plannedWorkDaysInThisWeek = assignable.filter(d => !blankSet.has(d));
+          st.thisWeekPlan.plannedBlankOffDaysInThisWeek = plannedBlankOffDaysInThisWeek;
+          st.thisWeekPlan.plannedWorkDaysInThisWeek = plannedWorkDaysInThisWeek;
+
+          const allowedFacs = Array.isArray(baseSt?.allowedFacilities) ? baseSt.allowedFacilities : [];
+          simCountsByStaff[st.id] = {};
+          allowedFacs.forEach(fc => {
+            simCountsByStaff[st.id][fc.id] = st.cumulativeStatsSoFar.facilityCountsSoFar?.[fc.label] || 0;
+          });
+          prevFacTrackerByStaff[st.id] = st._enteringLastFacilityId || null;
+          recommendedFacByStaffDay[st.id] = {};
+          preferenceRankingByStaffDay[st.id] = {};
+        });
+
+        // 1日ずつ、各施設の残り必要人数枠を見ながら非3クール・下位層優先＋ランダム順で施設を割り振る
+        targetWeek.days.forEach((d, idxInWeek) => {
+          const remFacSlots = {};
+          facilityCatsInBuild.forEach(cat => {
+            const catTarget = Object.entries(exactTargetCountsByDay[d] || {}).reduce(
+              (sum, [code, cnt]) => (shiftDefs[code]?.category === cat.id ? sum + (cnt || 0) : sum),
+              0
+            );
+            const catExisting = weeklyStaffList.filter(st => {
+              const ex = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+              return Boolean(ex && shiftDefs[ex]?.category === cat.id);
+            }).length;
+            remFacSlots[cat.id] = Math.max(0, catTarget - catExisting);
+          });
+
+          // 既存シフトまたは公休のスタッフは前日施設トラッカーだけ更新
+          const activeAssignStaff = [];
+          weeklyStaffList.forEach(st => {
+            const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+            if (exCode && shiftDefs[exCode]) {
+              const exDef = shiftDefs[exCode];
+              prevFacTrackerByStaff[st.id] =
+                getCategoryKindById(exDef.category, categoryDefs) === 'facility' ? exDef.category : null;
+              return;
+            }
+            if (st.excludeFromAi || !(st.thisWeekPlan.plannedWorkDaysInThisWeek || []).includes(d)) {
+              prevFacTrackerByStaff[st.id] = null;
+              return;
+            }
+            activeAssignStaff.push(st);
+          });
+
+          // 許可施設が少ない人 → 3クールに入らない人（下段に多い層）→ ランダム順で優先的に施設枠を確保（木クリ吹き溜まり防止）
+          const orderedAssignStaff = shuffleArray(activeAssignStaff).sort((a, b) => {
+            const aFacLen = (baseStaffById[a.id]?.allowedFacilities || []).length;
+            const bFacLen = (baseStaffById[b.id]?.allowedFacilities || []).length;
+            if (aFacLen !== bFacLen) return aFacLen - bFacLen;
+            const aHasC3 = (a.allowedWorkShifts || []).some(c => cool3Set.has(c)) ? 1 : 0;
+            const bHasC3 = (b.allowedWorkShifts || []).some(c => cool3Set.has(c)) ? 1 : 0;
+            return aHasC3 - bHasC3;
+          });
+
+          const nextDay = targetWeek.days[idxInWeek + 1];
+          orderedAssignStaff.forEach(st => {
+            const allowedFacs = Array.isArray(baseStaffById[st.id]?.allowedFacilities)
+              ? baseStaffById[st.id].allowedFacilities
+              : [];
+            if (allowedFacs.length === 0) return;
+
+            const prevFacId = prevFacTrackerByStaff[st.id];
+            const nextExCode = nextDay ? st.thisWeekPlan.existingShiftsInThisWeek?.[nextDay] : null;
+            const nextExFacId =
+              nextExCode && shiftDefs[nextExCode] && getCategoryKindById(shiftDefs[nextExCode].category, categoryDefs) === 'facility'
+                ? shiftDefs[nextExCode].category
+                : null;
+
+            const ranked = shuffleArray(allowedFacs).sort((fa, fb) => {
+              // 空き枠がまだ残っている施設を優先しつつ、前日・翌日と被らず本人の累積回数が少ない施設を選ぶ
+              const openA = (remFacSlots[fa.id] || 0) > 0 ? 0 : 1;
+              const openB = (remFacSlots[fb.id] || 0) > 0 ? 0 : 1;
+              if (openA !== openB) return openA - openB;
+              const samePrevA = prevFacId && fa.id === prevFacId ? 1 : 0;
+              const samePrevB = prevFacId && fb.id === prevFacId ? 1 : 0;
+              if (samePrevA !== samePrevB) return samePrevA - samePrevB;
+              const sameNextA = nextExFacId && fa.id === nextExFacId ? 1 : 0;
+              const sameNextB = nextExFacId && fb.id === nextExFacId ? 1 : 0;
+              if (sameNextA !== sameNextB) return sameNextA - sameNextB;
+              return (simCountsByStaff[st.id][fa.id] || 0) - (simCountsByStaff[st.id][fb.id] || 0);
+            });
+
+            const chosenFac = ranked[0];
+            if (chosenFac) {
+              recommendedFacByStaffDay[st.id][d] = chosenFac.label;
+              preferenceRankingByStaffDay[st.id][d] = ranked.map(fc => fc.label);
+              prevFacTrackerByStaff[st.id] = chosenFac.id;
+              simCountsByStaff[st.id][chosenFac.id] = (simCountsByStaff[st.id][chosenFac.id] || 0) + 1;
+              if ((remFacSlots[chosenFac.id] || 0) > 0) {
+                remFacSlots[chosenFac.id]--;
+              }
+            }
+          });
+        });
+
+        weeklyStaffList.forEach(st => {
+          const baseSt = baseStaffById[st.id];
+          const plannedWorkDaysInThisWeek = st.thisWeekPlan.plannedWorkDaysInThisWeek || [];
+          const plannedWorkSet = new Set(plannedWorkDaysInThisWeek);
+          const allowedFacs = Array.isArray(baseSt?.allowedFacilities) ? baseSt.allowedFacilities : [];
+          const realFacCounts = {};
+          allowedFacs.forEach(fc => {
+            realFacCounts[fc.id] = st.cumulativeStatsSoFar.facilityCountsSoFar?.[fc.label] || 0;
+          });
+          const underusedBefore = [...allowedFacs]
+            .sort((a, b) => (realFacCounts[a.id] || 0) - (realFacCounts[b.id] || 0))
+            .map(fc => fc.label);
+
+          if (!st.excludeFromAi && allowedFacs.length >= 2 && plannedWorkDaysInThisWeek.length > 0) {
+            st.thisWeekPlan.rotationGuide = {
+              enteringLastFacility: st._enteringLastFacilityLabel,
+              ...(st._enteringLastShiftCode ? { enteringLastShiftCode: st._enteringLastShiftCode } : {}),
+              underusedFacilitiesFirst: underusedBefore,
+              recommendedFacilityByDay: recommendedFacByStaffDay[st.id],
+              dailyFacilityPreferenceHint: preferenceRankingByStaffDay[st.id],
+            };
+          }
+
+          const hasAllowedCool3Shift = (st.allowedWorkShifts || []).some(c => cool3Set.has(c));
+          const hasDay1Cool3Shift = !allowedWeekDaysSet.has(1) || (st.day1AllowedWorkShifts || []).some(c => cool3Set.has(c));
+          let physicalCap = 0;
+          if (!st.excludeFromAi && hasAllowedCool3Shift && plannedWorkDaysInThisWeek.length > 0) {
+            let prevWasCool3 = st._forbidCool3OnFirstDay;
+            targetWeek.days.forEach((d, idx) => {
+              const exCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
+              if (exCode) {
+                prevWasCool3 = cool3Set.has(exCode);
+                return;
+              }
+              if (!plannedWorkSet.has(d)) {
+                prevWasCool3 = false;
+                return;
+              }
+              const nextDay = targetWeek.days[idx + 1];
+              const nextExCode = nextDay ? st.thisWeekPlan.existingShiftsInThisWeek?.[nextDay] : null;
+              const nextExistingIsCool3 = Boolean(nextExCode && cool3Set.has(nextExCode));
+              const canCool3Today = (d !== 1 || hasDay1Cool3Shift) && !prevWasCool3 && !nextExistingIsCool3;
+              if (canCool3Today) {
+                physicalCap++;
+                prevWasCool3 = true;
+              } else {
+                prevWasCool3 = false;
+              }
+            });
+          }
+
+          const remMaxCool3 = st.cumulativeStatsSoFar.remainingCool3;
+          const remMinCool3 = st.cumulativeStatsSoFar.remainingMinCool3Needed || 0;
+          const maxAllowedThisWeek =
+            remMaxCool3 === null || remMaxCool3 === undefined
+              ? physicalCap
+              : Math.max(0, Math.min(physicalCap, remMaxCool3));
+          const softPaceMin =
+            remMinCool3 > 0
+              ? Math.min(maxAllowedThisWeek, Math.ceil(remMinCool3 / remainingBuildWeeksCount))
+              : 0;
+          const softPaceMax = Math.min(
+            maxAllowedThisWeek,
+            Math.max(softPaceMin + 1, Math.ceil((remMaxCool3 ?? physicalCap) / remainingBuildWeeksCount) + 1)
+          );
+
+          st.thisWeekPlan.maxAllowedNewCool3InThisWeek = maxAllowedThisWeek;
+          st.thisWeekPlan.recommendedNewCool3InThisWeek =
+            maxAllowedThisWeek === 0
+              ? '0回（月間上限到達または配置不可のため今週は0回厳守）'
+              : softPaceMin > 0
+                ? `目安 ${softPaceMin}〜${softPaceMax}回（月間残り上限あと${remMaxCool3}回まで可・下限達成まであと${remMinCool3}回）`
+                : `目安 0〜${softPaceMax}回（月間残り上限あと${remMaxCool3 ?? physicalCap}回まで可・必要枠に応じて柔軟配置）`;
+
+          delete st._enteringLastFacilityId;
+          delete st._enteringLastFacilityLabel;
+          delete st._enteringLastShiftCode;
+          delete st._forbidCool3OnFirstDay;
+          delete st._maxOptionalBlanksInThisWeek;
+        });
+
+        const dailyHeadcountBalancePlan = {};
+        targetWeek.days.forEach(d => {
+          dailyHeadcountBalancePlan[d] = {
+            targetFacilityTotal: dailyTargetFacilityTotal[d],
+            plannedWorkingFacility: dailyPlannedWorking[d],
+            surplus: dailyPlannedWorking[d] - dailyTargetFacilityTotal[d],
+            plannedLeaders: dailyPlannedLeaders[d],
+            requiredLeaders: dailyRequiredLeaders[d],
+          };
+        });
+
         const shuffledWeeklyStaffList = shuffleArray(weeklyStaffList);
         const dailyShuffledStaffOrder = {};
         targetWeek.days.forEach(d => {
           dailyShuffledStaffOrder[d] = shuffleArray(
             weeklyStaffList
-              .filter(st => !st.excludeFromAi && st.thisWeekPlan.assignableDaysInThisWeek.includes(d))
+              .filter(st => !st.excludeFromAi && (st.thisWeekPlan.plannedWorkDaysInThisWeek || []).includes(d))
               .map(st => st.id)
           );
         });
@@ -6320,27 +8476,28 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             isFullWeek: targetWeek.isFullWeek,
             calendar: weekCalendar,
             exactTargetCountsByDay,
+            dailyHeadcountBalancePlan,
             currentDailySummary: weekDailySummary,
             dailyShuffledStaffOrder,
           },
-          pacingRules: weekAiData.pacingRules,
-          categories: weekAiData.categories,
-          facilityPowerTargets: weekAiData.facilityPowerTargets,
-          facilitySkillRequirements: weekAiData.facilitySkillRequirements,
-          cool3ShiftCodes: weekAiData.cool3ShiftCodes,
-          definitions: weekAiData.definitions,
+          pacingRules: liveData.pacingRules,
+          categories: liveData.categories,
+          facilityPowerTargets: liveData.facilityPowerTargets,
+          facilitySkillRequirements: liveData.facilitySkillRequirements,
+          cool3ShiftCodes: liveData.cool3ShiftCodes,
+          definitions: liveData.definitions,
           staff: shuffledWeeklyStaffList,
           staffRequestsInWeek,
           teamAdminLocksInWeek,
         };
 
         const dailyCheckExampleLines = targetWeek.days
-          .map(d => `          "${d}": "${month}/${d}のチェック: 既存シフト含め必要人数・各施設リーダー・目標スコア・連勤上限・週休空欄を確認"`)
+          .map(d => `          "${d}": "${month}/${d}のチェック: 既存シフト含め必要人数・各施設リーダー・目標スコア・施設ローテーション・週休空欄を確認"`)
           .join(',\n');
 
         const weekPrompt = `
-      【タスク：週ごと段階ビルド — 第${targetWeek.weekIndex}週（${targetWeek.label}）のシフト作成】
-      1ヶ月分を第1週から順番に組み立てています。今回は **第${targetWeek.weekIndex}週の対象日 [${targetWeek.days.join(', ')}] のみ** について、前週までの実績（cumulativeStatsSoFar）と各職員の今週プラン（thisWeekPlan）を守りながら、必要な出勤シフトのみを割り当ててください。
+      【タスク：段階的シフト作成 — 第${targetWeek.weekIndex}週（${targetWeek.label}）のシフト作成】
+      第1週から順番に実績を引き継ぎながら作成しています。今回は **第${targetWeek.weekIndex}週の対象日 [${targetWeek.days.join(', ')}] のみ** について、前週までの実績（cumulativeStatsSoFar）と今週プラン（thisWeekPlan）を踏まえ、各日の必要人数と施設・シフトのバランスが良くなるよう出勤シフトを割り当ててください。
       ※対象日 [${targetWeek.days.join(', ')}] 以外の日付は絶対に出力しないでください。
 
       ${shiftSystemRefText}
@@ -6349,40 +8506,29 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       1. 既存データ・各班管理者入力・個人希望の維持と活用（★絶対厳守★）:
          - 各職員の "thisWeekPlan.assignableDaysInThisWeek" に含まれる日付のみ、AIから出勤シフトを新規割り当てできます。
          - 既にシフトが入っている箇所（thisWeekPlan.existingShiftsInThisWeek）、希望休をクリアした確定空欄日（lockedBlankOffDaysInThisWeek）、"teamAdminLocksInWeek"・"staffRequestsInWeek" にある箇所は絶対に変更しないでください。
-         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は必ず別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください（thisWeekPlan と currentDailySummary に事前反映済みです）。
-      2. AI除外・配置可能シフト制限・対象カテゴリ限定・祝日と振休の扱い（★絶対厳守★）:
+         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください。
+      2. AI除外・配置可能シフト制限・対象カテゴリ限定・祝日の扱い（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のため対象外。
-         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜日以外は透析を実施するため、各施設の必要人数（exactTargetCountsByDay）を満たすよう出勤シフトを割り当て、残りの職員は「空欄（祝日休み）」のまま残してください。
-         - 祝日が「空欄（休み）」になった職員は、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントし、基本は残り5日間を出勤にします（ただし同じ週に休・年休・振休・公出等の休み希望がある場合は、祝日の空欄と合わせて週4日以下の出勤になっても構いません）。祝日に出勤した職員は、同じ週に休・振休等がなければ他の平日に1日「空欄の公休」を残して5日出勤とし、別週に「振休」が入っている場合はその振休を該当週の休み1日分として扱います（同週に他の休み希望があれば週4日以下の出勤で可）。
-         - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）は管理者・個人・OPE班入力用のためAI配置対象外です（新規出力禁止・既存変更禁止）。
+         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜日以外は透析を実施するため、各施設の必要人数（exactTargetCountsByDay）を満たすよう出勤シフトを割り当ててください。
+         - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）はAI配置対象外です（新規出力禁止・既存変更禁止）。
          - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
-      3. 今週の週休確保（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
-         - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak"（今週初日の直前までの連勤数）と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" を必ず守ってください（0の場合は今週初日 ${firstDay}日 を必ず空欄休みにすること）。
-         - AIが休ませる日（週休枠の公休・振替休にあたる日）には休みコードを入れず、必ず「空欄のまま（"shift" に出力しない）」にしてください。
-         - 各職員の "thisWeekPlan" にある:
-           ・mustKeepBlankDaysMinInThisWeek（assignableDaysInThisWeek のうち必ず空欄のまま残すべき最低日数）
-           ・recommendedNewWorkDaysInThisWeek（今週AIが新規に割り当てる出勤日数の目安）
-           を厳守し、特定の日に休みが偏りすぎて必要人数が欠けないよう曜日を分散して休ませてください。
-         - ★契約出勤日数（"contractWorkDays"）が設定されている職員（パート含む）は、その契約出勤日数（月間または週単位）を【絶対厳守】してください。契約日数を1日でも超過したり不足したりしないよう、"recommendedNewWorkDaysInThisWeek" と "mustKeepBlankDaysMinInThisWeek" を最優先で守ってください。
-      4. 3クール上限・下限と連続3クール禁止（★絶対厳守★）:
-         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は "cumulativeStatsSoFar.remainingCool3"（上限までの残り可能回数）を超えないこと（0回の職員には3クールを入れない）。
-         - 3クール下限（"minCool3" > 0）が設定されており "cumulativeStatsSoFar.remainingMinCool3Needed"（下限達成に必要な残り回数）が1回以上ある職員には、月間で下限回数以上に到達できるよう優先して3クールを割り当ててください。
-         - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
-      5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
-         - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
-         - まず各施設に該当スキル保持者（リーダー等）が最低人数以上入るように優先配置してください。
-         - どうしても出勤可能な保持者が足りない日は、希望休・既存シフト・配置不可制限・最大${maxStreak}連勤上限を破らず、「1施設に2名以上偏らせず1名ずつ分散配置」し、0名の施設にはベテラン（skills.isVeteran: true）や高powerScoreスタッフを配置してカバーしてください。
-      6. パワーバランスと必要人数・不足時の優先順位（パート・手動調整前提）・負担平準化:
-         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して、可能な範囲で満たしてください。
-         - 【重要：完璧に埋めきらなくてよいルール】AI対象スタッフだけで必要人数を100%埋めようとして、誰かの週休確保（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ることは絶対禁止です。足りない枠は後からパート職員やAI除外スタッフ・管理者の手動調整で補う前提のため、出勤可能人数が足りない日は無理をせず不足のまま残してください。
-         - 出勤可能なAI対象スタッフ数がその日の必要人数合計に届かない場合は、①各施設の必須スキル（リーダー等）と、②3クール・2クール等の主力枠を優先して割り当て、パートや手動調整で補いやすい枠（日勤・半日・サブ枠など）の方を未達として残してください。
-         - 各施設の合計powerScore基準: 【${powerScoreSummaryText}】（ME室は対象外）。
-         - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、前週までに負担が多い職員に3クールや残業が偏らないよう平準化してください。
-      7. 日ごとの勤務地ローテーション・ランダム分散・施設偏りの防止（★重要★）:
-         - 機械的な固まり配置の禁止: 同じ日に名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めて並べたり、特定の職員を1週間ずっと同じ施設に張り付ける組み方はやめてください。各日の検討順（"targetWeek.dailyShuffledStaffOrder"）を活用し、人ごと・日ごとに自然なランダム性を持たせてください。
-         - 日替わり勤務地ローテーション: 複数の施設に配置可能な職員（"thisWeekPlan.rotationGuide" がある職員）は、可能な限り前営業日と同じ施設（週初日は "enteringLastFacility"）が連続しないよう、**日ごとに別の勤務地・別のクール区分へバラけてローテーション**させてください（"rotationGuide.dailyFacilityPreferenceHint" の日別推奨施設順を積極的に参考にしてください）。
-         - 月間の施設偏り平準化: "cumulativeStatsSoFar.facilityCountsSoFar" と "rotationGuide.underusedFacilitiesFirst" を確認し、これまでに入った回数が少ない施設へ優先配置して個人ごとの勤務地バランスを整えてください。
-         - ※ただし、配置制限（allowedWorkShifts）・[絶対]カスタム条件（曜日や施設の固定指定など）・必須スキル最低人数・必要人数の充足・連勤上限・週休確保が最優先です。それらを厳守した範囲で最大限バラけさせてください。
+      3. 今週の公休バランス計画と最大${maxStreak}連勤制限・必要人数のしっかりした充足（★重要★）:
+         - 日別の出勤人数が偏らないよう、"thisWeekPlan.plannedBlankOffDaysInThisWeek"（公休候補日）と "thisWeekPlan.plannedWorkDaysInThisWeek"（出勤予定日）を事前バランス配分しています。
+         - 原則として **plannedWorkDaysInThisWeek の日は漏れなく出勤シフトを割り当て**、**plannedBlankOffDaysInThisWeek は空欄（公休）のまま残してください**。ただし、特定シフトの必要人数や必須スキルが欠ける場合は、その職員の週休最低日数（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・パート週契約上限（contractWorkDaysMax）を絶対に破らない範囲で、同週内の出勤日と公休日を入れ替えて必要人数を満たす工夫をして構いません。
+         - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。
+      4. 3クールの人員＆リーダー最優先確保と連続3クール禁止・柔軟なペース配分（★最優先・絶対厳守★）:
+         - 【3クール人員の絶対確保】3クールシフト（${cool3DescStr}）の必要人数が設定されている日は、日勤や2クール枠より**最優先で3クールの必要人数を100%満たしてください**（万一人数が足りない日でも、不足は日勤側に残し3クールは絶対に欠員させないこと）。
+         - 【3クール内リーダー必須】3クールがある施設では、施設全体ではなく**「その3クール枠の中に」必ずリーダー保持者（skills.isLeader: true）を1名以上配置**してください（夜間帯のリーダー不在を防ぐため）。
+         - 3クールシフトは原則として月間残り上限（"thisWeekPlan.maxAllowedNewCool3InThisWeek"）以内で、"thisWeekPlan.recommendedNewCool3InThisWeek" を目安に特定の人に固定せず柔軟に配分してください。また、同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です（"forbidCool3OnFirstDayOfWeek": true の職員には今週初日 ${firstDay}日 に3クールを入れないこと）。
+      5. 施設ごとのリーダー・必須スキル確保とパワーバランス・必要人数の充足:
+         - 2クールまでの施設については、**木クリに必ずリーダー保持者（skills.isLeader: true）を1名以上配置**してください（じんクリはリーダー必須ではありません）。その他の必須スキル設定【${skillReqSummaryText}】も満たすよう優先配置してください。
+         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay" と "currentDailySummary" を参照し、出勤予定スタッフ全員を使って**空欄の取りこぼしなくバランスよく埋めてください**。
+         - 出勤予定人数が必要人数合計を上回る日（dailyHeadcountBalancePlan[d].surplus > 0）は、3クール枠を必要人数以上にオーバーさせず、余剰分は各施設の日勤・2クール枠へ偏りなく分散して配置してください。
+         - 各施設のパワーバランス平準化: 【${powerScoreSummaryText}】。その日に出勤するスタッフの1人あたり平均powerScoreが施設間で極端に偏らないよう、高スコア者と中堅・若手を施設間でバランスよく分散配置してください。
+      6. 日ごとの勤務地・シフト種別ローテーションと偏り防止（★最重要★）:
+         - 機械的な固まり配置の禁止: 名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めたり、特定の職員を1週間ずっと同じ施設や同じ勤務区分（日勤ばかり・2クールばかり等）に張り付ける組み方は絶対にやめてください。
+         - 名簿下位の木クリ固まり防止＆日替わりローテーション: 上段のスタッフだけで坂田・君津を先に埋め切って下段のスタッフを毎日「木クリ」ばかりに押し込む組み方は厳禁です。各職員の "thisWeekPlan.rotationGuide.recommendedFacilityByDay" は、全施設の必要人数枠と整合するよう下位スタッフも含め全員分を日替わり・均等配分済みですので、原則この日別推奨施設をベースに **全職員が坂田・君津・木クリ、および2クール⇔日勤⇔3クールへ自然にバラけてローテーション** するよう配置してください。
+         - 月間の施設＆シフト種別バランス: 前週までの実績である "cumulativeStatsSoFar.facilityCountsSoFar"（施設別回数）と "cumulativeStatsSoFar.shiftSlotCountsSoFar"（クール区分別回数）を確認し、**これまでに入った回数が少ない施設・少ないクール区分へ優先配置**して、1ヶ月を通した個人の偏りを解消してください。
 
       【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表の表示名・区分からコードへ変換して適用すること）】
       ${strictConditions ? strictConditions : '特になし'}
@@ -6408,11 +8554,16 @@ ${dailyCheckExampleLines}
       ${JSON.stringify(weeklyPayload)}
       `;
 
-        let weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
-        if (!isRunActive()) {
-          clearInterval(progressInterval);
-          clearInterval(timerInterval);
-          return;
+        let weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
+        if (!isRunActive()) break;
+
+        // Carbon等の選択モデルがCloud Functionsのタイムアウト(internal)や未デプロイで失敗した場合は、自動的に安定版Argonへ切り替えて救済リトライ
+        if (typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') && activeExecutionModel !== 'gemini-4-argon') {
+          console.warn(`モデル ${activeExecutionModel} で呼び出しエラーが発生したため、gemini-4-argon へ自動フォールバックして再実行します:`, weekRaw);
+          activeExecutionModel = 'gemini-4-argon';
+          updateStepItem(weekStepId, { status: 'active', detail: 'Argonへ切り替えて再実行中...' });
+          weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) break;
         }
 
         let weekPass = computeAiAppliedSchedule(
@@ -6425,24 +8576,13 @@ ${dailyCheckExampleLines}
           allowedWeekDaysSet
         );
 
-        // APIキー未設定等の即時エラーでまだ1件も作成していない場合はその場で中断して案内
-        if (!weekPass.parsedOk && typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') && totalUpdatedCells === 0) {
-          stopAllIntervalsAndRollback();
-          alert(`AI結果の適用に失敗しました。\n理由: ${weekPass.message || weekRaw}`);
-          return;
-        }
-
-        // 一時的なJSON崩れやタイムアウト時は該当週のみ1回リトライ
-        if (!weekPass.parsedOk && !(typeof weekRaw === 'string' && weekRaw.startsWith('⚠️ APIキー'))) {
+        if (!weekPass.parsedOk && !(typeof weekRaw === 'string' && weekRaw.startsWith('⚠️'))) {
           console.warn(`第${targetWeek.weekIndex}週の初回応答解析に失敗したため1回リトライします:`, weekPass.message);
           updateStepItem(weekStepId, { status: 'active', detail: '応答を再取得中 (1/1)...' });
-          setAiLoadingSubDetail(`第${targetWeek.weekIndex}週のデータを再調整しています（1/1回）`);
-          weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
-          if (!isRunActive()) {
-            clearInterval(progressInterval);
-            clearInterval(timerInterval);
-            return;
-          }
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          if (!isRunActive()) break;
+          weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) break;
           weekPass = computeAiAppliedSchedule(
             weekRaw,
             workingShifts,
@@ -6454,33 +8594,40 @@ ${dailyCheckExampleLines}
           );
         }
 
+        if (!isRunActive()) break;
+
         const weekDurationMs = Math.max(500, Date.now() - weekStartedMs);
         const weekDurationSec = Math.max(1, Math.round(weekDurationMs / 1000));
+        const completedCount = wIdx + 1;
         autoFillTimingRef.current = {
           ...autoFillTimingRef.current,
-          completedBuildWeeks: wIdx + 1,
+          completedBuildWeeks: completedCount,
           completedBuildMs: autoFillTimingRef.current.completedBuildMs + weekDurationMs,
           currentStepStartMs: Date.now(),
         };
         setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+        setAiProgress(prev => Math.max(prev, Math.min(80, Math.round(10 + (completedCount / weeksToBuild.length) * 70))));
 
         if (weekPass.parsedOk) {
-          workingShifts = weekPass.nextShifts;
-          workingTasks = weekPass.nextTasks;
-          workingUserInputs = weekPass.nextUserInputs;
-          totalUpdatedCells += weekPass.count;
+          const weekEnforced = enforcePersonalRulesAndCool3Bounds(
+            weekPass.nextShifts,
+            originalShifts,
+            allowedWeekDaysSet
+          );
+          workingShifts = weekEnforced.nextShifts;
+          totalUpdatedCells += weekPass.count + weekEnforced.changedCount;
 
-          // 案Cハイブリッド: 完了した週から背景の勤務表へリアルタイム仮反映（※保存は全工程完了時のみ）
           setShiftData(workingShifts);
-          setTaskData(workingTasks);
-          setLastLiveFilledWeekLabel(`第${targetWeek.weekIndex}週（${targetWeek.label}）まで背景の勤務表に仮反映済み`);
-
+          setLastLiveFilledWeekLabel(
+            `第${targetWeek.weekIndex}週（${targetWeek.label}）を仮反映済み（${completedCount}/${weeksToBuild.length}週完了）`
+          );
           updateStepItem(weekStepId, {
             status: 'done',
             detail: weekPass.count > 0 ? `+${weekPass.count}枠配置（${weekDurationSec}秒）` : `変更なし（${weekDurationSec}秒）`,
           });
         } else {
-          weekErrors.push(`第${targetWeek.weekIndex}週(${targetWeek.label}): ${weekPass.message || '応答エラー'}`);
+          const rawErrText = typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') ? weekRaw : weekPass.message;
+          weekErrors.push(`第${targetWeek.weekIndex}週(${targetWeek.label}): ${rawErrText || '応答エラー'}`);
           updateStepItem(weekStepId, {
             status: 'done',
             detail: '後の全体検算で補完',
@@ -6514,6 +8661,17 @@ ${dailyCheckExampleLines}
       );
       setAiLoadingSubDetail('最大連勤・週休ペース・3クール連続禁止・各施設リーダー配置・必要人数を検証しています');
       updateStepItem('validate', { status: 'active', detail: '検算中...' });
+
+      const monthEnforced1 = enforcePersonalRulesAndCool3Bounds(
+        workingShifts,
+        originalShifts,
+        targetScopeDaysSet
+      );
+      workingShifts = monthEnforced1.nextShifts;
+      totalUpdatedCells += monthEnforced1.changedCount;
+      if (monthEnforced1.changedCount > 0) {
+        setShiftData(workingShifts);
+      }
 
       const pass1Report = evaluateScheduleValidation({
         year,
@@ -6607,7 +8765,7 @@ ${dailyCheckExampleLines}
           【手直し時の厳守ルール】
           1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室（${meShiftDescStr}）・その他（出勤・公出等）・日曜日は絶対に変更・新規出力しないでください（※公出は公休扱いのため連勤・出勤日数・出勤人数にはカウントしません）。
           2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、その日に週休・連勤上限を守ったまま追加出勤できる余力スタッフが他にいる場合のみ振り替えてください（余力スタッフがいなければパート・手動調整で補うため未達のまま空けておくこと）。
-          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、週休・連勤上限を守ったまま出勤日数に余力のある未ロック空欄スタッフがいる場合のみ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。誰かの週休（空欄公休）を潰したり${maxStreak + 1}連勤以上を作ってまで人数不足を埋めることは絶対禁止です。
+          3. 3クール人員・3クール内リーダー・木クリリーダー・人数不足の直し方: 3クール枠の必要人数と「各3クール枠内のリーダー1名以上」、および「木クリのリーダー1名以上」を最優先で確保してください（じんクリはリーダー不要）。3クール内にリーダーがいない場合や木クリにリーダーがいない場合は、同日の日勤・2クールや他施設の余剰リーダーとシフトを入れ替えて確実に解消してください。誰かの週休（空欄公休）を潰したり${maxStreak + 1}連勤以上を作ったりすることは絶対禁止です。
           4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、週休が消えたり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
           5. 勤務地の偏り・連日同一施設への配慮: 空欄への追加配置やシフト入れ替えを行う際は、複数施設に入れる職員（allowedFacilitiesCount >= 2）について前後の営業日と別の施設・これまでに回数が少ない施設（currentStats.priorityFacilitiesToBalance）を優先して選び、同じ施設ばかり連続しないよう配慮してください。
           ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件（※文中のシフト名・施設名は上の対応表からコードへ変換して適用）】\n${strictConditions}\n` : ''}
@@ -6626,7 +8784,7 @@ ${dailyCheckExampleLines}
           }
           `;
 
-          const result2 = await callGemini(repairPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          const result2 = await callGemini(repairPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
           if (!isRunActive()) {
             clearInterval(progressInterval);
             clearInterval(timerInterval);
@@ -6644,6 +8802,12 @@ ${dailyCheckExampleLines}
           );
 
           if (pass2.success) {
+            const monthEnforced2 = enforcePersonalRulesAndCool3Bounds(
+              pass2.nextShifts,
+              originalShifts,
+              targetScopeDaysSet
+            );
+            const candidateShifts2 = monthEnforced2.nextShifts;
             const pass2Report = evaluateScheduleValidation({
               year,
               month,
@@ -6654,7 +8818,7 @@ ${dailyCheckExampleLines}
               adminSettings,
               userInputs,
               prevMonthCarryOver,
-              shiftsMap: pass2.nextShifts,
+              shiftsMap: candidateShifts2,
               lockedBaselineShifts: originalShifts,
               includeEmptyDays: true,
               scopeDaysSet: targetScopeDaysSet,
@@ -6666,11 +8830,11 @@ ${dailyCheckExampleLines}
               pass2Report.criticalScore <= pass1Report.criticalScore
             ) {
               repairedIssueCount = Math.max(0, pass1Report.totalActionableCount - pass2Report.totalActionableCount);
-              finalShifts = pass2.nextShifts;
+              finalShifts = candidateShifts2;
               finalTasks = pass2.nextTasks;
               finalUserInputs = pass2.nextUserInputs;
               finalReport = pass2Report;
-              totalUpdatedCells += pass2.count;
+              totalUpdatedCells += pass2.count + monthEnforced2.changedCount;
             }
           }
         } catch (repairErr) {
@@ -6709,6 +8873,9 @@ ${dailyCheckExampleLines}
         userInputs: originalUserInputs,
         bells: bellData,
         leaders: leaderData,
+      }, {
+        label: 'AIシフト自動作成',
+        detail: `${year}年${month}月 一括作成`,
       });
       setShiftData(finalShifts);
       setTaskData(finalTasks);
@@ -6945,7 +9112,14 @@ ${dailyCheckExampleLines}
       prevCode: (item.kind === 'shift' ? shiftData[item.staffId]?.[item.day] : taskData[item.staffId]?.[item.day]) || null,
     }));
 
-    recordAdminUndoSnapshot();
+    const changePreview = targetMsg.proposedChanges
+      .slice(0, 3)
+      .map(it => `${staffList.find(s => s.id === it.staffId)?.name || '職員'}(${month}/${it.day})`)
+      .join('・');
+    recordAdminUndoSnapshot(null, {
+      label: `AIチャット提案を反映（${targetMsg.proposedChanges.length}件）`,
+      detail: changePreview + (targetMsg.proposedChanges.length > 3 ? ' ほか' : ''),
+    });
 
     targetMsg.proposedChanges.forEach(item => {
       if (item.kind === 'shift') {
@@ -7081,8 +9255,8 @@ ${dailyCheckExampleLines}
         ? powerTargetEntries
             .map(([catId, fp]) =>
               fp.targetPowerScore > 0
-                ? `${fp.facilityLabel}(${catId}) ${fp.targetPowerScore}点以上`
-                : `${fp.facilityLabel}(${catId}) スコア判定なし`
+                ? `${fp.facilityLabel}(${catId}): 当日出勤者の平均スコア×人数で施設間均等化`
+                : `${fp.facilityLabel}(${catId}): スコア判定なし`
             )
             .join(' ／ ')
         : '設定なし';
@@ -7135,7 +9309,7 @@ ${shiftSystemRefText}
 - 施設ごとの必須スキル配置（Step 4）と不足時の次善策:
   ・各施設の必須スキル最低人数（facilitySkillRequirements）: 【${skillReqSummaryText}】（dailySummary[d].facilitySkillCounts と shortages に現状が計算済みです）。
   ・希望休・年休・班管理者ロック・連勤上限を破ってまで無理やりリーダー等を出勤させてはいけません。出勤可能なリーダー等が足りない日は、1施設に2名固めず1名ずつ別施設へ分散配置し、どうしても0名になる施設にはベテラン（isVeteran）や高スコアスタッフを優先配置した上で、"reply" でもその旨を分かりやすく共有してください。
-- 施設別目標パワースコア: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores と不足一覧 shortages に計算済みです）。
+- 施設間パワーバランス（案A：当日出勤者の1人あたり平均powerScoreと人数比による動的目安）: 【${powerScoreSummaryText}】（dailySummary[d].facilityPowerScores の expectedBalancedScore / actualAvgPerPerson / dayOverallAvgPerPerson と shortages に計算済みです。特定の施設だけに高スコア者が偏らず、各施設の1人あたり平均スコアが均等になるよう調整してください）。
 - 必要人数と不足時の優先順位（パート・手動調整前提）: targetCounts（キーはシフトコード）を可能な範囲で満たすように調整しますが、AI対象スタッフだけで完璧に100%埋めきる必要はありません。足りない分はパート職員やAI除外スタッフ・管理者の手動調整で補う運用のため、個人の週休確保（空欄公休）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ってまで無理に埋めず、人数が足りない日はリーダー（必須スキル）や3クール・2クール等の主力枠を優先して確保し、日勤・半日等の補いやすい枠を未達として残してください。
 - ランダム分散・日ごとの勤務地ローテーション・施設偏りの平準化（重要）:
   ・仮組みや複数日のシフト提案を行う際は、名簿の上から機械的に「AAAA, FFFF」のように同じ施設・シフトを固めて並べないでください。
@@ -7340,12 +9514,14 @@ ${messageText}`;
   const staffOvertimeStats = useMemo(() => {
     const stats = {};
     staffList.forEach(staff => {
-      let total = 0;
+      let totalMinutes = 0;
       daysArray.forEach(day => {
         const code = shiftData[staff.id]?.[day];
-        if (code && shiftDefs[code]?.overtime) total += parseFloat(shiftDefs[code].overtime) || 0;
+        if (code && shiftDefs[code]?.overtime) {
+          totalMinutes += Math.round((parseFloat(shiftDefs[code].overtime) || 0) * 60);
+        }
       });
-      stats[staff.id] = total;
+      stats[staff.id] = Math.round((totalMinutes / 60) * 100) / 100;
     });
     return stats;
   }, [staffList, shiftData, shiftDefs, daysArray]);
@@ -7599,8 +9775,59 @@ ${messageText}`;
         const catActualHeadcount = actualHeadcountByCat[cat.id] || 0;
         if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
 
+        const catShiftDefsForDay = catShiftCodes.map(c => shiftDefs[c]).filter(Boolean);
+        const catHasCool3 = catShiftDefsForDay.some(sd => isCool3ShiftDef(sd, categoryDefs));
+        const activeCool3ForDay = catShiftDefsForDay.filter(
+          sd =>
+            isCool3ShiftDef(sd, categoryDefs) &&
+            ((targetCounts[sd.code]?.[dow] || 0) > 0 || staffList.some(s => shiftData[s.id]?.[day] === sd.code))
+        );
+
         const catShortages = [];
         STAFF_SKILLS.forEach(sk => {
+          if (sk.key === 'isLeader') {
+            if (activeCool3ForDay.length > 0) {
+              activeCool3ForDay.forEach(c3Def => {
+                const c3LeaderCnt = staffList.filter(
+                  s => shiftData[s.id]?.[day] === c3Def.code && s.skills?.isLeader
+                ).length;
+                if (c3LeaderCnt < 1) {
+                  const item = {
+                    catId: cat.id,
+                    catLabel: `${cat.label}(${c3Def.label})`,
+                    skillKey: 'isLeader',
+                    skillLabel: '3クール内リーダー',
+                    actual: c3LeaderCnt,
+                    target: 1,
+                  };
+                  catShortages.push(item);
+                  allShortages.push(item);
+                }
+              });
+              return;
+            }
+            if (!catHasCool3 && !isKikuriFacilityCategory(cat)) return;
+            const reqLeader = isKikuriFacilityCategory(cat)
+              ? Math.max(1, readSkillMin(cat.id, 'isLeader'))
+              : readSkillMin(cat.id, 'isLeader');
+            if (reqLeader > 0) {
+              const actualL = skillCountsByCat[cat.id]?.isLeader || 0;
+              if (actualL < reqLeader) {
+                const item = {
+                  catId: cat.id,
+                  catLabel: cat.label,
+                  skillKey: 'isLeader',
+                  skillLabel: sk.label,
+                  actual: actualL,
+                  target: reqLeader,
+                };
+                catShortages.push(item);
+                allShortages.push(item);
+              }
+            }
+            return;
+          }
+
           const reqMin = readSkillMin(cat.id, sk.key);
           if (reqMin > 0) {
             const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
@@ -7731,25 +9958,8 @@ ${messageText}`;
   }, [daysArray, shiftData, taskData, staffList, shiftDefs, categoryDefs, roleTaskDefs, year, month]);
 
   const countedOffShifts = useMemo(() => {
-    const rawList = Array.isArray(adminSettings.countedOffShifts) ? adminSettings.countedOffShifts : ['HOPE'];
-    const isUntouchedDefault = rawList.length === 1 && rawList[0] === 'HOPE';
-    if (isUntouchedDefault) {
-      const autoCodes = Object.values(shiftDefs)
-        .filter(
-          s =>
-            s &&
-            getEffectiveShiftType(s, categoryDefs) === 'shift' &&
-            (isTrueOffShiftDef(s, categoryDefs) || isKoushutsuShiftDef(s, categoryDefs))
-        )
-        .map(s => s.code);
-      if (autoCodes.length > 0) return autoCodes;
-    }
-    const existingMatched = rawList.filter(
-      c => Boolean(shiftDefs[c]) && !isWorkRequestShiftDef(shiftDefs[c], categoryDefs)
-    );
-    if (existingMatched.length > 0) return existingMatched;
-    return rawList.filter(c => !shiftDefs[c] || !isWorkRequestShiftDef(shiftDefs[c], categoryDefs));
-  }, [adminSettings.countedOffShifts, shiftDefs, categoryDefs]);
+    return resolveEffectiveCountedOffShifts(adminSettings, shiftDefs, categoryDefs);
+  }, [resolveEffectiveCountedOffShifts, adminSettings, shiftDefs, categoryDefs]);
 
   const clinicClosedDays = useMemo(() => {
     return Array.isArray(adminSettings.clinicClosedDays) ? adminSettings.clinicClosedDays : [];
@@ -7975,6 +10185,8 @@ ${messageText}`;
       }
       let cnt = 0;
       displayStaffList.forEach(s => {
+        // 役職が「顧問」の職員は未割当カウント対象外
+        if (s.jobTitle === '顧問') return;
         const sCode = shiftData[s.id]?.[day];
         const sDef = sCode ? shiftDefs[sCode] : null;
         const rawReq = userInputs?.[s.id]?.[day];
@@ -8097,7 +10309,19 @@ ${messageText}`;
     if (w > 0 && h > 0) {
       setPrintMeasuredSize(prev => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
     }
-  }, [showPrintModal, printTeamFilter, printShowJobTitle, printStaffList, year, month, daysInMonth]);
+  }, [
+    showPrintModal,
+    printTeamFilter,
+    printShowJobTitle,
+    printShowMarks,
+    printOrientation,
+    adminCountDisplayMode,
+    adminRightFlatShifts.length,
+    printStaffList,
+    year,
+    month,
+    daysInMonth,
+  ]);
 
   const handleOpenPrintModal = () => {
     setActivePopup(null);
@@ -8107,6 +10331,236 @@ ${messageText}`;
         : currentView || 'all';
     setPrintTeamFilter(initialTeam);
     setShowPrintModal(true);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (headerNoticeTimerRef.current) clearTimeout(headerNoticeTimerRef.current);
+      if (excelCopyDoneTimerRef.current) clearTimeout(excelCopyDoneTimerRef.current);
+    };
+  }, []);
+
+  const showHeaderNotice = (message) => {
+    setHeaderNotice(message);
+    if (headerNoticeTimerRef.current) clearTimeout(headerNoticeTimerRef.current);
+    headerNoticeTimerRef.current = setTimeout(() => {
+      setHeaderNotice(null);
+    }, 3200);
+  };
+
+  const showHeaderTooltip = (e, label) => {
+    if (!label || !e?.currentTarget) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rawCenterX = rect.left + rect.width / 2;
+    const clampedX = typeof window !== 'undefined'
+      ? Math.min(Math.max(rawCenterX, 90), window.innerWidth - 90)
+      : rawCenterX;
+    setHeaderTooltip({
+      label,
+      x: clampedX,
+      y: rect.bottom + 8,
+    });
+  };
+
+  const hideHeaderTooltip = () => {
+    setHeaderTooltip(null);
+  };
+
+  const handleExportExcel = () => {
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (displayStaffList.length === 0) {
+      showHeaderNotice('出力対象の職員が表示されていません。');
+      return;
+    }
+    try {
+      const xlsxBytes = buildShiftExcelXlsxBytes({
+        year,
+        month,
+        daysArray,
+        staffList: displayStaffList,
+        shiftData,
+        shiftDefs,
+        isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+        getDayOfWeek,
+        // Excel側にコード39(Z1)はないため曜日問わず10(Z)へ変換して出力
+        transformCode: (c) => (c === '39' ? '10' : c),
+        sheetName: 'in',
+      });
+      const blob = new Blob([xlsxBytes], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const activeTeam = TEAMS.find((t) => t.id === currentView);
+      const teamSuffix = activeTeam && activeTeam.id !== 'all' ? `_${activeTeam.label}` : '';
+      a.href = url;
+      a.download = `シフト表_${year}年${String(month).padStart(2, '0')}月${teamSuffix}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showHeaderNotice(`Excel出力完了（${displayStaffList.length}名分・inシート形式）`);
+    } catch (err) {
+      console.error('Excel export error:', err);
+      showHeaderNotice('Excel出力に失敗しました。');
+    }
+  };
+
+  const handleCopyShiftCodesForExcel = async () => {
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (displayStaffList.length === 0) {
+      showHeaderNotice('コピー対象の職員が表示されていません。');
+      return;
+    }
+    const tsv = buildShiftCodeTsv({
+      staffList: displayStaffList,
+      daysArray,
+      shiftData,
+      shiftDefs,
+      isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+      // Excel側にコード39(Z1)はないため曜日問わず10(Z)へ変換してコピー
+      transformCode: (c) => (c === '39' ? '10' : c),
+    });
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(tsv);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = tsv;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (err) {
+        console.error('Clipboard fallback copy error:', err);
+      }
+    }
+    if (copied) {
+      setExcelCopyDone(true);
+      if (excelCopyDoneTimerRef.current) clearTimeout(excelCopyDoneTimerRef.current);
+      excelCopyDoneTimerRef.current = setTimeout(() => setExcelCopyDone(false), 2200);
+      showHeaderNotice(`1日〜${daysArray.length}日のコードをコピーしました（${displayStaffList.length}名分・Excelのinタブに貼付可）`);
+    } else {
+      showHeaderNotice('クリップボードへのコピーに失敗しました。');
+    }
+  };
+
+  const handleToggleExcelMenu = (e) => {
+    e.stopPropagation();
+    hideHeaderTooltip();
+    setActivePopup(null);
+    if (excelMenuAnchor) {
+      setExcelMenuAnchor(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuWidth = 236;
+    const left = typeof window !== 'undefined'
+      ? Math.min(Math.max(rect.left, 8), window.innerWidth - menuWidth - 8)
+      : rect.left;
+    setExcelMenuAnchor({
+      left,
+      top: rect.bottom + 6,
+    });
+  };
+
+  const handleTriggerExcelImport = () => {
+    hideHeaderTooltip();
+    setExcelMenuAnchor(null);
+    setActivePopup(null);
+    if (excelFileInputRef.current) {
+      excelFileInputRef.current.value = '';
+      excelFileInputRef.current.click();
+    }
+  };
+
+  const handleExcelFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const parsed = parseShiftExcelArrayBuffer({
+        arrayBuffer,
+        fileName: file.name,
+        year,
+        month,
+        staffList: displayStaffList,
+        daysArray,
+        shiftDefs,
+        isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+        isUpperShift: (def) => getEffectiveShiftType(def, categoryDefs) === 'shift',
+        getDayOfWeek,
+        // Excel取り込み時、火・木・土のコード10(Z)は半日扱いのコード39(Z1)へ自動変換
+        transformImportedCode: (c, { dow }) => {
+          if (c === '10' && (dow === 2 || dow === 4 || dow === 6) && shiftDefs['39']) {
+            return '39';
+          }
+          return c;
+        },
+      });
+      setExcelImportMode('overwrite_all');
+      setExcelImportPreview(parsed);
+    } catch (err) {
+      console.error('Excel import parse error:', err);
+      showHeaderNotice(err?.message || 'Excelファイルの読み込みに失敗しました。');
+    } finally {
+      if (excelFileInputRef.current) {
+        excelFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const excelImportPlan = useMemo(() => {
+    if (!excelImportPreview) return null;
+    return computeExcelImportPlan({
+      parsedResult: excelImportPreview,
+      currentShiftData: shiftData,
+      mode: excelImportMode,
+    });
+  }, [excelImportPreview, shiftData, excelImportMode]);
+
+  const handleConfirmExcelImport = async () => {
+    if (!excelImportPreview || !excelImportPlan || isImportingExcel) return;
+    setIsImportingExcel(true);
+    try {
+      const modeLabel = excelImportMode === 'overwrite_all' ? 'すべて上書き' : '空欄のみ反映';
+      recordAdminUndoSnapshot(null, {
+        label: 'Excel読込',
+        detail: `${excelImportPreview.fileName}（${modeLabel}・${excelImportPlan.totalChanges}セル）`,
+      });
+      setShiftData(excelImportPlan.nextShifts);
+      // 上段シフトのみ更新し、下段タスク・希望履歴・理由・ベル・リーダー等はそのまま保持
+      await saveSchedule(
+        excelImportPlan.nextShifts,
+        taskData,
+        userInputs,
+        bellData,
+        leaderData,
+        changeRequests
+      );
+      showHeaderNotice(
+        `Excel読込完了（${excelImportPlan.affectedStaffCount}名・${excelImportPlan.totalChanges}セル反映）`
+      );
+      setExcelImportPreview(null);
+    } catch (err) {
+      console.error('Excel import apply error:', err);
+      showHeaderNotice('Excel読み込みの保存に失敗しました。');
+    } finally {
+      setIsImportingExcel(false);
+    }
   };
 
   // --- 管理者編集の戻る・進む（Undo / Redo） ---
@@ -8128,22 +10582,82 @@ ${messageText}`;
     };
   }, [shiftData, taskData, userInputs, bellData, leaderData]);
 
+  const commitUndoHistory = (nextHistory) => {
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+    const key = activeUndoHistoryKeyRef.current;
+    if (key) {
+      saveUndoHistory(key, nextHistory);
+    }
+  };
+
   useEffect(() => {
+    let cancelled = false;
     const emptyHistory = { past: [], future: [] };
     undoHistoryRef.current = emptyHistory;
     setUndoHistory(emptyHistory);
+    setShowUndoHistoryModal(false);
+
+    if (appUser?.role !== 'admin') {
+      activeUndoHistoryKeyRef.current = null;
+      return undefined;
+    }
+
+    const historyKey = buildUndoHistoryKey({
+      appId,
+      year,
+      month,
+      adminScope: appUser.initialView || 'all',
+    });
+    activeUndoHistoryKeyRef.current = historyKey;
+
+    loadUndoHistory(historyKey).then((loaded) => {
+      if (cancelled || activeUndoHistoryKeyRef.current !== historyKey) return;
+      undoHistoryRef.current = loaded;
+      setUndoHistory(loaded);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [year, month, appUser?.role, appUser?.initialView]);
 
-  const recordAdminUndoSnapshot = (customSnapshot = null) => {
+  const handleClearCurrentMonthHistory = async () => {
+    if (!appUser || appUser.role !== 'admin') return;
+    const total = (undoHistoryRef.current.past?.length || 0) + (undoHistoryRef.current.future?.length || 0);
+    if (total === 0) return;
+    const ok = window.confirm(
+      `${year}年${month}月の変更履歴（${total}件）をすべて消去しますか？\n※現在の勤務表データ自体は変更されません。`
+    );
+    if (!ok) return;
+    const emptyHistory = { past: [], future: [] };
+    undoHistoryRef.current = emptyHistory;
+    setUndoHistory(emptyHistory);
+    const key = activeUndoHistoryKeyRef.current;
+    if (key) {
+      await deleteUndoHistory(key);
+    }
+    showHeaderNotice(`${year}年${month}月の変更履歴をクリアしました`);
+  };
+
+  const recordAdminUndoSnapshot = (customSnapshot = null, actionMeta = null) => {
     if (!appUser || appUser.role !== 'admin') return;
     const baseSnap = cloneScheduleSnapshot(customSnapshot || scheduleSnapshotRef.current);
-    const nextPast = [...undoHistoryRef.current.past, baseSnap].slice(-50);
+    const now = new Date();
+    const timeStr = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const meta = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      label: actionMeta?.label || 'シフト編集',
+      detail: actionMeta?.detail || '',
+      timeStr,
+    };
+    const nextPast = [...undoHistoryRef.current.past, { snapshot: baseSnap, actionMeta: meta }].slice(-50);
     const nextHistory = { past: nextPast, future: [] };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
   };
 
   const applyScheduleSnapshotForHistory = (snapshot) => {
+    if (!snapshot) return;
     const restored = cloneScheduleSnapshot(snapshot);
     scheduleSnapshotRef.current = restored;
     setActivePopup(null);
@@ -8162,14 +10676,14 @@ ${messageText}`;
     const { past, future } = undoHistoryRef.current;
     if (past.length === 0) return;
 
-    const targetSnapshot = past[past.length - 1];
+    const lastEntry = past[past.length - 1];
+    const targetSnapshot = lastEntry.snapshot || lastEntry;
     const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
     const nextHistory = {
       past: past.slice(0, -1),
-      future: [currentSnapshot, ...future].slice(0, 50),
+      future: [{ snapshot: currentSnapshot, actionMeta: lastEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }, ...future].slice(0, 50),
     };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(targetSnapshot);
   };
 
@@ -8180,15 +10694,49 @@ ${messageText}`;
     const { past, future } = undoHistoryRef.current;
     if (future.length === 0) return;
 
-    const targetSnapshot = future[0];
+    const nextEntry = future[0];
+    const targetSnapshot = nextEntry.snapshot || nextEntry;
     const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
     const nextHistory = {
-      past: [...past, currentSnapshot].slice(-50),
+      past: [...past, { snapshot: currentSnapshot, actionMeta: nextEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }].slice(-50),
       future: future.slice(1),
     };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(targetSnapshot);
+  };
+
+  const handleJumpToHistoryStep = (targetStep) => {
+    if (!appUser || appUser.role !== 'admin') return;
+    if (isAutoFillRunningRef.current) return;
+    if (loadedScheduleIdRef.current !== `schedule_${year}_${month}`) return;
+    const { past, future } = undoHistoryRef.current;
+    const currentStep = past.length;
+    const totalActions = past.length + future.length;
+    if (targetStep === currentStep || targetStep < 0 || targetStep > totalActions) return;
+    const currentSnapshot = cloneScheduleSnapshot(scheduleSnapshotRef.current);
+    const allActions = [
+      ...past.map(p => p.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+      ...future.map(f => f.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+    ];
+    const allStates = [
+      ...past.map(p => p.snapshot || p),
+      currentSnapshot,
+      ...future.map(f => f.snapshot || f),
+    ];
+    const nextPast = Array.from({ length: targetStep }, (_, i) => ({
+      snapshot: allStates[i],
+      actionMeta: allActions[i],
+    }));
+    const nextFuture = Array.from({ length: totalActions - targetStep }, (_, idx) => {
+      const i = targetStep + idx;
+      return {
+        snapshot: allStates[i + 1],
+        actionMeta: allActions[i],
+      };
+    });
+    const nextHistory = { past: nextPast, future: nextFuture };
+    commitUndoHistory(nextHistory);
+    applyScheduleSnapshotForHistory(allStates[targetStep]);
   };
 
   const undoRedoActionsRef = useRef({ undo: () => {}, redo: () => {} });
@@ -8317,6 +10865,7 @@ ${messageText}`;
 
   const renderPrintScheduleSheet = () => {
     const printTeamObj = TEAMS.find(t => t.id === printTeamFilter);
+    const showPrintPersonalSummary = printOrientation === 'landscape' && adminRightFlatShifts.length > 0;
     return (
       <div className="bg-white text-gray-900 pb-1.5 pr-1">
         <div className="flex items-end justify-between gap-4 mb-1.5 px-0.5">
@@ -8325,15 +10874,24 @@ ${messageText}`;
               {year}年{month}月 勤務表{printTeamObj?.role ? `（${printTeamObj.label}）` : ''}
             </h2>
             <span className="text-[10px] text-gray-600 font-medium">対象 {printStaffList.length}名</span>
+            {showPrintPersonalSummary && (
+              <span className="text-[9px] text-indigo-700 font-bold bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                個人集計（{adminCountDisplayMode === 'slot' ? 'シフト表示別' : '施設別'}）付き
+              </span>
+            )}
           </div>
           <div className="text-[9px] text-gray-500 whitespace-nowrap">
             背景色：リーダー（施設色）・ME室(灰)・HHD(黄)・緊急待機番(橙)
+            {printShowMarks ? ' ／ マーク：個人希望(桃)・班固定(緑)' : ''}
           </div>
         </div>
         <table className="border-collapse border border-gray-400 bg-white text-gray-800">
           <thead>
             <tr>
-              <th className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap">
+              <th
+                rowSpan={showPrintPersonalSummary ? 2 : 1}
+                className="min-w-[96px] px-1.5 py-1 text-left border border-gray-400 bg-gray-100 text-[10px] font-bold whitespace-nowrap"
+              >
                 氏名
               </th>
               {daysArray.map(day => {
@@ -8349,6 +10907,7 @@ ${messageText}`;
                 return (
                   <th
                     key={day}
+                    rowSpan={showPrintPersonalSummary ? 2 : 1}
                     className={`w-[32px] min-w-[32px] px-0.5 py-0.5 text-center border border-gray-400 ${thColor}`}
                   >
                     <div className="text-[10px] font-bold leading-tight">{day}</div>
@@ -8358,13 +10917,53 @@ ${messageText}`;
                   </th>
                 );
               })}
+              {showPrintPersonalSummary && (
+                <>
+                  <th
+                    rowSpan={2}
+                    className="w-[10px] min-w-[10px] bg-gray-100 border border-gray-400 p-0"
+                    aria-hidden="true"
+                  />
+                  {adminRightCountGroups.map(grp => (
+                    <th
+                      key={grp.id}
+                      colSpan={grp.shifts.length}
+                      className={`px-1 py-0.5 text-center border border-gray-400 text-[9px] font-bold whitespace-nowrap ${grp.headerColor}`}
+                    >
+                      {grp.label}
+                    </th>
+                  ))}
+                </>
+              )}
             </tr>
+            {showPrintPersonalSummary && (
+              <tr>
+                {adminRightFlatShifts.map(item => (
+                  <th
+                    key={`${item.groupId}_${item.shift.code}`}
+                    className="w-[24px] min-w-[24px] px-0.5 py-0.5 text-center border border-gray-400 bg-gray-50 text-[9px] font-bold whitespace-nowrap"
+                  >
+                    <span className={item.shift.text || 'text-gray-700'}>{item.shift.label}</span>
+                  </th>
+                ))}
+              </tr>
+            )}
           </thead>
           <tbody>
             {printStaffList.map(staff => (
               <tr key={staff.id}>
                 <td className="px-1.5 py-0.5 border border-gray-400 bg-white text-left whitespace-nowrap">
-                  <div className="text-[11px] font-bold leading-tight text-gray-900">{staff.name}</div>
+                  <div className="text-[11px] font-bold leading-tight text-gray-900 flex items-center gap-1">
+                    <span>{staff.name}</span>
+                    {printShowMarks && (
+                      <span className="inline-flex items-center gap-0.5">
+                        {staff.skills?.isLeader && <ShieldCheck size={9} className="text-blue-500" />}
+                        {staff.skills?.isVeteran && <Star size={9} className="text-yellow-500" />}
+                        {getStaffRestrictionSummaryText(staff) && <ListFilter size={9} className="text-amber-500" />}
+                        {staff.excludeFromAi && <Lock size={9} className="text-red-500" />}
+                      </span>
+                    )}
+                  </div>
                   {printShowJobTitle && staff.jobTitle && (
                     <div className="text-[8px] leading-tight text-gray-500">{staff.jobTitle}</div>
                   )}
@@ -8377,6 +10976,13 @@ ${messageText}`;
                   const shift = shiftDefs[shiftCode];
                   const task = shiftDefs[taskCode];
                   const isSun = isSunday(year, month, day);
+                  const reqShiftCode = printShowMarks ? getUserRequestedShift(staff.id, day) : null;
+                  const reqShift = reqShiftCode ? shiftDefs[reqShiftCode] : null;
+                  const reqReason = printShowMarks ? getUserRequestedReason(staff.id, day) : null;
+                  const reqTaskCode = printShowMarks ? getUserRequestedTask(staff.id, day) : null;
+                  const reqTask = reqTaskCode ? shiftDefs[reqTaskCode] : null;
+                  const teamShiftLock = printShowMarks ? getTeamLockedShiftSource(staff.id, day) : null;
+                  const teamTaskLock = printShowMarks ? getTeamLockedTaskSource(staff.id, day) : null;
                   const shiftBg = autoShiftHighlight
                     ? autoShiftHighlight.bgClass
                     : isSun
@@ -8386,12 +10992,38 @@ ${messageText}`;
                   return (
                     <td key={day} className="p-0 border border-gray-400 text-center align-middle">
                       <div className="flex flex-col w-full">
-                        <div className={`h-[17px] flex items-center justify-center border-b border-gray-200 ${shiftBg}`}>
+                        <div className={`relative h-[17px] flex items-center justify-center border-b border-gray-200 ${shiftBg}`}>
+                          {printShowMarks && teamShiftLock && (
+                            <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500" />
+                          )}
+                          {printShowMarks && reqShiftCode && (
+                            shiftCode !== reqShiftCode ? (
+                              <span className="absolute top-0 right-0 px-0.5 rounded-bl text-[6.5px] leading-tight bg-pink-100 text-pink-700 border-l border-b border-pink-200 font-bold max-w-[20px] truncate">
+                                {reqShift?.label || reqShiftCode}
+                              </span>
+                            ) : reqReason ? (
+                              <span className="absolute top-0 right-0 w-0 h-0 border-t-[6px] border-t-pink-500 border-l-[6px] border-l-transparent" />
+                            ) : (
+                              <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-pink-500" />
+                            )
+                          )}
                           {shift ? (
                             <span className={`font-bold text-[10px] leading-none ${shift.text}`}>{shift.label}</span>
                           ) : null}
                         </div>
-                        <div className={`h-[16px] flex items-center justify-center ${taskBg}`}>
+                        <div className={`relative h-[16px] flex items-center justify-center ${taskBg}`}>
+                          {printShowMarks && teamTaskLock && (
+                            <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-500" />
+                          )}
+                          {printShowMarks && reqTaskCode && (
+                            taskCode !== reqTaskCode && !task ? (
+                              <span className="px-0.5 rounded text-[6.5px] leading-none bg-pink-100 text-pink-700 border border-pink-200 font-bold max-w-[28px] truncate">
+                                {reqTask?.label || reqTaskCode}
+                              </span>
+                            ) : (
+                              <span className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full ${taskCode !== reqTaskCode ? 'bg-pink-600' : 'bg-pink-400'}`} />
+                            )
+                          )}
                           {task ? (
                             <span className={`font-bold text-[9px] leading-none ${task.text || 'text-gray-700'}`}>
                               {task.label}
@@ -8402,6 +11034,46 @@ ${messageText}`;
                     </td>
                   );
                 })}
+                {showPrintPersonalSummary && (
+                  <>
+                    <td className="w-[10px] min-w-[10px] bg-gray-100 border border-gray-400 p-0" aria-hidden="true" />
+                    {adminRightFlatShifts.map(item => {
+                      const cnt = staffShiftCodeCounts[staff.id]?.[item.shift.code] || 0;
+                      if (item.shift.isCool3Total) {
+                        const minC3 = Number(staff.minCool3 ?? 0);
+                        const maxC3 = Number(staff.maxCool3 ?? 5);
+                        const isOverC3 = cnt > maxC3;
+                        const isUnderC3 = minC3 > 0 && cnt < minC3;
+                        return (
+                          <td
+                            key={`${item.groupId}_${item.shift.code}`}
+                            className={`w-[24px] min-w-[24px] px-0.5 py-0.5 border border-gray-400 text-center text-[10px] font-extrabold ${
+                              isOverC3
+                                ? 'bg-red-100 text-red-700'
+                                : isUnderC3
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-purple-50 text-purple-900'
+                            }`}
+                          >
+                            {cnt > 0 ? cnt : <span className="text-gray-400 font-normal">0</span>}
+                          </td>
+                        );
+                      }
+                      return (
+                        <td
+                          key={`${item.groupId}_${item.shift.code}`}
+                          className="w-[24px] min-w-[24px] px-0.5 py-0.5 border border-gray-400 text-center text-[10px] font-bold bg-white"
+                        >
+                          {cnt > 0 ? (
+                            <span className={item.shift.text || 'text-gray-800'}>{cnt}</span>
+                          ) : (
+                            <span className="text-gray-300 font-normal">-</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </>
+                )}
               </tr>
             ))}
           </tbody>
@@ -8420,6 +11092,7 @@ ${messageText}`;
             return;
           }
           setActivePopup(null);
+          setExcelMenuAnchor(null);
         }}
       >
         <header className="bg-white border-b border-gray-200 p-2 sm:px-4 sm:py-3 shadow-sm flex items-center justify-between sticky top-0 z-[60] gap-2 overflow-x-auto no-scrollbar">
@@ -8446,53 +11119,103 @@ ${messageText}`;
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0 justify-end ml-auto">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end ml-auto">
            {appUser.role === 'admin' && (
              <div className="flex items-center bg-gray-50 rounded-lg p-0.5 border border-gray-300 shadow-sm shrink-0">
                <button
                  type="button"
-                 onClick={handleUndoSchedule}
+                 onClick={() => { hideHeaderTooltip(); handleUndoSchedule(); }}
                  disabled={undoHistory.past.length === 0}
+                 onMouseEnter={(e) => showHeaderTooltip(e, undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="戻る"
                  className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                 title={undoHistory.past.length > 0 ? `編集を1つ戻る（残り${undoHistory.past.length}件・Ctrl+Z）` : '戻せる編集がありません'}
                >
                  <ChevronLeft size={16} />
-                 <span className="hidden xl:inline">戻る</span>
+                 <span>戻る</span>
                </button>
                <div className="w-px h-4 bg-gray-300" />
                <button
                  type="button"
-                 onClick={handleRedoSchedule}
-                 disabled={undoHistory.future.length === 0}
-                 className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
-                 title={undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません'}
+                 onClick={() => { hideHeaderTooltip(); setShowUndoHistoryModal(true); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, '作業の履歴を確認・状態移行')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, '作業の履歴を確認・状態移行')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="履歴"
+                 className="flex items-center gap-1 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 transition font-bold text-xs"
                >
-                 <span className="hidden xl:inline">進む</span>
+                 <Clock size={14} className="text-indigo-600 shrink-0" />
+                 <span>履歴</span>
+                 {(undoHistory.past.length + undoHistory.future.length) > 0 && (
+                   <span className="px-1 py-0.2 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-extrabold leading-none">
+                     {undoHistory.past.length}/{undoHistory.past.length + undoHistory.future.length}
+                   </span>
+                 )}
+               </button>
+               <div className="w-px h-4 bg-gray-300" />
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleRedoSchedule(); }}
+                 disabled={undoHistory.future.length === 0}
+                 onMouseEnter={(e) => showHeaderTooltip(e, undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, undoHistory.future.length > 0 ? `編集を1つ進む（残り${undoHistory.future.length}件・Ctrl+Y）` : '進める編集がありません')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="進む"
+                 className="flex items-center gap-0.5 px-1.5 py-1 sm:py-1.5 rounded text-gray-700 hover:bg-gray-200 disabled:opacity-35 disabled:hover:bg-transparent transition font-bold text-xs"
+               >
+                 <span>進む</span>
                  <ChevronRight size={16} />
                </button>
              </div>
            )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <>
-               <button onClick={handleOpenAutoFill} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0" title="AI自動作成" disabled={isAiLoading}>
-                 {isAiLoading ? <Loader2 className="animate-spin" size={16}/> : <Sparkles size={16} className="sm:w-4 sm:h-4"/>} <span className="hidden md:inline text-sm">AI作成</span>
-               </button>
-               <button onClick={() => { setShowAiModal(true); }} className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0" title="AIチャット">
-                 <Bot size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">AIチャット</span>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenAutoFill(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'AI自動作成')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'AI自動作成')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="AI自動作成"
+                 className="flex items-center justify-center w-9 h-9 bg-gradient-to-r from-yellow-50 to-orange-50 hover:from-yellow-100 hover:to-orange-100 text-orange-700 rounded transition font-bold border border-orange-200 shadow-sm shrink-0"
+                 disabled={isAiLoading}
+               >
+                 {isAiLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
                </button>
                <button
-                 onClick={handleOpenValidationModal}
-                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); setShowAiModal(true); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'AIチャット')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'AIチャット')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="AIチャット"
+                 className="flex items-center justify-center w-9 h-9 bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-indigo-700 rounded transition font-bold border border-indigo-200 shadow-sm shrink-0"
+               >
+                 <Bot size={17} />
+               </button>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenValidationModal(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'シフト検算チェック（連勤・3クール・必要人数・必須スキル）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'シフト検算チェック（連勤・3クール・必要人数・必須スキル）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="シフト検算チェック"
+                 className={`relative flex items-center justify-center h-9 px-2.5 gap-1 rounded transition font-bold border shadow-sm shrink-0 ${
                    liveValidationReport.hardStaffViolationCount > 0
                      ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300'
                      : liveValidationReport.filledOperatingDaysCount > 0 && liveValidationReport.totalActionableCount === 0
                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
                        : 'bg-teal-50 hover:bg-teal-100 text-teal-800 border-teal-200'
                  }`}
-                 title="シフト検算チェック（連勤・3クール・必要人数・必須スキルを一括確認）"
                >
-                 <ShieldCheck size={16} className="sm:w-4 sm:h-4" />
-                 <span className="hidden md:inline text-sm">検算チェック</span>
+                 <ShieldCheck size={17} />
                  {liveValidationReport.hardStaffViolationCount > 0 ? (
                    <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] leading-tight">
                      {liveValidationReport.hardStaffViolationCount}
@@ -8507,72 +11230,159 @@ ${messageText}`;
                </button>
              </>
            )}
-           <button
-             type="button"
-             onClick={handleOpenPrintModal}
-             className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
-             title="全体表を印刷（A4・B4・A3サイズ調整対応）"
-           >
-             <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
-           </button>
+           {appUser.role === 'admin' ? (
+             <>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleOpenPrintModal(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, '全体表を印刷（A4・B4・A3）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, '全体表を印刷（A4・B4・A3）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="全体表を印刷"
+                 className="flex items-center justify-center w-9 h-9 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+               >
+                 <Printer size={17} />
+               </button>
+               <button
+                 type="button"
+                 onClick={handleToggleExcelMenu}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel出力 / 貼り付け用コピー')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel出力 / 貼り付け用コピー')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="Excel出力 / 貼り付け用コピー"
+                 aria-expanded={Boolean(excelMenuAnchor)}
+                 className={`flex items-center justify-center w-9 h-9 rounded transition font-bold border shadow-sm shrink-0 ${
+                   excelCopyDone
+                     ? 'bg-emerald-600 text-white border-emerald-600'
+                     : excelMenuAnchor
+                       ? 'bg-emerald-100 text-emerald-800 border-emerald-400 ring-2 ring-emerald-200'
+                       : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300'
+                 }`}
+               >
+                 {excelCopyDone ? <Check size={17} /> : <FileSpreadsheet size={17} />}
+               </button>
+               <button
+                 type="button"
+                 onClick={handleTriggerExcelImport}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'Excel読込（inシート .xls / .xlsx）')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'Excel読込（inシート .xls / .xlsx）')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="Excel読込"
+                 className="flex items-center justify-center w-9 h-9 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded transition font-bold border border-sky-300 shadow-sm shrink-0"
+               >
+                 <FileUp size={17} />
+               </button>
+               <input
+                 ref={excelFileInputRef}
+                 type="file"
+                 accept=".xls,.xlsx"
+                 onChange={handleExcelFileSelected}
+                 className="hidden"
+               />
+             </>
+           ) : (
+             <button
+               type="button"
+               onClick={handleOpenPrintModal}
+               className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 bg-slate-50 hover:bg-slate-200 text-slate-700 rounded transition font-bold border border-slate-300 shadow-sm shrink-0"
+               title="全体表を印刷（A4・B4・A3サイズ調整対応）"
+             >
+               <Printer size={16} className="sm:w-4 sm:h-4" /> <span className="hidden md:inline text-sm">印刷</span>
+             </button>
+           )}
            {appUser.role === 'admin' && isMasterAdmin && (
-             <button onClick={() => setShowAdminChangeRequestsModal(true)}
-                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded transition font-bold border shadow-sm shrink-0 ${
-                  pendingChangeRequests.length > 0
-                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                }`}
-                title="締切後の勤務変更申請の確認と承認"
-              >
-                <RefreshCw size={16} className="sm:w-4 sm:h-4" />
-                <span className="hidden md:inline text-sm">変更申請</span>
-                {pendingChangeRequests.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
-                    {pendingChangeRequests.length}
-                  </span>
-                )}
-              </button>
+             <button
+               type="button"
+               onClick={() => { hideHeaderTooltip(); setShowAdminChangeRequestsModal(true); }}
+               onMouseEnter={(e) => showHeaderTooltip(e, '締切後の勤務変更申請の確認・承認')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, '締切後の勤務変更申請の確認・承認')}
+               onBlur={hideHeaderTooltip}
+               aria-label="変更申請"
+               className={`flex items-center justify-center h-9 px-2.5 gap-1 rounded transition font-bold border shadow-sm shrink-0 ${
+                 pendingChangeRequests.length > 0
+                   ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'
+                   : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+               }`}
+             >
+               <RefreshCw size={17} />
+               {pendingChangeRequests.length > 0 && (
+                 <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] leading-tight">
+                   {pendingChangeRequests.length}
+                 </span>
+               )}
+             </button>
            )}
            {appUser.role === 'admin' && (
              <button
                type="button"
-               onClick={handleResetSchedule}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
-               title={isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`}
+               onClick={() => { hideHeaderTooltip(); handleResetSchedule(); }}
+               onMouseEnter={(e) => showHeaderTooltip(e, isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`)}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, isMasterAdmin ? 'AIが作成したシフトのみ全消去' : `${getLoggedInAdminDisplayLabel()}が編集したシフトのみ全消去`)}
+               onBlur={hideHeaderTooltip}
+               aria-label="全消去"
+               className="flex items-center justify-center w-9 h-9 bg-red-50 hover:bg-red-100 text-red-600 rounded transition font-bold border border-red-200 shadow-sm shrink-0"
              >
-               <Trash2 size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">全消去</span>
+               <Trash2 size={17} />
              </button>
            )}
            {appUser.role === 'admin' && isMasterAdmin && (
              <button
+               type="button"
                onClick={() => {
+                 hideHeaderTooltip();
                  setEditingShift(null);
                  handleAddNewShift();
                  setShowSettingsModal(true);
                }}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-               title="設定"
+               onMouseEnter={(e) => showHeaderTooltip(e, '設定')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, '設定')}
+               onBlur={hideHeaderTooltip}
+               aria-label="設定"
+               className="flex items-center justify-center w-9 h-9 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
              >
-               <Settings size={16} className="sm:w-4 sm:h-4"/> <span className="hidden md:inline text-sm">設定</span>
+               <Settings size={17} />
              </button>
            )}
            {appUser.role === 'admin' && !isMasterAdmin && (
              <button
+               type="button"
                onClick={() => {
+                 hideHeaderTooltip();
                  setTargetAdminKey(appUser.initialView);
                  setNewPassword('');
                  setShowPasswordChangeModal(true);
                }}
-               className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
-               title="パスワード変更"
+               onMouseEnter={(e) => showHeaderTooltip(e, 'パスワード変更')}
+               onMouseLeave={hideHeaderTooltip}
+               onFocus={(e) => showHeaderTooltip(e, 'パスワード変更')}
+               onBlur={hideHeaderTooltip}
+               aria-label="パスワード変更"
+               className="flex items-center justify-center w-9 h-9 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded transition font-bold border border-gray-300 shadow-sm shrink-0"
              >
-               <Key size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">パスワード</span>
+               <Key size={17} />
              </button>
            )}
            {appUser.role === 'admin' && (
              <>
-               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
-               <button onClick={handleLogout} className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded shrink-0" title="ログアウト"><LogOut size={16} className="sm:w-4 sm:h-4"/> <span className="hidden sm:inline text-sm">ログアウト</span></button>
+               <div className="hidden sm:block h-6 w-px bg-gray-300 mx-0.5"></div>
+               <button
+                 type="button"
+                 onClick={() => { hideHeaderTooltip(); handleLogout(); }}
+                 onMouseEnter={(e) => showHeaderTooltip(e, 'ログアウト')}
+                 onMouseLeave={hideHeaderTooltip}
+                 onFocus={(e) => showHeaderTooltip(e, 'ログアウト')}
+                 onBlur={hideHeaderTooltip}
+                 aria-label="ログアウト"
+                 className="flex items-center justify-center w-9 h-9 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded transition shrink-0"
+               >
+                 <LogOut size={17} />
+               </button>
              </>
            )}
            {appUser.role === 'staff' && (
@@ -8899,10 +11709,12 @@ ${messageText}`;
                         isTaskEditable,
                       };
 
+                      // 役職が「顧問」の職員は未割当・空欄には表示しない（施設シフトや休み・公出が入った日のみ通常表示）
+                      const isAdvisorStaff = staff.jobTitle === '顧問';
                       if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
-                        unassignedWorkReqStaff.push(item);
+                        if (!isAdvisorStaff) unassignedWorkReqStaff.push(item);
                       } else if (!sDef && reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs)) {
-                        unassignedWorkReqStaff.push(item);
+                        if (!isAdvisorStaff) unassignedWorkReqStaff.push(item);
                       } else if (
                         sDef &&
                         getEffectiveShiftType(sDef, categoryDefs) === 'shift' &&
@@ -8911,19 +11723,46 @@ ${messageText}`;
                         byCategoryStaff[sDef.category]
                       ) {
                         byCategoryStaff[sDef.category].push(item);
-                        if (reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
+                        if (!isAdvisorStaff && reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
                           assignedFromWorkReqStaff.push(item);
                         }
                       } else if (sDef) {
                         offAndKoushutsuStaff.push(item);
                       } else {
-                        blankStaff.push(item);
+                        if (!isAdvisorStaff) blankStaff.push(item);
                       }
                     });
 
                     const facilityAndMeGroups = dynamicSummaryGroups.filter(
                       g => g.kind === 'facility' || g.kind === 'me'
                     );
+                    const facilityCatsForDayBalance = facilityAndMeGroups
+                      .filter(g => g.kind === 'facility')
+                      .map(g => categoryDefs[g.id])
+                      .filter(Boolean);
+                    const actualHcByCatForDay = {};
+                    const powerScoreByCatForDay = {};
+                    facilityCatsForDayBalance.forEach(cat => {
+                      const items = byCategoryStaff[cat.id] || [];
+                      actualHcByCatForDay[cat.id] = items.length;
+                      powerScoreByCatForDay[cat.id] = items.reduce((sum, it) => sum + getStaffPowerScore(it.staff), 0);
+                    });
+                    const activePoolForDayAvg = staffList.filter(s => !s.excludeFromAi);
+                    const avgPoolForDay = activePoolForDayAvg.length > 0 ? activePoolForDayAvg : staffList;
+                    const fallbackAvgForDay =
+                      avgPoolForDay.length > 0
+                        ? avgPoolForDay.reduce((sum, s) => sum + getStaffPowerScore(s), 0) / avgPoolForDay.length
+                        : 10;
+                    const dayPowerBalance = evaluateDailyFacilityPowerBalance({
+                      facilityCats: facilityCatsForDayBalance,
+                      shiftDefs,
+                      categoryDefs,
+                      actualHeadcountByCat: actualHcByCatForDay,
+                      powerScoreByCat: powerScoreByCatForDay,
+                      readTargetCount: (code) => getTargetCount(code, d),
+                      adminSettings,
+                      fallbackStaffAvgScore: fallbackAvgForDay,
+                    });
 
                     const renderStaffActionChip = (item, showCategoryBadge = false) => {
                       const {
@@ -9351,10 +12190,7 @@ ${messageText}`;
                             const skillShortages = dailyFacilitySkillSummary[d]?.shortagesByCat?.[group.id] || [];
                             const skillCounts = dailyFacilitySkillSummary[d]?.skillCountsByCat?.[group.id] || {};
                             const actualPower = assignedItems.reduce((sum, it) => sum + getStaffPowerScore(it.staff), 0);
-                            const targetPower =
-                              group.kind === 'facility'
-                                ? getFacilityTargetPowerScore(categoryDefs[group.id], adminSettings)
-                                : 0;
+                            const pBal = group.kind === 'facility' ? dayPowerBalance.byCat[group.id] : null;
                             const facilityRoleItems =
                               group.kind === 'facility'
                                 ? (dailyFacilityTaskSummary[d]?.itemsByCat?.[group.id] || [])
@@ -9409,13 +12245,22 @@ ${messageText}`;
                                         );
                                       })}
                                       <span
+                                        title={
+                                          pBal?.isEnabled
+                                            ? `パワーバランス（当日平均 ${pBal.dayAvg}点/人 × ${pBal.actualHc > 0 ? pBal.actualHc : pBal.targetHc}名 ＝ 目安${pBal.expectedScore}点）| ${group.name}平均: ${pBal.actualAvg}点/人 (${pBal.diffFromDayAvg >= 0 ? `+${pBal.diffFromDayAvg}` : pBal.diffFromDayAvg})${pBal.isImbalancedLow ? ' ⚠他施設より平均スコアが低く偏っています' : pBal.isImbalancedHigh ? ' ※高スコア者が多く集まっています' : ' ✓バランス良好'}`
+                                            : `合計パワースコア: ${actualPower}点（スコアバランス判定対象外）`
+                                        }
                                         className={`px-1.5 py-0.5 rounded ${
-                                          targetPower > 0 && actualPower < targetPower && totalActual > 0
-                                            ? 'bg-red-100 text-red-700 border border-red-300'
-                                            : 'bg-white/80 text-gray-700'
+                                          !isSun && pBal?.isEnabled && pBal.isImbalancedLow
+                                            ? 'bg-amber-100 text-amber-900 border border-amber-400'
+                                            : !isSun && pBal?.isEnabled && pBal.isImbalancedHigh
+                                              ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                                              : 'bg-white/80 text-gray-700'
                                         }`}
                                       >
-                                        スコア: {actualPower}{targetPower > 0 ? `/${targetPower}` : ''}
+                                        {pBal?.isEnabled
+                                          ? `${!isSun && pBal.isImbalancedLow ? '⚠ ' : ''}スコア:${actualPower}${pBal.expectedScore > 0 ? `/目安${pBal.expectedScore}` : ''}${totalActual > 0 ? ` (平均${pBal.actualAvg})` : ''}`
+                                          : `スコア:${actualPower}${totalActual > 0 ? ` (平均${(actualPower / totalActual).toFixed(1)})` : ''}`}
                                       </span>
                                       <span className="px-1.5 py-0.5 rounded bg-white/80 text-blue-700">
                                         L:{skillCounts.isLeader || 0} V:{skillCounts.isVeteran || 0}
@@ -10742,7 +13587,12 @@ ${messageText}`;
                           onClick={() => {
                             if (!isMasterAdmin && teamClearPerm.allowed && !popupOptions.some(o => o.code === popupReqCode)) {
                               // 班管理者が自班の入力を取り消して元の個人希望に戻す場合
-                              recordAdminUndoSnapshot();
+                              const beforeLbl = popupCurrentCode ? (shiftDefs[popupCurrentCode]?.label || popupCurrentCode) : '空欄';
+                              const afterLbl = popupReqDef ? popupReqDef.label : popupReqCode;
+                              recordAdminUndoSnapshot(null, {
+                                label: `${popupStaff?.name || '職員'}（${month}/${activePopup.day}）希望に戻す`,
+                                detail: `${beforeLbl} → ${afterLbl}`,
+                              });
                               const nextShifts = { ...shiftData, [activePopup.staffId]: { ...(shiftData[activePopup.staffId] || {}), [activePopup.day]: popupReqCode } };
                               const entry = normalizeUserInputEntry(userInputs[activePopup.staffId]?.[activePopup.day], shiftData[activePopup.staffId]?.[activePopup.day], taskData[activePopup.staffId]?.[activePopup.day]);
                               delete entry.teamShiftBy;
@@ -10911,11 +13761,8 @@ ${messageText}`;
                         appUser.role === 'admin' &&
                         activePopup.type === 'shift' &&
                         Boolean(popupStaff) &&
-                        (
-                          (Array.isArray(popupStaff.excludedCategories) && popupStaff.excludedCategories.includes(shift.category)) ||
-                          (Array.isArray(popupStaff.excludedShifts) && popupStaff.excludedShifts.includes(shift.code)) ||
-                          (isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) && !isShiftAllowedForStaff(popupStaff, shift.code))
-                        );
+                        isAiAssignableFacilityShiftDef(shift.code, shiftDefs, categoryDefs) &&
+                        !isShiftAllowedForStaff(popupStaff, shift.code);
                       return (
                         <button
                           key={shift.code}
@@ -10967,6 +13814,192 @@ ${messageText}`;
           );
         })()}
 
+        {/* 作業履歴一覧・状態移行モーダル */}
+        {showUndoHistoryModal && appUser?.role === 'admin' && (() => {
+          const pastList = undoHistory.past || [];
+          const futureList = undoHistory.future || [];
+          const currentStep = pastList.length;
+          const allActions = [
+            ...pastList.map(p => p.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+            ...futureList.map(f => f.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' }),
+          ];
+          const totalSteps = allActions.length;
+          const stepRows = Array.from({ length: totalSteps + 1 }, (_, stepIdx) => {
+            if (stepIdx === 0) {
+              return {
+                stepIdx: 0,
+                label: '作業開始時の状態（初期状態）',
+                detail: `${year}年${month}月を開いた時点、または履歴リセット時点の状態`,
+                timeStr: '',
+                isInitial: true,
+              };
+            }
+            const meta = allActions[stepIdx - 1] || {};
+            return {
+              stepIdx,
+              label: meta.label || 'シフト編集',
+              detail: meta.detail || '',
+              timeStr: meta.timeStr || '',
+              isInitial: false,
+            };
+          }).reverse();
+
+          return (
+            <div className="absolute inset-0 bg-black/50 z-[115] flex items-center justify-center p-4" onClick={() => setShowUndoHistoryModal(false)}>
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[82vh] border border-gray-200" onClick={e => e.stopPropagation()}>
+                <div className="px-4 py-3 bg-gradient-to-r from-indigo-600 to-slate-800 text-white flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Clock size={18} className="text-indigo-200" />
+                    <div>
+                      <h3 className="text-sm font-bold leading-tight">変更履歴（{year}年{month}月）</h3>
+                      <p className="text-[11px] text-indigo-100">誰の何日を変更したかを確認し、クリックでその時点の状態に移行できます</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowUndoHistoryModal(false)}
+                    className="p-1 rounded-lg hover:bg-white/15 text-white transition"
+                    title="閉じる"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="px-4 py-2 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-xs text-gray-600 shrink-0">
+                  <span>
+                    記録件数: <strong className="text-gray-900">{totalSteps}</strong> 件（最大50件保持）
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleUndoSchedule}
+                      disabled={pastList.length === 0}
+                      className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 font-bold text-[11px] text-gray-700 flex items-center gap-0.5"
+                    >
+                      <ChevronLeft size={13} /> 1つ戻る
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRedoSchedule}
+                      disabled={futureList.length === 0}
+                      className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40 font-bold text-[11px] text-gray-700 flex items-center gap-0.5"
+                    >
+                      1つ進む <ChevronRight size={13} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 overflow-y-auto flex-1 space-y-1.5">
+                  {totalSteps === 0 ? (
+                    <div className="py-10 text-center text-gray-400 text-xs">
+                      まだこの画面での変更履歴はありません。<br />
+                      シフト・タスクの変更やAI作成を行うとここに履歴が記録されます。
+                    </div>
+                  ) : (
+                    stepRows.map(row => {
+                      const isCurrent = row.stepIdx === currentStep;
+                      const isFuture = row.stepIdx > currentStep;
+                      return (
+                        <div
+                          key={`hist_step_${row.stepIdx}`}
+                          onClick={() => {
+                            if (!isCurrent) {
+                              handleJumpToHistoryStep(row.stepIdx);
+                            }
+                          }}
+                          className={`p-2.5 rounded-lg border transition flex items-center justify-between gap-2 ${
+                            isCurrent
+                              ? 'bg-indigo-50/90 border-indigo-400 ring-1 ring-indigo-300'
+                              : isFuture
+                                ? 'bg-amber-50/40 border-gray-200 hover:border-amber-300 hover:bg-amber-50/80 cursor-pointer'
+                                : 'bg-white border-gray-200 hover:border-indigo-300 hover:bg-slate-50 cursor-pointer'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
+                                isCurrent
+                                  ? 'bg-indigo-600 text-white'
+                                  : row.isInitial
+                                    ? 'bg-gray-200 text-gray-700'
+                                    : isFuture
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                #{row.stepIdx}
+                              </span>
+                              <span className={`text-xs font-bold truncate ${isCurrent ? 'text-indigo-950' : 'text-gray-800'}`}>
+                                {row.label}
+                              </span>
+                              {row.timeStr && (
+                                <span className="text-[10px] text-gray-400 font-mono ml-auto">
+                                  {row.timeStr}
+                                </span>
+                              )}
+                            </div>
+                            {row.detail && (
+                              <div className="mt-1 text-[11px] text-gray-600 font-medium truncate">
+                                {row.detail}
+                              </div>
+                            )}
+                          </div>
+                          <div className="shrink-0">
+                            {isCurrent ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-indigo-600 text-white text-[10px] font-bold shadow-xs">
+                                <Check size={11} /> 現在の状態
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleJumpToHistoryStep(row.stepIdx);
+                                }}
+                                className={`px-2 py-1 rounded-md border text-[10px] font-bold transition ${
+                                  isFuture
+                                    ? 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'
+                                    : 'bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-100'
+                                }`}
+                              >
+                                {isFuture ? 'この状態に進む' : 'この状態に戻す'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                  <span className="text-[11px] text-gray-500 leading-snug">
+                    ※履歴はこのブラウザに月ごと保存されます（状態移行時はクラウドにも自動保存）
+                  </span>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      disabled={totalSteps === 0}
+                      onClick={handleClearCurrentMonthHistory}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 disabled:opacity-40 text-red-600 text-xs font-bold transition"
+                      title="この月の履歴のみブラウザから消去します（勤務表は変更されません）"
+                    >
+                      <Trash2 size={13} />
+                      <span>履歴をクリア</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowUndoHistoryModal(false)}
+                      className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-900 text-white text-xs font-bold transition"
+                    >
+                      閉じる
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* 統合設定モーダル */}
         {showSettingsModal && isMasterAdmin && (
           <div className="absolute inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={() => setShowSettingsModal(false)}>
@@ -11003,9 +14036,9 @@ ${messageText}`;
                             className="border p-2 rounded w-24 text-right" 
                             value={adminSettings.deadlineDay || ''} 
                             onChange={(e) => {
-                              const newSettings = { ...adminSettings, deadlineDay: e.target.value };
+                              const newSettings = { ...adminSettings, deadlineDay: e.target.value, deadline: '' };
                               setAdminSettings(newSettings);
-                              saveMasterData({ adminSettings: newSettings }); // ★修正
+                              saveMasterData({ adminSettings: newSettings });
                             }}
                           >
                             <option value="">未設定</option>
@@ -11576,23 +14609,31 @@ ${messageText}`;
                               <div className="p-2.5 rounded-lg bg-indigo-50/70 border border-indigo-200 text-[11px] text-indigo-900 leading-relaxed">
                                 <strong>💡 現在の設定をAIへ自動連携：</strong>コードと表示名が異なる設定（例：コード「1」・表示名「A」）でも、ここで設定した<strong>「カテゴリ」</strong>と<strong>「勤務・クール区分」</strong>をAI作成・AIチャット・検算が直接参照します。
                               </div>
-                              <div className="grid grid-cols-2 gap-4">
+                              <div className="grid grid-cols-2 gap-4 items-start">
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">コード（内部キー・英数字可）</label>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">コード</label>
                                   <input
                                     type="text"
-                                    className="w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
+                                    className={`w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed ${
+                                      editingShift.originalCode && (editingShift.code || '').trim() !== editingShift.originalCode
+                                        ? 'border-amber-400 bg-amber-50/50'
+                                        : ''
+                                    }`}
                                     value={editingShift.code || ''}
-                                    disabled={Boolean(editingShift.originalCode)}
+                                    disabled={isMigratingShiftCode}
                                     onChange={e => setEditingShift({ ...editingShift, code: e.target.value.trim() })}
                                     placeholder="例: 1, A, S1 など"
                                   />
-                                  {editingShift.originalCode && (
-                                    <p className="text-[10px] text-gray-400 mt-1">※作成後は過去データ保護のためコード変更不可（表示名は変更可能）</p>
-                                  )}
+                                  {editingShift.originalCode && (editingShift.code || '').trim() !== editingShift.originalCode ? (
+                                    <p className="text-[10px] text-amber-700 font-bold mt-1 leading-snug">
+                                      ※「{editingShift.originalCode}」→「{(editingShift.code || '').trim() || '(未入力)'}」へ変更します。保存時に全月のデータ・各種設定も自動で一括置換されます。
+                                    </p>
+                                  ) : editingShift.originalCode ? (
+                                    <p className="text-[10px] text-gray-400 mt-1">※変更して保存すると全月のデータ・関連設定も自動で一括置換されます</p>
+                                  ) : null}
                                 </div>
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">表示名（勤務表・チャット上の表記）</label>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">表示名</label>
                                   <input
                                     type="text"
                                     className="w-full border p-2 rounded text-sm"
@@ -11683,36 +14724,37 @@ ${messageText}`;
                                 </div>
                               )}
 
-                              <div className="grid grid-cols-2 gap-4">
+                              <div className="grid grid-cols-2 gap-4 items-start">
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">残業(h)</label>
-                                  <select
-                                    className="w-full border p-2 rounded text-sm bg-white"
-                                    value={editingShift.overtime === '' || editingShift.overtime === null || editingShift.overtime === undefined ? '' : String(Number(editingShift.overtime))}
-                                    onChange={e => setEditingShift({ ...editingShift, overtime: e.target.value === '' ? '' : Number(e.target.value) })}
-                                  >
-                                    <option value="">未設定</option>
-                                    {buildNumericOptions(OVERTIME_HOUR_OPTIONS, editingShift.overtime).map(h => (
-                                      <option key={h} value={String(h)}>{h}h</option>
-                                    ))}
-                                  </select>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">残業時間</label>
+                                  <WheelDurationInput
+                                    value={editingShift.overtime}
+                                    onChange={val => setEditingShift({ ...editingShift, overtime: val })}
+                                    label="残業時間"
+                                  />
                                 </div>
-                                <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
+                                <div><label className="block text-xs font-bold text-gray-500 mb-1">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
                               </div>
                               {editEffType === 'shift' && (
-                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
+                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2.5 rounded">
                                   <div>
                                     <label className="text-xs font-bold text-blue-700 block mb-1">開始</label>
-                                    <TimeSelectInput
+                                    <WheelTimeInput
                                       value={editingShift.startTime || ''}
                                       onChange={val => setEditingShift({ ...editingShift, startTime: val })}
+                                      label="開始時刻"
+                                      defaultHour={7}
+                                      defaultMinute={50}
                                     />
                                   </div>
                                   <div>
                                     <label className="text-xs font-bold text-blue-700 block mb-1">終了</label>
-                                    <TimeSelectInput
+                                    <WheelTimeInput
                                       value={editingShift.endTime || ''}
                                       onChange={val => setEditingShift({ ...editingShift, endTime: val })}
+                                      label="終了時刻"
+                                      defaultHour={18}
+                                      defaultMinute={0}
                                     />
                                   </div>
                                 </div>
@@ -11821,9 +14863,26 @@ ${messageText}`;
                                   <span className="text-sm font-bold text-gray-700">シフト希望に表示する</span>
                                 </label>
                               </div>
-                              <div className="flex justify-between pt-4 mt-4">
-                                {editingShift.originalCode && <button onClick={() => deleteShiftConfig(editingShift.originalCode)} className="text-red-500 text-sm hover:underline">削除</button>}
-                                <button onClick={saveShiftConfig} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 ml-auto">保存</button>
+                              <div className="flex justify-between items-center pt-4 mt-4">
+                                {editingShift.originalCode && (
+                                  <button
+                                    type="button"
+                                    disabled={isMigratingShiftCode}
+                                    onClick={() => deleteShiftConfig(editingShift.originalCode)}
+                                    className="text-red-500 text-sm hover:underline disabled:opacity-40"
+                                  >
+                                    削除
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={isMigratingShiftCode}
+                                  onClick={saveShiftConfig}
+                                  className="flex items-center gap-1.5 px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 disabled:opacity-50 ml-auto transition"
+                                >
+                                  {isMigratingShiftCode && <Loader2 size={15} className="animate-spin" />}
+                                  <span>{isMigratingShiftCode ? '一括置換中...' : '保存'}</span>
+                                </button>
                               </div>
                             </div>
                           );
@@ -11847,8 +14906,8 @@ ${messageText}`;
                               <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
                               <th className="p-2 border text-center w-14">編集</th>
                               <th className="p-2 border text-center w-16">AI除外</th>
-                              <th className="p-2 border text-center w-32">契約出勤日数</th>
                               <th className="p-2 border text-center w-28">3クール(下限〜上限)</th>
+                              <th className="p-2 border text-center w-32">契約出勤日数</th>
                               <th className="p-2 border text-left min-w-[210px]">AI配置可能施設 / 制限</th>
                               {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-16"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
                             </tr>
@@ -11877,6 +14936,49 @@ ${messageText}`;
                                   <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
                                   <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="詳細・個別シフト制限を編集"><Edit2 size={14}/></button></td>
                                   <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
+                                  <td className="p-2 border text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <select
+                                        title="3クール月間下限回数"
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.minCool3 ?? 0)}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            minCool3: val,
+                                            maxCool3: Math.max(val, staff.maxCool3 ?? 5),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.minCool3 ?? 0).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
+                                      <span className="text-gray-400 text-xs">〜</span>
+                                      <select
+                                        title="3クール月間上限回数"
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.maxCool3 ?? 5)}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            maxCool3: val,
+                                            minCool3: Math.min(staff.minCool3 ?? 0, val),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.maxCool3 ?? 5).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </td>
                                   <td className="p-2 border text-center bg-emerald-50/30">
                                     {staff.jobTitle === 'パート' ? (
                                       <div className="flex items-center justify-center gap-1">
@@ -11933,49 +15035,6 @@ ${messageText}`;
                                     ) : (
                                       <span className="text-gray-300 text-xs">-</span>
                                     )}
-                                  </td>
-                                  <td className="p-2 border text-center">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <select
-                                        title="3クール月間下限回数"
-                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
-                                        value={String(staff.minCool3 ?? 0)}
-                                        onChange={(e) => {
-                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                          const newList = [...staffList];
-                                          newList[index] = {
-                                            ...staff,
-                                            minCool3: val,
-                                            maxCool3: Math.max(val, staff.maxCool3 ?? 5),
-                                          };
-                                          setStaffList(newList);
-                                        }}
-                                      >
-                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.minCool3 ?? 0).map(n => (
-                                          <option key={n} value={String(n)}>{n}</option>
-                                        ))}
-                                      </select>
-                                      <span className="text-gray-400 text-xs">〜</span>
-                                      <select
-                                        title="3クール月間上限回数"
-                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
-                                        value={String(staff.maxCool3 ?? 5)}
-                                        onChange={(e) => {
-                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                          const newList = [...staffList];
-                                          newList[index] = {
-                                            ...staff,
-                                            maxCool3: val,
-                                            minCool3: Math.min(staff.minCool3 ?? 0, val),
-                                          };
-                                          setStaffList(newList);
-                                        }}
-                                      >
-                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.maxCool3 ?? 5).map(n => (
-                                          <option key={n} value={String(n)}>{n}</option>
-                                        ))}
-                                      </select>
-                                    </div>
                                   </td>
                                   <td className="p-2 border">
                                     <div className="flex flex-wrap items-center gap-1">
@@ -12344,7 +15403,7 @@ ${messageText}`;
               <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
 
-                {/* 作成範囲（月全体 / 週ごと・隔週選択） */}
+                {/* 作成範囲（月全体 / 週ごと選択） */}
                 <div className="mb-3 p-3 bg-white border border-orange-200 rounded-lg shadow-xs space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
                     <span className="text-xs font-bold text-gray-800">作成する範囲を選択</span>
@@ -12362,32 +15421,6 @@ ${messageText}`;
                         }`}
                       >
                         月全体（全週）
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAutoFillTargetMode('weeks');
-                          setSelectedAutoFillWeeks(
-                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 1).map(w => w.weekIndex)
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
-                        title="第1・第3・第5…週を選択"
-                      >
-                        奇数週（隔週）
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAutoFillTargetMode('weeks');
-                          setSelectedAutoFillWeeks(
-                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 0).map(w => w.weekIndex)
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
-                        title="第2・第4…週を選択"
-                      >
-                        偶数週（隔週）
                       </button>
                     </div>
                   </div>
@@ -13337,11 +16370,12 @@ ${messageText}`;
                                </label>
                                {group.kind === 'facility' && (
                                  <label className="inline-flex items-center gap-1 bg-white/85 text-gray-700 px-2 py-0.5 rounded border border-black/10">
-                                   <span className="text-[11px] font-bold">目標スコア:</span>
+                                   <span className="text-[11px] font-bold">パワーバランス:</span>
                                    <select
-                                     value={String(powerTargetVal)}
+                                     value={powerTargetVal > 0 ? 'auto' : '0'}
                                      onChange={(e) => {
-                                       const nextScore = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                       const isAuto = e.target.value === 'auto';
+                                       const nextScore = isAuto ? (DEFAULT_FACILITY_POWER_TARGETS[group.id] || 30) : 0;
                                        setAdminSettings(prev => ({
                                          ...prev,
                                          facilityPowerTargets: {
@@ -13350,14 +16384,12 @@ ${messageText}`;
                                          },
                                        }));
                                      }}
-                                     className="px-1.5 py-0.5 border border-gray-300 rounded text-center text-xs font-bold bg-white text-indigo-700 cursor-pointer"
-                                     title="AI作成・検算で目安にする施設の1日あたり合計パワースコア（0にするとスコア判定なし）"
+                                     className="px-1.5 py-0.5 border border-gray-300 rounded text-center text-[11px] font-bold bg-white text-indigo-700 cursor-pointer"
+                                     title="その日の出勤スタッフの平均スコア×人数比から動的に期待スコア・施設間バランスを判定します"
                                    >
-                                     {buildNumericOptions(FACILITY_POWER_TARGET_OPTIONS, powerTargetVal).map(sc => (
-                                       <option key={sc} value={String(sc)}>{sc}</option>
-                                     ))}
+                                     <option value="auto">自動均等化（当日平均×人数）</option>
+                                     <option value="0">判定なし（除外）</option>
                                    </select>
-                                   <span className="text-[10px] text-gray-500">点</span>
                                  </label>
                                )}
                              </div>
@@ -13656,7 +16688,7 @@ ${messageText}`;
                         <div className="text-lg font-extrabold">{liveValidationReport.dailySkillShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
                       </div>
                       <div className={`p-2.5 rounded-lg border text-center ${liveValidationReport.dailyPowerShortages.length > 0 ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
-                        <div className="text-[10px] font-bold opacity-80">目標スコア未満日</div>
+                        <div className="text-[10px] font-bold opacity-80">パワーバランス偏り日</div>
                         <div className="text-lg font-extrabold">{liveValidationReport.dailyPowerShortages.length}<span className="text-xs font-normal ml-0.5">日</span></div>
                       </div>
                     </div>
@@ -13798,11 +16830,11 @@ ${messageText}`;
                       </div>
                     )}
 
-                    {/* 4. 参考：目標パワースコア未達日（折りたたみ） */}
+                    {/* 4. 参考：施設間パワーバランス偏り日（折りたたみ） */}
                     {liveValidationReport.dailyPowerShortages.length > 0 && (
                       <details className="border border-gray-200 rounded-lg bg-gray-50/60 overflow-hidden text-xs">
                         <summary className="px-3 py-2 cursor-pointer font-bold text-gray-600 hover:bg-gray-100 select-none">
-                          参考：目標パワースコア目安を下回る日（{liveValidationReport.dailyPowerShortages.length}日・クリックで展開）
+                          参考：施設間のパワーバランス（1人あたり平均スコア）に偏りがある日（{liveValidationReport.dailyPowerShortages.length}日・クリックで展開）
                         </summary>
                         <div className="divide-y divide-gray-100 bg-white max-h-40 overflow-y-auto border-t">
                           {liveValidationReport.dailyPowerShortages.map(pItem => (
@@ -14911,6 +17943,16 @@ ${messageText}`;
                     )}
                   </div>
 
+                  <label className="inline-flex items-center gap-1 cursor-pointer text-gray-700 font-bold">
+                    <input
+                      type="checkbox"
+                      checked={printShowMarks}
+                      onChange={e => setPrintShowMarks(e.target.checked)}
+                      className="rounded text-blue-600"
+                    />
+                    マークを表示（希望・班固定・スキル）
+                  </label>
+
                   <label className="inline-flex items-center gap-1 cursor-pointer text-gray-700">
                     <input
                       type="checkbox"
@@ -14920,6 +17962,34 @@ ${messageText}`;
                     />
                     氏名の下に役職・雇用形態を表示
                   </label>
+
+                  {printOrientation === 'landscape' && (
+                    <div className="flex items-center gap-1.5 bg-indigo-50 px-2 py-1 rounded border border-indigo-200">
+                      <span className="font-bold text-indigo-800 text-[11px]">横印刷・個人集計:</span>
+                      <button
+                        type="button"
+                        onClick={() => setAdminCountDisplayMode('slot')}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                          adminCountDisplayMode === 'slot'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        シフト表示別
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAdminCountDisplayMode('facility')}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                          adminCountDisplayMode === 'facility'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        施設別
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* 用紙プレビュー領域 */}
@@ -14929,7 +17999,7 @@ ${messageText}`;
                       {printPaperMetrics.label} {printOrientation === 'landscape' ? '横' : '縦'}（{printPaperMetrics.widthMm}×{printPaperMetrics.heightMm}mm）
                     </span>
                     <span className="bg-white/90 px-2 py-0.5 rounded border border-gray-300">
-                      対象: 職員 {printStaffList.length}名分（集計行・残業列・希望マーク非表示）
+                      対象: 職員 {printStaffList.length}名分（マーク:{printShowMarks ? '表示' : '非表示'}{printOrientation === 'landscape' ? ` ／ 個人集計[${adminCountDisplayMode === 'slot' ? 'シフト表示別' : '施設別'}]を表示` : ''}）
                     </span>
                     {overflowsPaper && (
                       <span className="bg-rose-100 text-rose-700 border border-rose-300 px-2 py-0.5 rounded font-bold">
@@ -15053,6 +18123,249 @@ ${messageText}`;
           </div>
         </div>
       </>
+    )}
+    {excelMenuAnchor && (
+      <div
+        className="fixed z-[9998] print:hidden w-[236px] bg-white rounded-lg shadow-xl border border-gray-200 py-1.5"
+        style={{ left: `${excelMenuAnchor.left}px`, top: `${excelMenuAnchor.top}px` }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-3 py-1 text-[11px] font-bold text-gray-400 border-b border-gray-100">
+          Excel出力メニュー
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setExcelMenuAnchor(null);
+            handleExportExcel();
+          }}
+          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-emerald-50 transition"
+        >
+          <FileSpreadsheet size={16} className="text-emerald-600 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-gray-800">Excelファイル出力 (.xlsx)</div>
+            <div className="text-[11px] text-gray-500">inシート形式で表をダウンロード</div>
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setExcelMenuAnchor(null);
+            handleCopyShiftCodesForExcel();
+          }}
+          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-teal-50 transition border-t border-gray-100"
+        >
+          <ClipboardCopy size={16} className="text-teal-600 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-gray-800">Excel貼付用コピー</div>
+            <div className="text-[11px] text-gray-500">1日〜末日のコードのみコピー</div>
+          </div>
+        </button>
+      </div>
+    )}
+    {excelImportPreview && excelImportPlan && (
+      <div
+        className="fixed inset-0 z-[9990] print:hidden bg-black/50 flex items-center justify-center p-3 sm:p-4"
+        onClick={() => { if (!isImportingExcel) setExcelImportPreview(null); }}
+      >
+        <div
+          className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-xl max-h-[88vh] flex flex-col overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 py-3 border-b border-gray-200 bg-sky-50 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileUp size={18} className="text-sky-700 shrink-0" />
+              <div className="min-w-0">
+                <h3 className="font-bold text-sm sm:text-base text-gray-800 truncate">
+                  Excel読込プレビュー
+                </h3>
+                <p className="text-xs text-gray-600 truncate">
+                  {excelImportPreview.fileName} ／ シート「{excelImportPreview.sheetName}」
+                  {excelImportPreview.detectedYear && excelImportPreview.detectedMonth
+                    ? `（${excelImportPreview.detectedYear}年${excelImportPreview.detectedMonth}月）`
+                    : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { if (!isImportingExcel) setExcelImportPreview(null); }}
+              className="p-1.5 rounded hover:bg-sky-100 text-gray-500 transition"
+              aria-label="閉じる"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="p-4 overflow-y-auto space-y-4 text-xs sm:text-sm">
+            {excelImportPreview.detectedYear &&
+              excelImportPreview.detectedMonth &&
+              (excelImportPreview.detectedYear !== year || excelImportPreview.detectedMonth !== month) && (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    Excel内の年月（<strong>{excelImportPreview.detectedYear}年{excelImportPreview.detectedMonth}月</strong>）と、現在Webで表示中の月（<strong>{year}年{month}月</strong>）が異なります。意図した月かご確認ください。
+                  </div>
+                </div>
+              )}
+
+            <div className="space-y-2">
+              <div className="font-bold text-gray-700 text-xs">既存セル・空欄セルの反映方法</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition ${
+                    excelImportMode === 'overwrite_all'
+                      ? 'border-sky-500 bg-sky-50 ring-1 ring-sky-300'
+                      : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="excelImportMode"
+                    checked={excelImportMode === 'overwrite_all'}
+                    onChange={() => setExcelImportMode('overwrite_all')}
+                    className="mt-0.5 accent-sky-600"
+                  />
+                  <div>
+                    <div className="font-bold text-gray-800 text-xs">すべて上書き（空欄もクリア）</div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      Excelの内容で上段を上書きし、Excelが空欄の日もクリアします
+                    </div>
+                  </div>
+                </label>
+                <label
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition ${
+                    excelImportMode === 'fill_empty_only'
+                      ? 'border-sky-500 bg-sky-50 ring-1 ring-sky-300'
+                      : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="excelImportMode"
+                    checked={excelImportMode === 'fill_empty_only'}
+                    onChange={() => setExcelImportMode('fill_empty_only')}
+                    className="mt-0.5 accent-sky-600"
+                  />
+                  <div>
+                    <div className="font-bold text-gray-800 text-xs">空欄セルのみ反映</div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      Webで現在空欄の日のみ入力し、既存入力はそのまま残します
+                    </div>
+                  </div>
+                </label>
+              </div>
+              <p className="text-[11px] text-gray-500">
+                ※上段シフトのみ更新されます。下段タスクおよびスタッフ本人の希望履歴・理由は消さずに保持されます（反映後も「戻る・履歴」で元に戻せます）。
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-200 text-center">
+                <div className="text-[11px] text-gray-500">一致職員</div>
+                <div className="text-base font-extrabold text-gray-800">{excelImportPreview.matchedStaffRows.length}名</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+                <div className="text-[11px] text-emerald-700">新規入力</div>
+                <div className="text-base font-extrabold text-emerald-800">{excelImportPlan.fillCount}件</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-sky-50 border border-sky-200 text-center">
+                <div className="text-[11px] text-sky-700">上書き</div>
+                <div className="text-base font-extrabold text-sky-800">{excelImportPlan.overwriteCount}件</div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-center">
+                <div className="text-[11px] text-rose-700">空欄クリア</div>
+                <div className="text-base font-extrabold text-rose-800">{excelImportPlan.clearCount}件</div>
+              </div>
+            </div>
+
+            {excelImportPreview.transformedCount > 0 && (
+              <div className="text-xs text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+                火・木・土のコード「10」→「39」（{shiftDefs['39']?.label || 'Z1'}）へ自動変換：<strong>{excelImportPreview.transformedCount}件</strong>
+              </div>
+            )}
+
+            {excelImportMode === 'fill_empty_only' && excelImportPlan.skippedExistingCount > 0 && (
+              <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                既存入力があるためスキップされるセル：<strong>{excelImportPlan.skippedExistingCount}件</strong>
+              </div>
+            )}
+
+            {excelImportPreview.matchedStaffRows.length === 0 && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium">
+                現在表示中の職員と一致する氏名がシート「{excelImportPreview.sheetName}」内に見つかりませんでした。
+              </div>
+            )}
+
+            {excelImportPreview.unmatchedNames.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5">
+                <div className="font-bold text-amber-900 text-xs mb-1">
+                  Web側の表示職員と一致しなかった氏名（{excelImportPreview.unmatchedNames.length}名・スキップ）
+                </div>
+                <div className="text-[11px] text-amber-800 max-h-20 overflow-y-auto leading-relaxed">
+                  {excelImportPreview.unmatchedNames.map((u) => `${u.name}(行${u.excelRowNum})`).join('、')}
+                </div>
+              </div>
+            )}
+
+            {excelImportPreview.unknownCells.length > 0 && (
+              <div className="rounded-lg border border-orange-200 bg-orange-50/70 p-2.5">
+                <div className="font-bold text-orange-900 text-xs mb-1">
+                  Webのシフト設定に該当しない値（{excelImportPreview.unknownCells.length}件・スキップ）
+                </div>
+                <div className="text-[11px] text-orange-800 max-h-24 overflow-y-auto space-y-0.5">
+                  {excelImportPreview.unknownCells.slice(0, 30).map((item, idx) => (
+                    <div key={idx}>
+                      {item.staffName} {item.day}日: 「{item.rawValue}」
+                    </div>
+                  ))}
+                  {excelImportPreview.unknownCells.length > 30 && (
+                    <div>…ほか {excelImportPreview.unknownCells.length - 30} 件</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setExcelImportPreview(null)}
+              disabled={isImportingExcel}
+              className="px-3.5 py-2 rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 font-bold text-xs sm:text-sm transition"
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmExcelImport}
+              disabled={
+                isImportingExcel ||
+                excelImportPreview.matchedStaffRows.length === 0 ||
+                excelImportPlan.totalChanges === 0
+              }
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 disabled:opacity-45 text-white font-bold text-xs sm:text-sm shadow-sm transition"
+            >
+              {isImportingExcel ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+              <span>反映する（{excelImportPlan.totalChanges}セル）</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {headerTooltip && (
+      <div
+        className="fixed z-[9999] pointer-events-none print:hidden -translate-x-1/2 px-2.5 py-1.5 rounded-md bg-slate-900/95 text-white text-xs font-medium shadow-lg whitespace-nowrap"
+        style={{ left: `${headerTooltip.x}px`, top: `${headerTooltip.y}px` }}
+      >
+        {headerTooltip.label}
+      </div>
+    )}
+    {headerNotice && (
+      <div className="fixed bottom-5 right-5 z-[9999] print:hidden flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900/95 text-white text-xs sm:text-sm font-medium shadow-xl border border-slate-700">
+        <Check size={16} className="text-emerald-400 shrink-0" />
+        <span>{headerNotice}</span>
+      </div>
     )}
     </>
   );
