@@ -3,6 +3,7 @@ import { Save, Trash2, Plus, ChevronLeft, ChevronRight, Calculator, Sparkles, Me
 import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport';
 import { parseShiftExcelArrayBuffer, computeExcelImportPlan } from './utils/excelImport';
 import { validateShiftCode, migrateMasterDataShiftCode, migrateScheduleDocShiftCode } from './utils/shiftCodeMigration';
+import { WheelTimeInput, WheelDurationInput } from './components/WheelTimePicker';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
@@ -138,9 +139,7 @@ const SHIFT_WORK_SLOTS = [
 
 const CONTRACT_WORK_DAY_OPTIONS = [0, 1, 2, 3, 4, 5];
 const COOL3_LIMIT_OPTIONS = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-const OVERTIME_HOUR_OPTIONS = Array.from({ length: 25 }, (_, i) => i * 0.5);
-const TIME_HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
-const TIME_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+// 残業・開始/終了時刻は WheelTimePicker（1分刻みドラムロール式）を使用
 const FACILITY_POWER_TARGET_OPTIONS = Array.from({ length: 41 }, (_, i) => i * 5);
 const SHIFT_TARGET_COUNT_OPTIONS = Array.from({ length: 21 }, (_, i) => i);
 const SKILL_TARGET_COUNT_OPTIONS = [0, 1, 2, 3, 4, 5];
@@ -158,57 +157,7 @@ const buildNumericOptions = (baseOptions, currentValue) => {
   return [...baseOptions, num].sort((a, b) => a - b);
 };
 
-// 時・分のプルダウンで時刻 ("HH:MM") を選択するコンポーネント
-const TimeSelectInput = ({ value, onChange, className = '' }) => {
-  const parts = typeof value === 'string' && value.includes(':') ? value.split(':') : ['', ''];
-  const curHour = parts[0] ? parts[0].padStart(2, '0') : '';
-  const curMin = parts[1] ? parts[1].padStart(2, '0') : '';
-  const hourOpts = curHour && !TIME_HOUR_OPTIONS.includes(curHour)
-    ? [curHour, ...TIME_HOUR_OPTIONS]
-    : TIME_HOUR_OPTIONS;
-  const minOpts = curMin && !TIME_MINUTE_OPTIONS.includes(curMin)
-    ? [...TIME_MINUTE_OPTIONS, curMin].sort()
-    : TIME_MINUTE_OPTIONS;
 
-  return (
-    <div className={`flex items-center gap-1 ${className}`}>
-      <select
-        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center"
-        value={curHour}
-        onChange={e => {
-          const nextH = e.target.value;
-          if (!nextH) {
-            onChange('');
-          } else {
-            onChange(`${nextH}:${curMin || '00'}`);
-          }
-        }}
-      >
-        <option value="">--</option>
-        {hourOpts.map(h => (
-          <option key={h} value={h}>{h}</option>
-        ))}
-      </select>
-      <span className="text-xs font-bold text-gray-500">:</span>
-      <select
-        className="flex-1 min-w-0 border rounded px-1.5 py-1 bg-white text-sm text-center disabled:bg-gray-100 disabled:text-gray-400"
-        value={curHour ? (curMin || '00') : ''}
-        disabled={!curHour}
-        onChange={e => {
-          const nextM = e.target.value || '00';
-          if (curHour) {
-            onChange(`${curHour}:${nextM}`);
-          }
-        }}
-      >
-        {!curHour && <option value="">--</option>}
-        {minOpts.map(m => (
-          <option key={m} value={m}>{m}</option>
-        ))}
-      </select>
-    </div>
-  );
-};
 
 const INITIAL_STAFF = [
   { id: '1', loginId: '1', name: '職員A', jobTitle: '副技士長', roles: ['オペ班'], skills: { isLeader: true, isVeteran: true }, password: '1234', maxCool3: 5 },
@@ -8765,12 +8714,14 @@ ${messageText}`;
   const staffOvertimeStats = useMemo(() => {
     const stats = {};
     staffList.forEach(staff => {
-      let total = 0;
+      let totalMinutes = 0;
       daysArray.forEach(day => {
         const code = shiftData[staff.id]?.[day];
-        if (code && shiftDefs[code]?.overtime) total += parseFloat(shiftDefs[code].overtime) || 0;
+        if (code && shiftDefs[code]?.overtime) {
+          totalMinutes += Math.round((parseFloat(shiftDefs[code].overtime) || 0) * 60);
+        }
       });
-      stats[staff.id] = total;
+      stats[staff.id] = Math.round((totalMinutes / 60) * 100) / 100;
     });
     return stats;
   }, [staffList, shiftData, shiftDefs, daysArray]);
@@ -13730,9 +13681,9 @@ ${messageText}`;
                               <div className="p-2.5 rounded-lg bg-indigo-50/70 border border-indigo-200 text-[11px] text-indigo-900 leading-relaxed">
                                 <strong>💡 現在の設定をAIへ自動連携：</strong>コードと表示名が異なる設定（例：コード「1」・表示名「A」）でも、ここで設定した<strong>「カテゴリ」</strong>と<strong>「勤務・クール区分」</strong>をAI作成・AIチャット・検算が直接参照します。
                               </div>
-                              <div className="grid grid-cols-2 gap-4">
+                              <div className="grid grid-cols-2 gap-4 items-start">
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">コード（内部キー・Excel出力コード兼用）</label>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">コード</label>
                                   <input
                                     type="text"
                                     className={`w-full border p-2 rounded text-sm disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed ${
@@ -13754,7 +13705,7 @@ ${messageText}`;
                                   ) : null}
                                 </div>
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">表示名（勤務表・チャット上の表記）</label>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">表示名</label>
                                   <input
                                     type="text"
                                     className="w-full border p-2 rounded text-sm"
@@ -13845,36 +13796,37 @@ ${messageText}`;
                                 </div>
                               )}
 
-                              <div className="grid grid-cols-2 gap-4">
+                              <div className="grid grid-cols-2 gap-4 items-start">
                                 <div>
-                                  <label className="text-xs font-bold text-gray-500">残業(h)</label>
-                                  <select
-                                    className="w-full border p-2 rounded text-sm bg-white"
-                                    value={editingShift.overtime === '' || editingShift.overtime === null || editingShift.overtime === undefined ? '' : String(Number(editingShift.overtime))}
-                                    onChange={e => setEditingShift({ ...editingShift, overtime: e.target.value === '' ? '' : Number(e.target.value) })}
-                                  >
-                                    <option value="">未設定</option>
-                                    {buildNumericOptions(OVERTIME_HOUR_OPTIONS, editingShift.overtime).map(h => (
-                                      <option key={h} value={String(h)}>{h}h</option>
-                                    ))}
-                                  </select>
+                                  <label className="block text-xs font-bold text-gray-500 mb-1">残業時間</label>
+                                  <WheelDurationInput
+                                    value={editingShift.overtime}
+                                    onChange={val => setEditingShift({ ...editingShift, overtime: val })}
+                                    label="残業時間"
+                                  />
                                 </div>
-                                <div><label className="text-xs font-bold text-gray-500">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
+                                <div><label className="block text-xs font-bold text-gray-500 mb-1">文字色</label><div className="flex flex-wrap gap-1 mt-1">{COLOR_OPTIONS.map(c => (<button key={c.value} onClick={() => setEditingShift({...editingShift, text: c.value})} className={`w-6 h-6 rounded border text-xs font-bold ${c.value} ${editingShift.text === c.value ? 'ring-2 ring-blue-500' : ''}`}>Aa</button>))}</div></div>
                               </div>
                               {editEffType === 'shift' && (
-                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2 rounded">
+                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-2.5 rounded">
                                   <div>
                                     <label className="text-xs font-bold text-blue-700 block mb-1">開始</label>
-                                    <TimeSelectInput
+                                    <WheelTimeInput
                                       value={editingShift.startTime || ''}
                                       onChange={val => setEditingShift({ ...editingShift, startTime: val })}
+                                      label="開始時刻"
+                                      defaultHour={7}
+                                      defaultMinute={50}
                                     />
                                   </div>
                                   <div>
                                     <label className="text-xs font-bold text-blue-700 block mb-1">終了</label>
-                                    <TimeSelectInput
+                                    <WheelTimeInput
                                       value={editingShift.endTime || ''}
                                       onChange={val => setEditingShift({ ...editingShift, endTime: val })}
+                                      label="終了時刻"
+                                      defaultHour={18}
+                                      defaultMinute={0}
                                     />
                                   </div>
                                 </div>
