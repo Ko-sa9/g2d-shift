@@ -14489,7 +14489,7 @@ ${messageText}`;
               <div className="p-4 flex-1 overflow-y-auto">
                 <p className="text-sm text-gray-600 mb-2 font-bold">以下の条件と週休ペースを守って、出勤シフトを自動で割り当てます。</p>
 
-                {/* 作成範囲（月全体 / 週ごと・隔週選択） */}
+                {/* 作成範囲（月全体 / 週ごと選択） */}
                 <div className="mb-3 p-3 bg-white border border-orange-200 rounded-lg shadow-xs space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-1.5">
                     <span className="text-xs font-bold text-gray-800">作成する範囲を選択</span>
@@ -14507,32 +14507,6 @@ ${messageText}`;
                         }`}
                       >
                         月全体（全週）
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAutoFillTargetMode('weeks');
-                          setSelectedAutoFillWeeks(
-                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 1).map(w => w.weekIndex)
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
-                        title="第1・第3・第5…週を選択"
-                      >
-                        奇数週（隔週）
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAutoFillTargetMode('weeks');
-                          setSelectedAutoFillWeeks(
-                            currentMonthCalendarWeeks.filter(w => w.weekIndex % 2 === 0).map(w => w.weekIndex)
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded text-[11px] font-bold border bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100 transition"
-                        title="第2・第4…週を選択"
-                      >
-                        偶数週（隔週）
                       </button>
                     </div>
                   </div>
