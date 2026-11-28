@@ -148,6 +148,9 @@ export const resolveExportShiftCell = ({
   rawCode,
   shiftDefs = {},
   isReqCategory,
+  transformCode,
+  day,
+  dow,
 }) => {
   if (rawCode === null || rawCode === undefined || rawCode === '') {
     return { kind: 'empty', value: '' };
@@ -161,10 +164,17 @@ export const resolveExportShiftCell = ({
     const labelStr = String(def.label || codeStr).trim();
     return { kind: 'req_label', value: labelStr };
   }
-  if (isStrictNumericString(codeStr)) {
-    return { kind: 'number', value: Number(codeStr), text: codeStr };
+  const outputCode =
+    typeof transformCode === 'function'
+      ? String(transformCode(codeStr, { day, dow }) ?? codeStr).trim()
+      : codeStr;
+  if (!outputCode) {
+    return { kind: 'empty', value: '' };
   }
-  return { kind: 'string', value: codeStr };
+  if (isStrictNumericString(outputCode)) {
+    return { kind: 'number', value: Number(outputCode), text: outputCode };
+  }
+  return { kind: 'string', value: outputCode };
 };
 
 /**
@@ -176,6 +186,7 @@ export const buildShiftCodeTsv = ({
   shiftData = {},
   shiftDefs = {},
   isReqCategory,
+  transformCode,
 }) => {
   const rows = staffList.map((staff) =>
     daysArray
@@ -184,6 +195,8 @@ export const buildShiftCodeTsv = ({
           rawCode: shiftData[staff.id]?.[day],
           shiftDefs,
           isReqCategory,
+          transformCode,
+          day,
         });
         if (resolved.kind === 'empty') return '';
         const text = resolved.kind === 'number' ? resolved.text : String(resolved.value);
@@ -211,6 +224,7 @@ export const buildShiftExcelXlsxBytes = ({
   shiftDefs = {},
   isReqCategory,
   getDayOfWeek,
+  transformCode,
   sheetName = 'in',
 }) => {
   const sharedStrings = [];
@@ -307,6 +321,9 @@ export const buildShiftExcelXlsxBytes = ({
         rawCode: shiftData[staff.id]?.[day],
         shiftDefs,
         isReqCategory,
+        transformCode,
+        day,
+        dow,
       });
       let style = 5;
       if (resolved.kind === 'req_label') {

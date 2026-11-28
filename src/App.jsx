@@ -9530,6 +9530,8 @@ ${messageText}`;
         shiftDefs,
         isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
         getDayOfWeek,
+        // Excel側にコード39(Z1)はないため曜日問わず10(Z)へ変換して出力
+        transformCode: (c) => (c === '39' ? '10' : c),
         sheetName: 'in',
       });
       const blob = new Blob([xlsxBytes], {
@@ -9565,6 +9567,8 @@ ${messageText}`;
       shiftData,
       shiftDefs,
       isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
+      // Excel側にコード39(Z1)はないため曜日問わず10(Z)へ変換してコピー
+      transformCode: (c) => (c === '39' ? '10' : c),
     });
     let copied = false;
     try {
@@ -9638,11 +9642,21 @@ ${messageText}`;
       const parsed = parseShiftExcelArrayBuffer({
         arrayBuffer,
         fileName: file.name,
+        year,
+        month,
         staffList: displayStaffList,
         daysArray,
         shiftDefs,
         isReqCategory: (catId) => isReqCategoryId(catId, categoryDefs),
         isUpperShift: (def) => getEffectiveShiftType(def, categoryDefs) === 'shift',
+        getDayOfWeek,
+        // Excel取り込み時、火・木・土のコード10(Z)は半日扱いのコード39(Z1)へ自動変換
+        transformImportedCode: (c, { dow }) => {
+          if (c === '10' && (dow === 2 || dow === 4 || dow === 6) && shiftDefs['39']) {
+            return '39';
+          }
+          return c;
+        },
       });
       setExcelImportMode('overwrite_all');
       setExcelImportPreview(parsed);
@@ -17376,6 +17390,12 @@ ${messageText}`;
                 <div className="text-base font-extrabold text-rose-800">{excelImportPlan.clearCount}件</div>
               </div>
             </div>
+
+            {excelImportPreview.transformedCount > 0 && (
+              <div className="text-xs text-indigo-900 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+                火・木・土のコード「10」→「39」（{shiftDefs['39']?.label || 'Z1'}）へ自動変換：<strong>{excelImportPreview.transformedCount}件</strong>
+              </div>
+            )}
 
             {excelImportMode === 'fill_empty_only' && excelImportPlan.skippedExistingCount > 0 && (
               <div className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">

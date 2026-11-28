@@ -171,11 +171,15 @@ const buildShiftTokenResolver = (shiftDefs = {}, isReqCategory, isUpperShift) =>
 export const parseShiftExcelArrayBuffer = ({
   arrayBuffer,
   fileName = '',
+  year = null,
+  month = null,
   staffList = [],
   daysArray = [],
   shiftDefs = {},
   isReqCategory,
   isUpperShift,
+  getDayOfWeek,
+  transformImportedCode,
 }) => {
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
   const sheetName = pickTargetSheetName(wb.SheetNames);
@@ -238,6 +242,7 @@ export const parseShiftExcelArrayBuffer = ({
   const unmatchedNames = [];
   const unknownCells = [];
   const validDaysSet = new Set(daysArray);
+  let transformedCount = 0;
 
   // Identify the contiguous staff table span below dateRowIdx:
   // Stop collecting "unmatched" names once we hit a blank row after the staff block
@@ -274,7 +279,25 @@ export const parseShiftExcelArrayBuffer = ({
         if (resolved.status === 'empty') {
           dayEntries[dayNum] = null;
         } else if (resolved.status === 'matched') {
-          dayEntries[dayNum] = resolved.code;
+          let finalCode = resolved.code;
+          if (typeof transformImportedCode === 'function') {
+            const dow =
+              typeof getDayOfWeek === 'function' && year && month
+                ? getDayOfWeek(year, month, dayNum)
+                : year && month
+                  ? new Date(year, month - 1, dayNum).getDay()
+                  : null;
+            const nextCode = transformImportedCode(resolved.code, {
+              day: dayNum,
+              dow,
+              staff: matchedStaff,
+            });
+            if (nextCode && nextCode !== resolved.code) {
+              finalCode = nextCode;
+              transformedCount++;
+            }
+          }
+          dayEntries[dayNum] = finalCode;
           nonEmptyCount++;
         } else {
           unknownCells.push({
@@ -318,6 +341,7 @@ export const parseShiftExcelArrayBuffer = ({
     matchedStaffRows,
     unmatchedNames,
     unknownCells,
+    transformedCount,
   };
 };
 
