@@ -116,8 +116,8 @@ const PRINT_PX_PER_MM = 96 / 25.4;
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (高精度・バランス推奨)' },
   { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon (最高性能・深層推論)' },
-  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (高精度・バランス実績あり)' },
   { value: 'gemini-4-neon', label: 'Gemini 4 Neon (高速・バランス型)' },
   { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen (最速・軽量・無料枠対応)' },
 ];
@@ -1940,8 +1940,8 @@ const remaining = 42 - days.length;
 
 // 共通のAI呼び出し関数（API経由）
 // アプリ内の各機能からAIを利用する際の窓口となる関数です
-// 引数でモデル指定が省略された場合は、デフォルトで最新の gemini-4-carbon を使用します
-const callGemini = async (prompt, systemInstruction = "", model = "gemini-4-carbon", options = {}) => { 
+// 引数でモデル指定が省略された場合は、デフォルトで gemini-4-argon を使用します
+const callGemini = async (prompt, systemInstruction = "", model = "gemini-4-argon", options = {}) => { 
   // デバッグ用に実行時のモデル名をコンソールに記録し、どのモデルが呼ばれたか確認できるようにします
   console.log("Model:", model, "バックエンド経由でAIを呼び出します"); 
 
@@ -2273,7 +2273,7 @@ export default function WorkScheduleApp() {
     baseSecPerWeek: 11,
   });
 
-  const [aiModel, setAiModel] = useState('gemini-4-carbon'); 
+  const [aiModel, setAiModel] = useState('gemini-4-argon'); 
   const chatEndRef = useRef(null);
 
   const [showAutoFillModal, setShowAutoFillModal] = useState(false);
