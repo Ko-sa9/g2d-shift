@@ -1,7 +1,7 @@
 const functions = require("firebase-functions");
 
 exports.callGeminiAPI = functions.https.onCall(
-  { timeoutSeconds: 300, memory: "512MiB" },
+  { timeoutSeconds: 540, memory: "1GiB" },
   async (data) => {
     // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収します
     const requestData = data.data || data;
@@ -47,42 +47,80 @@ exports.callGeminiAPI = functions.https.onCall(
             }))
           : [{ role: "user", parts: [{ text: prompt }] }];
 
-      // Gemini APIへ送るデータを作成します
-      const requestBody = { contents };
+      const buildRequestBody = (candidateModel) => {
+        const body = { contents };
+        if (systemInstruction) {
+          body.system_instruction = {
+            parts: [{ text: systemInstruction }],
+          };
+        }
+        const genConfig = {};
+        if (responseMimeType) {
+          genConfig.responseMimeType = responseMimeType;
+        }
+        // gemini-4-carbon で大容量JSON(シフト表)を生成する際、デフォルトのMEDIUM思考だと60秒超のタイムアウトを招きやすいためLOWに最適化
+        if (candidateModel === "gemini-4-carbon" && responseMimeType === "application/json") {
+          genConfig.thinkingConfig = {
+            thinkingLevel: "LOW",
+          };
+        }
+        if (Object.keys(genConfig).length > 0) {
+          body.generationConfig = genConfig;
+        }
+        return body;
+      };
 
-      // システム指示が存在する場合のみ追加します
-      if (systemInstruction) {
-        requestBody.system_instruction = {
-          parts: [{ text: systemInstruction }],
-        };
-      }
-
-      // JSON出力指定などの生成オプションがあれば追加します
-      if (responseMimeType) {
-        requestBody.generationConfig = {
-          responseMimeType,
-        };
-      }
-
-      // APIへ通信を行います（万一指定モデルがAPI側で未提供(404)の場合は安定版モデルへ自動フォールバック）
+      // 指定モデルが未提供(404)・一時障害(5xx)・長時間応答なし(タイムアウト)の場合は安定モデルへ自動フォールバック
       const fallbackCandidates = Array.from(
-        new Set([primaryModel, "gemini-4-hydrogen", "gemini-3.8-flash"])
+        new Set([primaryModel, "gemini-4-argon", "gemini-4-hydrogen", "gemini-3.8-flash"])
       );
       let response = null;
+      let lastFetchError = null;
+
       for (let i = 0; i < fallbackCandidates.length; i++) {
         const candidateModel = fallbackCandidates[i];
-        response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(requestBody),
+        const isLastCandidate = i === fallbackCandidates.length - 1;
+        const perAttemptTimeoutMs = candidateModel === "gemini-4-carbon" ? 110000 : 90000;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), perAttemptTimeoutMs);
+
+        try {
+          response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${candidateModel}:generateContent?key=${apiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(buildRequestBody(candidateModel)),
+              signal: controller.signal,
+            }
+          );
+          clearTimeout(timer);
+
+          const isRetryableStatus =
+            response.status === 404 ||
+            response.status === 408 ||
+            response.status === 429 ||
+            response.status >= 500;
+          if (!isRetryableStatus || isLastCandidate) {
+            break;
           }
-        );
-        if (response.status !== 404 || i === fallbackCandidates.length - 1) {
-          break;
+          console.warn(
+            `Model ${candidateModel} returned HTTP ${response.status}, falling back to next model.`
+          );
+        } catch (fetchErr) {
+          clearTimeout(timer);
+          lastFetchError = fetchErr;
+          if (isLastCandidate) {
+            throw fetchErr;
+          }
+          console.warn(
+            `Model ${candidateModel} failed/timed out (${fetchErr.message}), falling back to next model.`
+          );
         }
-        console.warn(`Model ${candidateModel} returned 404, falling back to next GA model.`);
+      }
+
+      if (!response) {
+        throw lastFetchError || new Error("AIサーバーからの応答がありませんでした。");
       }
 
       if (!response.ok) {
@@ -102,7 +140,7 @@ exports.callGeminiAPI = functions.https.onCall(
       return { text };
     } catch (error) {
       console.error("Gemini API Error:", error);
-      throw new functions.https.HttpsError("internal", error.message);
+      throw new functions.https.HttpsError("internal", error.message || "AI呼び出し中にサーバーエラーが発生しました。");
     }
   }
 );

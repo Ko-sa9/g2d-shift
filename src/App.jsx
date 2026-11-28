@@ -7823,6 +7823,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         return false;
       };
 
+      let activeExecutionModel = aiModel;
       // 第1週→最終週へ順番にビルドし、前週までの「実際の施設回数・クール区分回数・3クール消化実績・直近施設」を次週へ正確に引き継ぐ
       for (let wIdx = 0; wIdx < weeksToBuild.length; wIdx++) {
         if (!isRunActive()) break;
@@ -8553,8 +8554,17 @@ ${dailyCheckExampleLines}
       ${JSON.stringify(weeklyPayload)}
       `;
 
-        let weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+        let weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
         if (!isRunActive()) break;
+
+        // Carbon等の選択モデルがCloud Functionsのタイムアウト(internal)や未デプロイで失敗した場合は、自動的に安定版Argonへ切り替えて救済リトライ
+        if (typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') && activeExecutionModel !== 'gemini-4-argon') {
+          console.warn(`モデル ${activeExecutionModel} で呼び出しエラーが発生したため、gemini-4-argon へ自動フォールバックして再実行します:`, weekRaw);
+          activeExecutionModel = 'gemini-4-argon';
+          updateStepItem(weekStepId, { status: 'active', detail: 'Argonへ切り替えて再実行中...' });
+          weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) break;
+        }
 
         let weekPass = computeAiAppliedSchedule(
           weekRaw,
@@ -8571,7 +8581,7 @@ ${dailyCheckExampleLines}
           updateStepItem(weekStepId, { status: 'active', detail: '応答を再取得中 (1/1)...' });
           await new Promise(resolve => setTimeout(resolve, 1500));
           if (!isRunActive()) break;
-          weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          weekRaw = await callGemini(weekPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
           if (!isRunActive()) break;
           weekPass = computeAiAppliedSchedule(
             weekRaw,
@@ -8774,7 +8784,7 @@ ${dailyCheckExampleLines}
           }
           `;
 
-          const result2 = await callGemini(repairPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          const result2 = await callGemini(repairPrompt, systemInstruction, activeExecutionModel, { responseMimeType: 'application/json' });
           if (!isRunActive()) {
             clearInterval(progressInterval);
             clearInterval(timerInterval);
