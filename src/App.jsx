@@ -9334,6 +9334,8 @@ ${messageText}`;
       }
       let cnt = 0;
       displayStaffList.forEach(s => {
+        // 役職が「顧問」の職員は未割当カウント対象外
+        if (s.jobTitle === '顧問') return;
         const sCode = shiftData[s.id]?.[day];
         const sDef = sCode ? shiftDefs[sCode] : null;
         const rawReq = userInputs?.[s.id]?.[day];
@@ -10809,10 +10811,12 @@ ${messageText}`;
                         isTaskEditable,
                       };
 
+                      // 役職が「顧問」の職員は未割当・空欄には表示しない（施設シフトや休み・公出が入った日のみ通常表示）
+                      const isAdvisorStaff = staff.jobTitle === '顧問';
                       if (sDef && isWorkRequestShiftDef(sDef, categoryDefs)) {
-                        unassignedWorkReqStaff.push(item);
+                        if (!isAdvisorStaff) unassignedWorkReqStaff.push(item);
                       } else if (!sDef && reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs)) {
-                        unassignedWorkReqStaff.push(item);
+                        if (!isAdvisorStaff) unassignedWorkReqStaff.push(item);
                       } else if (
                         sDef &&
                         getEffectiveShiftType(sDef, categoryDefs) === 'shift' &&
@@ -10821,13 +10825,13 @@ ${messageText}`;
                         byCategoryStaff[sDef.category]
                       ) {
                         byCategoryStaff[sDef.category].push(item);
-                        if (reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
+                        if (!isAdvisorStaff && reqSDef && isWorkRequestShiftDef(reqSDef, categoryDefs) && sCode !== reqSCode) {
                           assignedFromWorkReqStaff.push(item);
                         }
                       } else if (sDef) {
                         offAndKoushutsuStaff.push(item);
                       } else {
-                        blankStaff.push(item);
+                        if (!isAdvisorStaff) blankStaff.push(item);
                       }
                     });
 
