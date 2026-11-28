@@ -4,6 +4,7 @@ import { buildShiftExcelXlsxBytes, buildShiftCodeTsv } from './utils/excelExport
 import { parseShiftExcelArrayBuffer, computeExcelImportPlan } from './utils/excelImport';
 import { validateShiftCode, migrateMasterDataShiftCode, migrateScheduleDocShiftCode } from './utils/shiftCodeMigration';
 import { WheelTimeInput, WheelDurationInput } from './components/WheelTimePicker';
+import { buildUndoHistoryKey, loadUndoHistory, saveUndoHistory, deleteUndoHistory, clearAllUndoHistories } from './utils/undoHistoryStorage';
 import { auth, db, appId } from './firebase'; 
 import { signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, collection, setDoc, onSnapshot, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
@@ -2102,6 +2103,7 @@ export default function WorkScheduleApp() {
   // 管理者編集用の戻る・進む（Undo / Redo）履歴
   const [undoHistory, setUndoHistory] = useState({ past: [], future: [] });
   const undoHistoryRef = useRef({ past: [], future: [] });
+  const activeUndoHistoryKeyRef = useRef(null);
   const [showUndoHistoryModal, setShowUndoHistoryModal] = useState(false);
   const scheduleSnapshotRef = useRef({
     shifts: {},
@@ -4361,6 +4363,7 @@ const handleUpdateCell = async (staffId, day, toolCode, type = 'shift', reasonOv
         undoHistoryRef.current = emptyHistory;
         setUndoHistory(emptyHistory);
         setShowUndoHistoryModal(false);
+        clearAllUndoHistories(appId);
         setActivePopup(null);
 
         setEditingShift({
@@ -9731,18 +9734,69 @@ ${messageText}`;
     };
   }, [shiftData, taskData, userInputs, bellData, leaderData]);
 
+  const commitUndoHistory = (nextHistory) => {
+    undoHistoryRef.current = nextHistory;
+    setUndoHistory(nextHistory);
+    const key = activeUndoHistoryKeyRef.current;
+    if (key) {
+      saveUndoHistory(key, nextHistory);
+    }
+  };
+
   useEffect(() => {
+    let cancelled = false;
     const emptyHistory = { past: [], future: [] };
     undoHistoryRef.current = emptyHistory;
     setUndoHistory(emptyHistory);
     setShowUndoHistoryModal(false);
+
+    if (appUser?.role !== 'admin') {
+      activeUndoHistoryKeyRef.current = null;
+      return undefined;
+    }
+
+    const historyKey = buildUndoHistoryKey({
+      appId,
+      year,
+      month,
+      adminScope: appUser.initialView || 'all',
+    });
+    activeUndoHistoryKeyRef.current = historyKey;
+
+    loadUndoHistory(historyKey).then((loaded) => {
+      if (cancelled || activeUndoHistoryKeyRef.current !== historyKey) return;
+      undoHistoryRef.current = loaded;
+      setUndoHistory(loaded);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [year, month, appUser?.role, appUser?.initialView]);
+
+  const handleClearCurrentMonthHistory = async () => {
+    if (!appUser || appUser.role !== 'admin') return;
+    const total = (undoHistoryRef.current.past?.length || 0) + (undoHistoryRef.current.future?.length || 0);
+    if (total === 0) return;
+    const ok = window.confirm(
+      `${year}年${month}月の変更履歴（${total}件）をすべて消去しますか？\n※現在の勤務表データ自体は変更されません。`
+    );
+    if (!ok) return;
+    const emptyHistory = { past: [], future: [] };
+    undoHistoryRef.current = emptyHistory;
+    setUndoHistory(emptyHistory);
+    const key = activeUndoHistoryKeyRef.current;
+    if (key) {
+      await deleteUndoHistory(key);
+    }
+    showHeaderNotice(`${year}年${month}月の変更履歴をクリアしました`);
+  };
 
   const recordAdminUndoSnapshot = (customSnapshot = null, actionMeta = null) => {
     if (!appUser || appUser.role !== 'admin') return;
     const baseSnap = cloneScheduleSnapshot(customSnapshot || scheduleSnapshotRef.current);
     const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const timeStr = `${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     const meta = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       label: actionMeta?.label || 'シフト編集',
@@ -9751,8 +9805,7 @@ ${messageText}`;
     };
     const nextPast = [...undoHistoryRef.current.past, { snapshot: baseSnap, actionMeta: meta }].slice(-50);
     const nextHistory = { past: nextPast, future: [] };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
   };
 
   const applyScheduleSnapshotForHistory = (snapshot) => {
@@ -9782,8 +9835,7 @@ ${messageText}`;
       past: past.slice(0, -1),
       future: [{ snapshot: currentSnapshot, actionMeta: lastEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }, ...future].slice(0, 50),
     };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(targetSnapshot);
   };
 
@@ -9801,8 +9853,7 @@ ${messageText}`;
       past: [...past, { snapshot: currentSnapshot, actionMeta: nextEntry.actionMeta || { label: 'シフト編集', detail: '', timeStr: '' } }].slice(-50),
       future: future.slice(1),
     };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(targetSnapshot);
   };
 
@@ -9836,8 +9887,7 @@ ${messageText}`;
       };
     });
     const nextHistory = { past: nextPast, future: nextFuture };
-    undoHistoryRef.current = nextHistory;
-    setUndoHistory(nextHistory);
+    commitUndoHistory(nextHistory);
     applyScheduleSnapshotForHistory(allStates[targetStep]);
   };
 
@@ -13073,17 +13123,29 @@ ${messageText}`;
                   )}
                 </div>
 
-                <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between shrink-0">
-                  <span className="text-[11px] text-gray-500">
-                    ※状態に移行すると自動でクラウドにも保存されます
+                <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                  <span className="text-[11px] text-gray-500 leading-snug">
+                    ※履歴はこのブラウザに月ごと保存されます（状態移行時はクラウドにも自動保存）
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowUndoHistoryModal(false)}
-                    className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-900 text-white text-xs font-bold transition"
-                  >
-                    閉じる
-                  </button>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      disabled={totalSteps === 0}
+                      onClick={handleClearCurrentMonthHistory}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 disabled:opacity-40 text-red-600 text-xs font-bold transition"
+                      title="この月の履歴のみブラウザから消去します（勤務表は変更されません）"
+                    >
+                      <Trash2 size={13} />
+                      <span>履歴をクリア</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowUndoHistoryModal(false)}
+                      className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-900 text-white text-xs font-bold transition"
+                    >
+                      閉じる
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
