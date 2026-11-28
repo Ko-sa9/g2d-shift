@@ -116,8 +116,9 @@ const PRINT_PX_PER_MM = 96 / 25.4;
 // 画面のドロップダウン等で選択できるAIモデルのリストを定義します
 // ユーザーが用途に合わせてAIの性能を選べるようにするための設定です
 const AI_MODELS = [
-  { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon (最高性能・推論重視・推奨)' },
-  { value: 'gemini-4-neon', label: 'Gemini 4 Neon (高性能・バランス型)' },
+  { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon (最高性能・深層推論)' },
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon (高精度・バランス実績あり)' },
+  { value: 'gemini-4-neon', label: 'Gemini 4 Neon (高速・バランス型)' },
   { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen (最速・軽量・無料枠対応)' },
 ];
 
@@ -5931,45 +5932,106 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       return before + 1 + after > maxStreak;
     };
 
+    const countStaffFacilityInMonth = (staffId, catId) => {
+      if (!catId) return 0;
+      let cnt = 0;
+      for (let dayIdx = 1; dayIdx <= maxDay; dayIdx++) {
+        if (isSunday(year, month, dayIdx)) continue;
+        const c = ns[staffId]?.[dayIdx];
+        if (c && shiftDefs[c]?.category === catId) cnt++;
+      }
+      return cnt;
+    };
+
+    const countStaffCodeInMonth = (staffId, code) => {
+      let cnt = 0;
+      for (let dayIdx = 1; dayIdx <= maxDay; dayIdx++) {
+        if (isSunday(year, month, dayIdx)) continue;
+        if (ns[staffId]?.[dayIdx] === code) cnt++;
+      }
+      return cnt;
+    };
+
+    const getAdjacentFacilitySet = (staffId, d) => {
+      const adj = new Set();
+      if (d === 1) {
+        const prevCat = prevMonthCarryOver?.byStaff?.[staffId]?.prevLastDayCategory;
+        if (prevCat) adj.add(prevCat);
+      } else if (!isSunday(year, month, d - 1)) {
+        const prevCode = ns[staffId]?.[d - 1];
+        if (prevCode && shiftDefs[prevCode]?.category) adj.add(shiftDefs[prevCode].category);
+      }
+      if (d < maxDay && !isSunday(year, month, d + 1)) {
+        const nextCode = ns[staffId]?.[d + 1];
+        if (nextCode && shiftDefs[nextCode]?.category) adj.add(shiftDefs[nextCode].category);
+      }
+      return adj;
+    };
+
     const pickAllowedNonCool3ShiftForDay = (staff, d, preferredCategoryId = null) => {
       const allowedNonCool3 = allFacilityWorkCodes.filter(
         c => !cool3Set.has(c) && isShiftAllowedForStaff(staff, c)
       );
       if (allowedNonCool3.length === 0) return null;
 
-      const sortBySurplusDaytimeEvenly = (list) =>
+      const adjFacs = getAdjacentFacilitySet(staff.id, d);
+
+      // 不足枠がある場合は、前後日と施設が連続せず・本人の当月施設回数＆シフト回数が少ない枠を優先（固定order順による坂田偏りを防止）
+      const sortShortageBalanced = (list) =>
         [...list].sort((a, b) => {
-          const isDayA = resolveShiftWorkSlot(shiftDefs[a], categoryDefs) === 'day' ? 0 : 1;
-          const isDayB = resolveShiftWorkSlot(shiftDefs[b], categoryDefs) === 'day' ? 0 : 1;
-          if (isDayA !== isDayB) return isDayA - isDayB;
+          const catA = shiftDefs[a]?.category;
+          const catB = shiftDefs[b]?.category;
+          const adjPenaltyA = adjFacs.has(catA) ? 1 : 0;
+          const adjPenaltyB = adjFacs.has(catB) ? 1 : 0;
+          if (adjPenaltyA !== adjPenaltyB) return adjPenaltyA - adjPenaltyB;
+          const facCntA = countStaffFacilityInMonth(staff.id, catA);
+          const facCntB = countStaffFacilityInMonth(staff.id, catB);
+          if (facCntA !== facCntB) return facCntA - facCntB;
+          const deficitA = getTargetCount(a, d) - countCodeOnDay(a, d);
+          const deficitB = getTargetCount(b, d) - countCodeOnDay(b, d);
+          if (deficitA !== deficitB) return deficitB - deficitA;
+          return countStaffCodeInMonth(staff.id, a) - countStaffCodeInMonth(staff.id, b);
+        });
+
+      // 余剰時はオーバーが少ない枠かつ本人の当月施設・シフト回数が少ない枠へ分散（日勤だけに固定しない）
+      const sortSurplusBalanced = (list) =>
+        [...list].sort((a, b) => {
           const surpA = countCodeOnDay(a, d) - getTargetCount(a, d);
           const surpB = countCodeOnDay(b, d) - getTargetCount(b, d);
           if (surpA !== surpB) return surpA - surpB;
-          return (shiftDefs[a]?.order ?? 9999) - (shiftDefs[b]?.order ?? 9999);
+          const catA = shiftDefs[a]?.category;
+          const catB = shiftDefs[b]?.category;
+          const adjPenaltyA = adjFacs.has(catA) ? 1 : 0;
+          const adjPenaltyB = adjFacs.has(catB) ? 1 : 0;
+          if (adjPenaltyA !== adjPenaltyB) return adjPenaltyA - adjPenaltyB;
+          const facCntA = countStaffFacilityInMonth(staff.id, catA);
+          const facCntB = countStaffFacilityInMonth(staff.id, catB);
+          if (facCntA !== facCntB) return facCntA - facCntB;
+          const isDayA = resolveShiftWorkSlot(shiftDefs[a], categoryDefs) === 'day' ? 0 : 1;
+          const isDayB = resolveShiftWorkSlot(shiftDefs[b], categoryDefs) === 'day' ? 0 : 1;
+          if (isDayA !== isDayB) return isDayA - isDayB;
+          return countStaffCodeInMonth(staff.id, a) - countStaffCodeInMonth(staff.id, b);
         });
 
       if (preferredCategoryId) {
         const sameFacShort = allowedNonCool3.filter(
           c => shiftDefs[c]?.category === preferredCategoryId && countCodeOnDay(c, d) < getTargetCount(c, d)
         );
-        if (sameFacShort.length > 0) return sameFacShort[0];
+        if (sameFacShort.length > 0) return sortShortageBalanced(sameFacShort)[0];
       }
       const anyShort = allowedNonCool3.filter(c => countCodeOnDay(c, d) < getTargetCount(c, d));
-      if (anyShort.length > 0) return anyShort[0];
+      if (anyShort.length > 0) return sortShortageBalanced(anyShort)[0];
 
-      // 余剰日（どのシフトも不足なし）は3クールに入れず、各施設の日勤（1クール）枠へ偏りなく分散させる
       if (preferredCategoryId) {
         const sameFacAny = allowedNonCool3.filter(
           c => shiftDefs[c]?.category === preferredCategoryId && getTargetCount(c, d) > 0
         );
-        if (sameFacAny.length > 0) return sortBySurplusDaytimeEvenly(sameFacAny)[0];
-        const sameFacFallback = allowedNonCool3.filter(c => shiftDefs[c]?.category === preferredCategoryId);
-        if (sameFacFallback.length > 0) return sortBySurplusDaytimeEvenly(sameFacFallback)[0];
+        if (sameFacAny.length > 0) return sortSurplusBalanced(sameFacAny)[0];
       }
       const activeAllowed = allowedNonCool3.filter(c => getTargetCount(c, d) > 0);
       return activeAllowed.length > 0
-        ? sortBySurplusDaytimeEvenly(activeAllowed)[0]
-        : sortBySurplusDaytimeEvenly(allowedNonCool3)[0];
+        ? sortSurplusBalanced(activeAllowed)[0]
+        : sortSurplusBalanced(allowedNonCool3)[0];
     };
 
     let changedCount = 0;
@@ -6118,9 +6180,17 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         const needsCool3 = cool3Days.length < minC3 && cool3Days.length < maxC3;
 
         if (needsCool3) {
-          const shortCool3 = cool3Codes.filter(
-            c => canTakeCool3OnDay(staff, d, c) && countCodeOnDay(c, d) < getTargetCount(c, d)
-          );
+          const adjFacs = getAdjacentFacilitySet(staff.id, d);
+          const shortCool3 = cool3Codes
+            .filter(c => canTakeCool3OnDay(staff, d, c) && countCodeOnDay(c, d) < getTargetCount(c, d))
+            .sort((a, b) => {
+              const catA = shiftDefs[a]?.category;
+              const catB = shiftDefs[b]?.category;
+              const adjA = adjFacs.has(catA) ? 1 : 0;
+              const adjB = adjFacs.has(catB) ? 1 : 0;
+              if (adjA !== adjB) return adjA - adjB;
+              return countStaffFacilityInMonth(staff.id, catA) - countStaffFacilityInMonth(staff.id, catB);
+            });
           if (shortCool3.length > 0) return shortCool3[0];
         }
 
@@ -6224,25 +6294,29 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           changedCount++;
         }
 
-        // 月間上限（targetMax）を超えている場合は、端数週などの編集可能日を空欄公休に戻す
+        // 月間目安上限（targetMax）を超えている場合でも、必要人数割れ（穴）を作ってまで削除せず、余剰がある日のみ空欄公休へ戻す
         while (workDays > targetMax) {
-          const editableWorkDays = [];
+          const surplusEditableWorkDays = [];
           operatingWeeks.forEach(wDays => {
             const wWork = wDays.filter(wd => isWorkCode(ns[s.id]?.[wd]));
             if (wDays.length === 6 && wWork.length <= 5) return;
             wWork.forEach(wd => {
-              if (isEditable(s, wd)) editableWorkDays.push(wd);
+              if (!isEditable(s, wd)) return;
+              const curCode = ns[s.id][wd];
+              if (countCodeOnDay(curCode, wd) > getTargetCount(curCode, wd)) {
+                surplusEditableWorkDays.push(wd);
+              }
             });
           });
-          if (editableWorkDays.length === 0) break;
-          editableWorkDays.sort((a, b) => {
+          if (surplusEditableWorkDays.length === 0) break;
+          surplusEditableWorkDays.sort((a, b) => {
             const codeA = ns[s.id][a];
             const codeB = ns[s.id][b];
             const surpA = countCodeOnDay(codeA, a) - getTargetCount(codeA, a);
             const surpB = countCodeOnDay(codeB, b) - getTargetCount(codeB, b);
             return surpB - surpA;
           });
-          delete ns[s.id][editableWorkDays[0]];
+          delete ns[s.id][surplusEditableWorkDays[0]];
           workDays--;
           changedCount++;
         }
@@ -6403,36 +6477,20 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
               if (!isShiftAllowedForStaff(donor, curCode)) return;
 
-              const isSameFac = shiftDefs[donorC3Code]?.category === curFacId ? 1 : 0;
+              const donorFacId = shiftDefs[donorC3Code]?.category;
+              const isSameFac = donorFacId === curFacId ? 1 : 0;
+              if (!isSameFac) {
+                // 施設をまたぐ交換は前後営業日と施設連続を起こさない場合のみ許可（ローテーション維持）
+                const sAdj = getAdjacentFacilitySet(s.id, d);
+                const dAdj = getAdjacentFacilitySet(donor.id, d);
+                if (sAdj.has(donorFacId) || dAdj.has(curFacId)) return;
+              }
               const donorSurplus = donorC3Count - donorMin;
               const score = isSameFac * 100 + donorSurplus;
               if (!bestSwap || score > bestSwap.score) {
                 bestSwap = { d, donor, donorC3Code, replacementForDonor: curCode, score };
               }
             });
-          }
-
-          // ステップC: 施設制限の違いで直接1対1交換できない場合、donorをその施設内の通常シフトへ下げてsが3クールを引き継ぐ
-          if (!bestSwap) {
-            for (const d of candidateWorkDays) {
-              staffList.forEach(donor => {
-                if (donor.id === s.id || donor.excludeFromAi) return;
-                if (!isEditable(donor, d)) return;
-                const donorC3Code = ns[donor.id]?.[d];
-                if (!donorC3Code || !cool3Set.has(donorC3Code)) return;
-                const donorC3Count = getStaffCool3Days(donor.id).length;
-                const donorMin = Number(donor.minCool3 || 0);
-                if (donorC3Count <= donorMin) return;
-                if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
-                const donorFacId = shiftDefs[donorC3Code]?.category;
-                const donorAlt = pickAllowedNonCool3ShiftForDay(donor, d, donorFacId);
-                if (!donorAlt) return;
-                const donorSurplus = donorC3Count - donorMin;
-                if (!bestSwap || donorSurplus > bestSwap.score) {
-                  bestSwap = { d, donor, donorC3Code, replacementForDonor: donorAlt, score: donorSurplus };
-                }
-              });
-            }
           }
 
           if (bestSwap) {
@@ -6651,16 +6709,17 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       userInputs: originalUserInputs,
     };
 
+    const modelLower = String(aiModel || '').toLowerCase();
     const isProModel =
-      String(aiModel || '').toLowerCase().includes('pro') ||
-      String(aiModel || '').toLowerCase().includes('argon') ||
-      String(aiModel || '').toLowerCase().includes('carbon');
-    const baseSecPerWeek = isProModel ? 26 : 11;
+      modelLower.includes('pro') ||
+      modelLower.includes('argon') ||
+      modelLower.includes('carbon');
+    const baseSecPerWeek = isProModel ? 24 : modelLower.includes('neon') ? 15 : 10;
     const startedAtMs = Date.now();
     autoFillTimingRef.current = {
       startTimeMs: startedAtMs,
       phase: 'init',
-      isParallel: true,
+      isParallel: false,
       buildStartMs: startedAtMs,
       totalBuildWeeks: 4,
       completedBuildWeeks: 0,
@@ -6676,7 +6735,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
     setIsAiLoading(true);
     setAiProgress(2);
     setAiElapsedSec(0);
-    setAiRemainingText(isProModel ? 'あと約40秒' : 'あと約20秒');
+    setAiRemainingText(isProModel ? 'あと約1分30秒' : 'あと約45秒');
     setAiLoadingMessage('勤務表データを事前分析中...');
     setAiLoadingSubDetail('前月末からの連勤引き継ぎ・希望休・各班固定枠・目標人数を集計しています');
     setAutoFillValidationSummary(null);
@@ -6831,7 +6890,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       autoFillTimingRef.current = {
         ...autoFillTimingRef.current,
         phase: weeksToBuild.length > 0 ? 'building' : 'validating',
-        isParallel: weeksToBuild.length > 1,
+        isParallel: false,
         buildStartMs: buildStartAtMs,
         totalBuildWeeks: weeksToBuild.length,
         completedBuildWeeks: 0,
@@ -6843,7 +6902,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       setAutoFillSteps([
         {
           id: 'prep',
-          label: '事前一括設計（全週の公休フラット配分・月間3クール枠均等配分）',
+          label: '事前分析（前月末引き継ぎ・希望休・各班固定・目標人数の集計）',
           status: 'done',
           detail: '完了',
         },
@@ -6877,22 +6936,8 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       let totalUpdatedCells = 0;
       const weekErrors = [];
 
-      // Stage A: 月間一括事前設計（全対象週の公休フラット配分・連続3クール物理上限・ローテーション・月間3クール配分枠を事前計算）
       const facilityCatsInBuild = Object.values(categoryDefs)
         .filter(cat => cat && resolveCategoryKind(cat) === 'facility');
-      const addedPlannedWorkDaysByStaff = {};
-      const simFacCountsByStaff = {};
-      const simLastFacIdByStaff = {};
-
-      initialData.staff.forEach(st => {
-        addedPlannedWorkDaysByStaff[st.id] = 0;
-        const counts = {};
-        (st.allowedFacilities || []).forEach(fc => {
-          counts[fc.id] = st.currentStats?.facilityCounts?.[fc.label] || 0;
-        });
-        simFacCountsByStaff[st.id] = counts;
-        simLastFacIdByStaff[st.id] = st.prevMonthCarryOver?.prevLastDayCategory || null;
-      });
 
       const wouldWeekWorkExceedStreak = (targetWeekDays, stEntry, blankSet) => {
         let streak = stEntry.thisWeekPlan.enteringWorkStreak || 0;
@@ -6916,18 +6961,45 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         return false;
       };
 
-      const weekPrePlans = weeksToBuild.map((targetWeek) => {
+      // 第1週→最終週へ順番にビルドし、前週までの「実際の施設回数・クール区分回数・3クール消化実績・直近施設」を次週へ正確に引き継ぐ
+      for (let wIdx = 0; wIdx < weeksToBuild.length; wIdx++) {
+        if (!isRunActive()) break;
+
+        const targetWeek = weeksToBuild[wIdx];
+        const remainingBuildWeeksCount = Math.max(1, weeksToBuild.length - wIdx);
         const weekStepId = `week_${targetWeek.weekIndex}`;
         const firstDay = targetWeek.days[0];
         const lastDay = targetWeek.days[targetWeek.days.length - 1];
         const allowedWeekDaysSet = new Set(targetWeek.days);
 
+        const weekStartedMs = Date.now();
+        autoFillTimingRef.current = {
+          ...autoFillTimingRef.current,
+          phase: 'building',
+          currentStepStartMs: weekStartedMs,
+        };
+        progressCeiling = Math.min(80, Math.round(10 + ((wIdx + 0.85) / Math.max(1, weeksToBuild.length)) * 70));
+        setAiProgress(prev => Math.max(prev, Math.round(8 + (wIdx / Math.max(1, weeksToBuild.length)) * 70)));
+        updateStepItem(weekStepId, { status: 'active', detail: 'AI作成中...' });
+        setAiLoadingMessage(
+          `第${targetWeek.weekIndex}週（${targetWeek.label}）のシフトを作成中... (${wIdx + 1}/${weeksToBuild.length}週)`
+        );
+        setAiLoadingSubDetail(
+          wIdx === 0
+            ? `前月末引き継ぎ・希望休・必要人数・${skillReqSummaryText}を踏まえて第1週を配置しています`
+            : '前週までの実際の施設・シフト回数と3クール実績を引き継ぎ、偏りなくローテーション配置しています'
+        );
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+
+        // 前週までの確定済み workingShifts から最新の累積統計を再計算
+        const liveData = prepareScheduleDataForAi(workingShifts, workingTasks, { includeTasks: false });
+
         const weekCalendar = {};
         const weekDailySummary = {};
         const exactTargetCountsByDay = {};
         targetWeek.days.forEach(d => {
-          weekCalendar[d] = initialData.calendar[d];
-          weekDailySummary[d] = initialData.dailySummary[d];
+          weekCalendar[d] = liveData.calendar[d];
+          weekDailySummary[d] = liveData.dailySummary[d];
           const dayTargets = {};
           Object.keys(targetCounts || {}).forEach(code => {
             if (!isAiAssignableFacilityShiftDef(code, shiftDefs, categoryDefs)) return;
@@ -6939,25 +7011,24 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
         const staffRequestsInWeek = {};
         const teamAdminLocksInWeek = {};
-        Object.keys(initialData.staffRequests || {}).forEach(sId => {
+        Object.keys(liveData.staffRequests || {}).forEach(sId => {
           const filtered = {};
           targetWeek.days.forEach(d => {
-            if (initialData.staffRequests[sId]?.[d]) filtered[d] = initialData.staffRequests[sId][d];
+            if (liveData.staffRequests[sId]?.[d]) filtered[d] = liveData.staffRequests[sId][d];
           });
           if (Object.keys(filtered).length > 0) staffRequestsInWeek[sId] = filtered;
         });
-        Object.keys(initialData.teamAdminLocks || {}).forEach(sId => {
+        Object.keys(liveData.teamAdminLocks || {}).forEach(sId => {
           const filtered = {};
           targetWeek.days.forEach(d => {
-            if (initialData.teamAdminLocks[sId]?.[d]) filtered[d] = initialData.teamAdminLocks[sId][d];
+            if (liveData.teamAdminLocks[sId]?.[d]) filtered[d] = liveData.teamAdminLocks[sId][d];
           });
           if (Object.keys(filtered).length > 0) teamAdminLocksInWeek[sId] = filtered;
         });
 
         const baseStaffById = {};
-        const weeklyStaffList = initialData.staff.map(st => {
+        const weeklyStaffList = liveData.staff.map(st => {
           baseStaffById[st.id] = st;
-          // 日曜休診で週ごとに連勤と連続3クールがリセットされるため、2週目以降は開始時点で0・falseとする
           const enteringWorkStreak = firstDay === 1 ? (st.prevMonthCarryOver?.trailingWorkStreak || 0) : 0;
           const forbidCool3OnFirstDay = firstDay === 1 ? Boolean(st.prevMonthCarryOver?.forbidCool3OnDay1) : false;
 
@@ -6969,25 +7040,28 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             enteringLastFacilityLabel = st.prevMonthCarryOver?.prevLastDayFacilityLabel || null;
             enteringLastShiftCode = st.prevMonthCarryOver?.prevLastDayCode || null;
           } else {
-            let foundExistingBeforeWeek = false;
             for (let cursor = firstDay - 1; cursor >= 1; cursor--) {
               if (isSunday(year, month, cursor)) continue;
-              const pCode = originalShifts[st.id]?.[cursor];
-              if (!pCode || !shiftDefs[pCode]) break;
+              const pCode = workingShifts[st.id]?.[cursor];
+              if (!pCode || !shiftDefs[pCode]) continue;
               const pDef = shiftDefs[pCode];
-              foundExistingBeforeWeek = true;
-              if (isNonWorkOrKoushutsuShiftDef(pDef, categoryDefs)) break;
+              if (isNonWorkOrKoushutsuShiftDef(pDef, categoryDefs)) continue;
               if (getCategoryKindById(pDef.category, categoryDefs) === 'facility') {
                 enteringLastFacilityId = pDef.category;
                 enteringLastFacilityLabel = categoryDefs[pDef.category]?.label || pDef.category;
                 enteringLastShiftCode = pCode;
+                break;
               }
-              break;
             }
-            if (!foundExistingBeforeWeek && simLastFacIdByStaff[st.id]) {
-              enteringLastFacilityId = simLastFacIdByStaff[st.id];
-              enteringLastFacilityLabel = categoryDefs[enteringLastFacilityId]?.label || enteringLastFacilityId;
-            }
+          }
+
+          const shiftSlotCountsSoFar = { cool3: 0, cool2: 0, day: 0, half: 0, other: 0 };
+          for (let cursor = 1; cursor < firstDay; cursor++) {
+            if (isSunday(year, month, cursor)) continue;
+            const c = workingShifts[st.id]?.[cursor];
+            if (!c || !shiftDefs[c] || !isAiAssignableFacilityShiftDef(c, shiftDefs, categoryDefs)) continue;
+            const slot = resolveShiftWorkSlot(shiftDefs[c], categoryDefs) || 'other';
+            shiftSlotCountsSoFar[slot] = (shiftSlotCountsSoFar[slot] || 0) + 1;
           }
 
           const existingShiftsInThisWeek = {};
@@ -6997,7 +7071,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           let paidOffInThisWeek = 0;
 
           targetWeek.days.forEach(d => {
-            const code = originalShifts[st.id]?.[d];
+            const code = workingShifts[st.id]?.[d];
             const reqShift = getUserRequestedShift(st.id, d);
             const teamLock = getTeamLockedShiftSource(st.id, d, originalShifts);
 
@@ -7020,6 +7094,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
           const holidayAssignableDaysInThisWeek = assignableDaysInThisWeek.filter(d => weekCalendar[d]?.isHoliday);
           let mustKeepBlankDaysMinInThisWeek = 0;
+          let maxOptionalBlanksInThisWeek = 0;
           let recommendedNewWorkDaysInThisWeek = '0日';
 
           const existingWorkInThisWeek = Object.values(existingShiftsInThisWeek).filter(
@@ -7029,6 +7104,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           const stPartContractRange = getPartTimeWeeklyContractRange(st);
           if (st.excludeFromAi || assignableDaysInThisWeek.length === 0) {
             mustKeepBlankDaysMinInThisWeek = 0;
+            maxOptionalBlanksInThisWeek = 0;
             recommendedNewWorkDaysInThisWeek = '0日（変更不可）';
           } else if (st.jobTitle === 'パート' && stPartContractRange) {
             const wMin = stPartContractRange.min;
@@ -7043,6 +7119,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const recMax = Math.min(assignableDaysInThisWeek.length, capByStreak, maxAllowedNew);
             const recMin = Math.min(recMax, minRequiredNew);
             mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
+            maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - recMin);
             const rangeLbl = wMin === wMax ? `週${wMin}日` : `週${wMin}〜${wMax}日`;
             recommendedNewWorkDaysInThisWeek =
               recMin === recMax
@@ -7052,19 +7129,23 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
             mustKeepBlankDaysMinInThisWeek = streakNeedsOff ? 1 : 0;
+            maxOptionalBlanksInThisWeek = assignableDaysInThisWeek.length;
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = `0〜${maxNew}日（パート条件・必要人数に応じて配置）`;
           } else if (targetWeek.isFullWeek) {
             mustKeepBlankDaysMinInThisWeek = regOffInThisWeek === 0 ? 1 : 0;
+            maxOptionalBlanksInThisWeek = mustKeepBlankDaysMinInThisWeek;
             const recWork = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             if (holidayAssignableDaysInThisWeek.length > 0 && regOffInThisWeek + paidOffInThisWeek >= 1) {
               const minWorkWithHolidayOff = Math.max(0, recWork - holidayAssignableDaysInThisWeek.length);
+              maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - minWorkWithHolidayOff);
               recommendedNewWorkDaysInThisWeek =
                 minWorkWithHolidayOff === recWork
                   ? `${recWork}日`
-                  : `${minWorkWithHolidayOff}〜${recWork}日（祝日が空欄休みの場合は${minWorkWithHolidayOff}日出勤、祝日出勤の場合は${recWork}日出勤）`;
+                  : `${minWorkWithHolidayOff}〜${recWork}日（祝日に余剰があれば空欄休み可、人数が必要なら出勤）`;
             } else if (holidayAssignableDaysInThisWeek.length > 1 && regOffInThisWeek === 0) {
               const minWorkWithMultiHolOff = Math.max(0, assignableDaysInThisWeek.length - holidayAssignableDaysInThisWeek.length);
+              maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - minWorkWithMultiHolOff);
               recommendedNewWorkDaysInThisWeek =
                 minWorkWithMultiHolOff === recWork
                   ? `${recWork}日`
@@ -7082,29 +7163,34 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               !prevCarry.alreadyTookWeeklyOffInPrevMonthPart &&
               regOffInThisWeek === 0;
             mustKeepBlankDaysMinInThisWeek = streakNeedsOff || straddleNeedsOff ? 1 : 0;
+            maxOptionalBlanksInThisWeek = prevCarry.hasPrevSchedule
+              ? mustKeepBlankDaysMinInThisWeek
+              : Math.min(assignableDaysInThisWeek.length, mustKeepBlankDaysMinInThisWeek + 1);
             const maxNew = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             recommendedNewWorkDaysInThisWeek = prevCarry.hasPrevSchedule
               ? `${maxNew}日`
               : maxNew > 0
-                ? `${Math.max(0, maxNew - 1)}〜${maxNew}日（各日の必要人数に合わせて調整）`
+                ? `${Math.max(0, maxNew - 1)}〜${maxNew}日（必要人数を満たすよう優先配置）`
                 : '0日';
           } else {
-            // 並列ビルドでも最終週の出勤ペースをピタリ合わせるため、前週までの事前出勤計画日数を合算して見込む
-            const projectedWorkSoFar = (st.currentStats.workDays || 0) + (addedPlannedWorkDaysByStaff[st.id] || 0);
-            const remMin = Math.max(0, (st.currentStats.targetWorkDaysMin ?? 0) - projectedWorkSoFar);
-            const remMax = Math.max(0, (st.currentStats.targetWorkDaysMax ?? 0) - projectedWorkSoFar);
+            // 案2: 月末などの端数週では、連勤超過の恐れがない限り「強制空欄」にはせず、人数に余剰(surplus>0)がある日だけ公休を入れることで未入力穴を防ぐ
+            const workSoFar = st.currentStats?.workDays || 0;
+            const remMin = Math.max(0, (st.currentStats?.targetWorkDaysMin ?? 0) - workSoFar);
             const streakNeedsOff =
               enteringWorkStreak + targetWeek.days.length > maxStreak && regOffInThisWeek + paidOffInThisWeek === 0;
-            const capMax = Math.max(0, assignableDaysInThisWeek.length - (streakNeedsOff ? 1 : 0));
+            mustKeepBlankDaysMinInThisWeek = streakNeedsOff ? 1 : 0;
+            const capMax = Math.max(0, assignableDaysInThisWeek.length - mustKeepBlankDaysMinInThisWeek);
             const recMin = Math.min(capMax, remMin);
-            const recMax = Math.max(recMin, Math.min(capMax, remMax));
-            mustKeepBlankDaysMinInThisWeek = Math.max(streakNeedsOff ? 1 : 0, assignableDaysInThisWeek.length - recMax);
-            recommendedNewWorkDaysInThisWeek = recMin === recMax ? `${recMin}日` : `${recMin}〜${recMax}日`;
+            maxOptionalBlanksInThisWeek = Math.max(mustKeepBlankDaysMinInThisWeek, assignableDaysInThisWeek.length - recMin);
+            recommendedNewWorkDaysInThisWeek =
+              recMin === capMax
+                ? `${capMax}日`
+                : `${recMin}〜${capMax}日（必要人数を満たすことを優先し、余剰日のみ空欄休み）`;
           }
 
           const futurePreEnteredShifts = {};
           for (let d = lastDay + 1; d <= totalDaysInMonth; d++) {
-            const fCode = originalShifts[st.id]?.[d];
+            const fCode = workingShifts[st.id]?.[d];
             const fReq = getUserRequestedShift(st.id, d);
             if (fCode) futurePreEnteredShifts[d] = fCode;
             else if (fReq) futurePreEnteredShifts[d] = `(希望空欄:${fReq})`;
@@ -7133,11 +7219,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             _enteringLastFacilityLabel: enteringLastFacilityLabel,
             _enteringLastShiftCode: enteringLastShiftCode,
             _forbidCool3OnFirstDay: forbidCool3OnFirstDay,
-            _plannedWorkAddedBeforeThisWeek: addedPlannedWorkDaysByStaff[st.id] || 0,
+            _maxOptionalBlanksInThisWeek: maxOptionalBlanksInThisWeek,
             cumulativeStatsSoFar: {
-              workDaysInMonthSoFar: (st.currentStats.workDays || 0) + (addedPlannedWorkDaysByStaff[st.id] || 0),
+              workDaysInMonthSoFar: st.currentStats.workDays,
               targetMonthlyWorkDaysRange: st.currentStats.targetWorkDaysRange,
               facilityCountsSoFar: { ...st.currentStats.facilityCounts },
+              shiftSlotCountsSoFar,
               cool3CountSoFar: st.currentStats.cool3Count,
               remainingCool3: st.currentStats.remainingCool3,
               remainingMinCool3Needed: st.currentStats.remainingMinCool3Needed,
@@ -7161,7 +7248,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           return staffEntry;
         });
 
-        // #1 ①対策: 各日の出勤人数が必要人数合計に対して偏らないよう、今週の公休(空欄休み)をプログラムでフラット配分
+        // 今週の公休(空欄休み)を日別の必要人数・リーダー数に応じてフラット事前配分
         const dailyTargetFacilityTotal = {};
         const dailyRequiredLeaders = {};
         const dailyPlannedWorking = {};
@@ -7204,22 +7291,13 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         const plannedBlanksByStaffId = {};
         const staffBlankSpecs = weeklyStaffList.map(st => {
           const assignable = st.thisWeekPlan.assignableDaysInThisWeek || [];
-          const minBlanks = st.thisWeekPlan.mustKeepBlankDaysMinInThisWeek || 0;
-          let maxBlanks = minBlanks;
-          if (!st.excludeFromAi && st.contractWorkDaysMin !== undefined && assignable.length > 0) {
-            const existingWorkInThisWeek = Object.values(st.thisWeekPlan.existingShiftsInThisWeek || {}).filter(
-              c => c && shiftDefs[c] && getEffectiveShiftType(shiftDefs[c], categoryDefs) === 'shift' && !isNonWorkOrKoushutsuShiftDef(shiftDefs[c], categoryDefs)
-            ).length;
-            const minRequiredNew = targetWeek.isFullWeek
-              ? Math.max(0, Math.min(targetWeek.days.length, st.contractWorkDaysMin) - existingWorkInThisWeek)
-              : 0;
-            maxBlanks = Math.max(minBlanks, assignable.length - minRequiredNew);
-          }
+          const minBlanks = Math.min(assignable.length, st.thisWeekPlan.mustKeepBlankDaysMinInThisWeek || 0);
+          const maxBlanks = Math.min(assignable.length, Math.max(minBlanks, st._maxOptionalBlanksInThisWeek ?? minBlanks));
           plannedBlanksByStaffId[st.id] = new Set();
           return {
             st,
-            minBlanks: Math.min(assignable.length, minBlanks),
-            maxBlanks: Math.min(assignable.length, maxBlanks),
+            minBlanks,
+            maxBlanks,
             isStreakRestricted: st.thisWeekPlan.maxAllowedConsecutiveFromWeekStart < assignable.length,
           };
         });
@@ -7314,8 +7392,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           }
         });
 
-        // 出勤予定日確定後に、月通しの勤務地ローテーションと今週の連続3クール物理上限を算出
-        const physicalCool3Cap = {};
+        // 実績ベースのローテーションガイド＆柔軟な3クール残り枠ペース設定
         weeklyStaffList.forEach(st => {
           const baseSt = baseStaffById[st.id];
           const blankSet = plannedBlanksByStaffId[st.id] || new Set();
@@ -7326,26 +7403,19 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
           st.thisWeekPlan.plannedBlankOffDaysInThisWeek = plannedBlankOffDaysInThisWeek;
           st.thisWeekPlan.plannedWorkDaysInThisWeek = plannedWorkDaysInThisWeek;
-          if (!st.excludeFromAi) {
-            addedPlannedWorkDaysByStaff[st.id] = (addedPlannedWorkDaysByStaff[st.id] || 0) + plannedWorkDaysInThisWeek.length;
-          }
 
-          // rotationGuide を予定出勤日のみに対して月通しの累積仮想回数で計算
-          const simCounts = simFacCountsByStaff[st.id] || {};
           const allowedFacs = Array.isArray(baseSt?.allowedFacilities) ? baseSt.allowedFacilities : [];
-          const facilityCountsSnapshot = {};
+          const realFacCounts = {};
           allowedFacs.forEach(fc => {
-            facilityCountsSnapshot[fc.label] = simCounts[fc.id] || 0;
+            realFacCounts[fc.id] = st.cumulativeStatsSoFar.facilityCountsSoFar?.[fc.label] || 0;
           });
-          if (Object.keys(facilityCountsSnapshot).length > 0) {
-            st.cumulativeStatsSoFar.facilityCountsSoFar = facilityCountsSnapshot;
-          }
           const underusedBefore = [...allowedFacs]
-            .sort((a, b) => (simCounts[a.id] || 0) - (simCounts[b.id] || 0))
+            .sort((a, b) => (realFacCounts[a.id] || 0) - (realFacCounts[b.id] || 0))
             .map(fc => fc.label);
 
           let prevFacId = st._enteringLastFacilityId;
           if (!st.excludeFromAi && allowedFacs.length >= 2 && plannedWorkDaysInThisWeek.length > 0) {
+            const localSimCounts = { ...realFacCounts };
             const dailyFacilityPreferenceHint = {};
             targetWeek.days.forEach((d, idxInWeek) => {
               const existingCode = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
@@ -7378,14 +7448,14 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
                 const aSameNext = nextExistingFacId && a.id === nextExistingFacId ? 1 : 0;
                 const bSameNext = nextExistingFacId && b.id === nextExistingFacId ? 1 : 0;
                 if (aSameNext !== bSameNext) return aSameNext - bSameNext;
-                return (simCounts[a.id] || 0) - (simCounts[b.id] || 0);
+                return (localSimCounts[a.id] || 0) - (localSimCounts[b.id] || 0);
               });
 
               dailyFacilityPreferenceHint[d] = rankedFacs.map(fc => fc.label);
               const topFac = rankedFacs[0];
               if (topFac) {
                 prevFacId = topFac.id;
-                simCounts[topFac.id] = (simCounts[topFac.id] || 0) + 1;
+                localSimCounts[topFac.id] = (localSimCounts[topFac.id] || 0) + 1;
               }
             });
 
@@ -7395,24 +7465,11 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               underusedFacilitiesFirst: underusedBefore,
               dailyFacilityPreferenceHint,
             };
-          } else {
-            // 単一施設または計画出勤なしの場合も週終了時の前営業日施設のみ追跡
-            const lastDayOfWeek = targetWeek.days[targetWeek.days.length - 1];
-            const lastEx = lastDayOfWeek ? st.thisWeekPlan.existingShiftsInThisWeek?.[lastDayOfWeek] : null;
-            if (lastEx && shiftDefs[lastEx] && getCategoryKindById(shiftDefs[lastEx].category, categoryDefs) === 'facility') {
-              prevFacId = shiftDefs[lastEx].category;
-            } else if (allowedFacs.length === 1 && lastDayOfWeek && plannedWorkSet.has(lastDayOfWeek)) {
-              prevFacId = allowedFacs[0].id;
-            } else {
-              prevFacId = null;
-            }
           }
-          simLastFacIdByStaff[st.id] = prevFacId;
 
-          // 連続3クール禁止を踏まえ、この週の plannedWorkDaysInThisWeek に最大何回新規3クールを入れられるかを厳密計算
           const hasAllowedCool3Shift = (st.allowedWorkShifts || []).some(c => cool3Set.has(c));
           const hasDay1Cool3Shift = !allowedWeekDaysSet.has(1) || (st.day1AllowedWorkShifts || []).some(c => cool3Set.has(c));
-          let cap = 0;
+          let physicalCap = 0;
           if (!st.excludeFromAi && hasAllowedCool3Shift && plannedWorkDaysInThisWeek.length > 0) {
             let prevWasCool3 = st._forbidCool3OnFirstDay;
             targetWeek.days.forEach((d, idx) => {
@@ -7430,27 +7487,42 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               const nextExistingIsCool3 = Boolean(nextExCode && cool3Set.has(nextExCode));
               const canCool3Today = (d !== 1 || hasDay1Cool3Shift) && !prevWasCool3 && !nextExistingIsCool3;
               if (canCool3Today) {
-                cap++;
+                physicalCap++;
                 prevWasCool3 = true;
               } else {
                 prevWasCool3 = false;
               }
             });
           }
-          physicalCool3Cap[st.id] = cap;
-        });
 
-        let weekTargetCool3Slots = 0;
-        targetWeek.days.forEach(d => {
-          const targetSum = Object.entries(exactTargetCountsByDay[d] || {}).reduce(
-            (sum, [code, cnt]) => sum + (cool3Set.has(code) ? cnt || 0 : 0),
-            0
+          const remMaxCool3 = st.cumulativeStatsSoFar.remainingCool3;
+          const remMinCool3 = st.cumulativeStatsSoFar.remainingMinCool3Needed || 0;
+          const maxAllowedThisWeek =
+            remMaxCool3 === null || remMaxCool3 === undefined
+              ? physicalCap
+              : Math.max(0, Math.min(physicalCap, remMaxCool3));
+          const softPaceMin =
+            remMinCool3 > 0
+              ? Math.min(maxAllowedThisWeek, Math.ceil(remMinCool3 / remainingBuildWeeksCount))
+              : 0;
+          const softPaceMax = Math.min(
+            maxAllowedThisWeek,
+            Math.max(softPaceMin + 1, Math.ceil((remMaxCool3 ?? physicalCap) / remainingBuildWeeksCount) + 1)
           );
-          const existingSum = weeklyStaffList.filter(st => {
-            const ex = st.thisWeekPlan.existingShiftsInThisWeek?.[d];
-            return Boolean(ex && cool3Set.has(ex));
-          }).length;
-          weekTargetCool3Slots += Math.max(0, targetSum - existingSum);
+
+          st.thisWeekPlan.maxAllowedNewCool3InThisWeek = maxAllowedThisWeek;
+          st.thisWeekPlan.recommendedNewCool3InThisWeek =
+            maxAllowedThisWeek === 0
+              ? '0回（月間上限到達または配置不可のため今週は0回厳守）'
+              : softPaceMin > 0
+                ? `目安 ${softPaceMin}〜${softPaceMax}回（月間残り上限あと${remMaxCool3}回まで可・下限達成まであと${remMinCool3}回）`
+                : `目安 0〜${softPaceMax}回（月間残り上限あと${remMaxCool3 ?? physicalCap}回まで可・必要枠に応じて柔軟配置）`;
+
+          delete st._enteringLastFacilityId;
+          delete st._enteringLastFacilityLabel;
+          delete st._enteringLastShiftCode;
+          delete st._forbidCool3OnFirstDay;
+          delete st._maxOptionalBlanksInThisWeek;
         });
 
         const dailyHeadcountBalancePlan = {};
@@ -7462,138 +7534,6 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             plannedLeaders: dailyPlannedLeaders[d],
             requiredLeaders: dailyRequiredLeaders[d],
           };
-        });
-
-        return {
-          targetWeek,
-          weekStepId,
-          firstDay,
-          lastDay,
-          allowedWeekDaysSet,
-          weekCalendar,
-          weekDailySummary,
-          exactTargetCountsByDay,
-          staffRequestsInWeek,
-          teamAdminLocksInWeek,
-          weeklyStaffList,
-          dailyHeadcountBalancePlan,
-          physicalCool3Cap,
-          weekTargetCool3Slots,
-        };
-      });
-
-      // Pass 2: 月間全体の3クール上下限（minCool3〜maxCool3）を全対象週へ均等配分
-      const weekCool3MinQuota = weekPrePlans.map(() => ({}));
-      const weekCool3MaxQuota = weekPrePlans.map(() => ({}));
-      const weekAllocatedCool3Min = weekPrePlans.map(() => 0);
-      const weekAllocatedCool3Max = weekPrePlans.map(() => 0);
-
-      initialData.staff.forEach(st => {
-        weekPrePlans.forEach((_, wIdx) => {
-          weekCool3MinQuota[wIdx][st.id] = 0;
-          weekCool3MaxQuota[wIdx][st.id] = 0;
-        });
-      });
-
-      shuffleArray(initialData.staff).forEach(st => {
-        if (st.excludeFromAi || weekPrePlans.length === 0) return;
-        const existingCool3InMonth = st.currentStats?.cool3Count || 0;
-        const minTotal = Number(st.minCool3 || 0);
-        const hasFiniteMax = st.maxCool3 !== undefined && st.maxCool3 !== null;
-        const maxTotal = hasFiniteMax ? Number(st.maxCool3) : 99;
-        const needMinNew = Math.max(0, Math.min(maxTotal, minTotal) - existingCool3InMonth);
-        const allowMaxNew = Math.max(0, maxTotal - existingCool3InMonth);
-
-        let assignedMin = 0;
-        for (let i = 0; i < needMinNew; i++) {
-          const eligibleWeeks = weekPrePlans
-            .map((_, wIdx) => wIdx)
-            .filter(wIdx => weekCool3MinQuota[wIdx][st.id] < (weekPrePlans[wIdx].physicalCool3Cap[st.id] || 0));
-          if (eligibleWeeks.length === 0) break;
-
-          const sortedEligible = shuffleArray(eligibleWeeks).sort((a, b) => {
-            const minA = weekCool3MinQuota[a][st.id];
-            const minB = weekCool3MinQuota[b][st.id];
-            if (minA !== minB) return minA - minB;
-            const loadA = weekAllocatedCool3Min[a] / Math.max(1, weekPrePlans[a].weekTargetCool3Slots);
-            const loadB = weekAllocatedCool3Min[b] / Math.max(1, weekPrePlans[b].weekTargetCool3Slots);
-            return loadA - loadB;
-          });
-
-          const pickW = sortedEligible[0];
-          weekCool3MinQuota[pickW][st.id]++;
-          weekCool3MaxQuota[pickW][st.id]++;
-          weekAllocatedCool3Min[pickW]++;
-          weekAllocatedCool3Max[pickW]++;
-          assignedMin++;
-        }
-
-        if (!hasFiniteMax) {
-          weekPrePlans.forEach((pre, wIdx) => {
-            weekCool3MaxQuota[wIdx][st.id] = pre.physicalCool3Cap[st.id] || 0;
-          });
-        } else {
-          const extraMax = Math.max(0, allowMaxNew - assignedMin);
-          for (let i = 0; i < extraMax; i++) {
-            const eligibleWeeks = weekPrePlans
-              .map((_, wIdx) => wIdx)
-              .filter(wIdx => weekCool3MaxQuota[wIdx][st.id] < (weekPrePlans[wIdx].physicalCool3Cap[st.id] || 0));
-            if (eligibleWeeks.length === 0) break;
-
-            const sortedEligible = shuffleArray(eligibleWeeks).sort((a, b) => {
-              const maxA = weekCool3MaxQuota[a][st.id];
-              const maxB = weekCool3MaxQuota[b][st.id];
-              if (maxA !== maxB) return maxA - maxB;
-              const loadA = weekAllocatedCool3Max[a] / Math.max(1, weekPrePlans[a].weekTargetCool3Slots);
-              const loadB = weekAllocatedCool3Max[b] / Math.max(1, weekPrePlans[b].weekTargetCool3Slots);
-              return loadA - loadB;
-            });
-
-            const pickW = sortedEligible[0];
-            weekCool3MaxQuota[pickW][st.id]++;
-            weekAllocatedCool3Max[pickW]++;
-          }
-        }
-      });
-
-      // Pass 3: 各週の確定プロンプトと Payload を組み立て
-      const weekBuildPlans = weekPrePlans.map((pre, wIdx) => {
-        const {
-          targetWeek,
-          weekStepId,
-          firstDay,
-          lastDay,
-          allowedWeekDaysSet,
-          weekCalendar,
-          weekDailySummary,
-          exactTargetCountsByDay,
-          staffRequestsInWeek,
-          teamAdminLocksInWeek,
-          weeklyStaffList,
-          dailyHeadcountBalancePlan,
-        } = pre;
-
-        weeklyStaffList.forEach(st => {
-          const minQuota = weekCool3MinQuota[wIdx][st.id] || 0;
-          const maxQuota = weekCool3MaxQuota[wIdx][st.id] || 0;
-          st.cumulativeStatsSoFar.remainingCool3 = maxQuota;
-          st.cumulativeStatsSoFar.remainingMinCool3Needed = minQuota;
-          st.thisWeekPlan.mustAssignNewCool3MinInThisWeek = minQuota;
-          st.thisWeekPlan.maxAllowedNewCool3InThisWeek = maxQuota;
-          st.thisWeekPlan.recommendedNewCool3InThisWeek =
-            maxQuota === 0
-              ? '0回（★月間配分調整により今週は3クール割当なし・0回厳守★）'
-              : minQuota > 0
-                ? minQuota === maxQuota
-                  ? `${minQuota}回（★月間下限${st.minCool3}回達成のため今週${minQuota}回必須★）`
-                  : `${minQuota}〜${maxQuota}回（★月間下限${st.minCool3}回達成のため今週最低${minQuota}回を最優先・上限${maxQuota}回まで★）`
-                : `0〜${maxQuota}回（今週の上限${maxQuota}回以内）`;
-
-          delete st._enteringLastFacilityId;
-          delete st._enteringLastFacilityLabel;
-          delete st._enteringLastShiftCode;
-          delete st._forbidCool3OnFirstDay;
-          delete st._plannedWorkAddedBeforeThisWeek;
         });
 
         const shuffledWeeklyStaffList = shuffleArray(weeklyStaffList);
@@ -7621,24 +7561,24 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
             currentDailySummary: weekDailySummary,
             dailyShuffledStaffOrder,
           },
-          pacingRules: initialData.pacingRules,
-          categories: initialData.categories,
-          facilityPowerTargets: initialData.facilityPowerTargets,
-          facilitySkillRequirements: initialData.facilitySkillRequirements,
-          cool3ShiftCodes: initialData.cool3ShiftCodes,
-          definitions: initialData.definitions,
+          pacingRules: liveData.pacingRules,
+          categories: liveData.categories,
+          facilityPowerTargets: liveData.facilityPowerTargets,
+          facilitySkillRequirements: liveData.facilitySkillRequirements,
+          cool3ShiftCodes: liveData.cool3ShiftCodes,
+          definitions: liveData.definitions,
           staff: shuffledWeeklyStaffList,
           staffRequestsInWeek,
           teamAdminLocksInWeek,
         };
 
         const dailyCheckExampleLines = targetWeek.days
-          .map(d => `          "${d}": "${month}/${d}のチェック: 既存シフト含め必要人数・各施設リーダー・目標スコア・連勤上限・週休空欄を確認"`)
+          .map(d => `          "${d}": "${month}/${d}のチェック: 既存シフト含め必要人数・各施設リーダー・目標スコア・施設ローテーション・週休空欄を確認"`)
           .join(',\n');
 
         const weekPrompt = `
-      【タスク：月間事前設計に基づく並列ビルド — 第${targetWeek.weekIndex}週（${targetWeek.label}）のシフト作成】
-      1ヶ月全体の公休バランス・出勤日数・3クール配分枠を事前設計した上で、全週を並列作成しています。今回は **第${targetWeek.weekIndex}週の対象日 [${targetWeek.days.join(', ')}] のみ** について、各職員の今週プラン（thisWeekPlan）を守りながら必要な出勤シフトのみを割り当ててください。
+      【タスク：段階的シフト作成 — 第${targetWeek.weekIndex}週（${targetWeek.label}）のシフト作成】
+      第1週から順番に実績を引き継ぎながら作成しています。今回は **第${targetWeek.weekIndex}週の対象日 [${targetWeek.days.join(', ')}] のみ** について、前週までの実績（cumulativeStatsSoFar）と今週プラン（thisWeekPlan）を踏まえ、各日の必要人数と施設・シフトのバランスが良くなるよう出勤シフトを割り当ててください。
       ※対象日 [${targetWeek.days.join(', ')}] 以外の日付は絶対に出力しないでください。
 
       ${shiftSystemRefText}
@@ -7647,38 +7587,29 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       1. 既存データ・各班管理者入力・個人希望の維持と活用（★絶対厳守★）:
          - 各職員の "thisWeekPlan.assignableDaysInThisWeek" に含まれる日付のみ、AIから出勤シフトを新規割り当てできます。
          - 既にシフトが入っている箇所（thisWeekPlan.existingShiftsInThisWeek）、希望休をクリアした確定空欄日（lockedBlankOffDaysInThisWeek）、"teamAdminLocksInWeek"・"staffRequestsInWeek" にある箇所は絶対に変更しないでください。
-         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は必ず別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください（thisWeekPlan と currentDailySummary に事前反映済みです）。
-      2. AI除外・配置可能シフト制限・対象カテゴリ限定・祝日と振休の扱い（★絶対厳守★）:
+         - 既存シフトのうち、勤務施設のメンバーは人数・powerScore・保持スキル（リーダー等）・連勤数すべてに含め、ME室（${meShiftDescStr}）や「出勤」の日はその職員の連勤数・出勤日数に含めてください。一方、「公出」は業務出張扱いのため日別出勤人数・現場出勤日数・連勤数にはカウントせず、公出しか入っていない週（休み・希望休が入っていない週）は別日に1日を空欄の公休として残して現場出勤4日間とし、公出と休み（休・年休等）の両方が入っている週は残り4日間にそのまま出勤シフトを割り当ててください。
+      2. AI除外・配置可能シフト制限・対象カテゴリ限定・祝日の扱い（★絶対厳守★）:
          - "excludeFromAi": true の職員は変更しない。日曜日は透析休診のため対象外。
-         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜日以外は透析を実施するため、各施設の必要人数（exactTargetCountsByDay）を満たすよう出勤シフトを割り当て、残りの職員は「空欄（祝日休み）」のまま残してください。
-         - 祝日が「空欄（休み）」になった職員は、その祝日の空欄を「その週の週休1日分（週休枠）」としてカウントし、基本は残り5日間を出勤にします（ただし同じ週に休・年休・振休・公出等の休み希望がある場合は、祝日の空欄と合わせて週4日以下の出勤になっても構いません）。祝日に出勤した職員は、同じ週に休・振休等がなければ他の平日に1日「空欄の公休」を残して5日出勤とし、別週に「振休」が入っている場合はその振休を該当週の休み1日分として扱います（同週に他の休み希望があれば週4日以下の出勤で可）。
-         - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）は管理者・個人・OPE班入力用のためAI配置対象外です（新規出力禁止・既存変更禁止）。
+         - 祝日および外来診療休診日（calendar[d].isHoliday: true）でも日曜日以外は透析を実施するため、各施設の必要人数（exactTargetCountsByDay）を満たすよう出勤シフトを割り当ててください。
+         - AIが出力できるのは【勤務施設】カテゴリ（坂田・君津・木クリ・じんクリ等）のシフトコードのみです。ME室（${meShiftDescStr}）およびその他（出勤・公出等）はAI配置対象外です（新規出力禁止・既存変更禁止）。
          - 出勤シフトは必ずその職員の "allowedWorkShifts"（1日については "day1AllowedWorkShifts"）に含まれる【シフトコード】のみから選んでください（※表示名ではなくコード文字列を出力すること）。
-      3. 事前フラット配分済みの今週の週休計画（空欄残し）と最大${maxStreak}連勤制限（★最重要★）:
-         - 特定の曜日に公休が重なって人数不足が起きないよう、各日の必要人数合計（targetCounts）とリーダー最低人数を考慮して「今週の公休予定日（thisWeekPlan.plannedBlankOffDaysInThisWeek）」と「今週の出勤予定日（thisWeekPlan.plannedWorkDaysInThisWeek）」をプログラムで事前バランス配分済みです（日別の全体見通しは targetWeek.dailyHeadcountBalancePlan、当日の出勤候補順は targetWeek.dailyShuffledStaffOrder を参照）。
-         - [絶対] カスタム条件で該当職員に別曜日の休み・出勤が明示指定されている場合を除き、原則として **plannedBlankOffDaysInThisWeek は空欄のまま残し（"shift" に出力しない）**、**plannedWorkDaysInThisWeek の日に出勤シフトを割り当ててください**。
-         - 連続出勤は最大「${maxStreak}日（${maxStreak}連勤）」までです。"thisWeekPlan.enteringWorkStreak" と合算して${maxStreak + 1}連勤以上にならないよう、"maxAllowedConsecutiveFromWeekStart" および "mustKeepBlankDaysMinInThisWeek"・"recommendedNewWorkDaysInThisWeek" を必ず厳守してください。
+      3. 今週の公休バランス計画と最大${maxStreak}連勤制限・必要人数のしっかりした充足（★重要★）:
+         - 日別の出勤人数が偏らないよう、"thisWeekPlan.plannedBlankOffDaysInThisWeek"（公休候補日）と "thisWeekPlan.plannedWorkDaysInThisWeek"（出勤予定日）を事前バランス配分しています。
+         - 原則として **plannedWorkDaysInThisWeek の日は漏れなく出勤シフトを割り当て**、**plannedBlankOffDaysInThisWeek は空欄（公休）のまま残してください**。ただし、特定シフトの必要人数や必須スキルが欠ける場合は、その職員の週休最低日数（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・パート週契約上限（contractWorkDaysMax）を絶対に破らない範囲で、同週内の出勤日と公休日を入れ替えて必要人数を満たす工夫をして構いません。
          - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。
-      4. 事前月間配分に基づく3クール上限・下限と連続3クール禁止（★絶対厳守★）:
-         - 現在のシステム設定における3クールシフト（${cool3DescStr}）は、全週の合計が月間上下限（minCool3〜maxCool3）にピタリと収まるよう、今週分の配分枠（"thisWeekPlan.mustAssignNewCool3MinInThisWeek" 〜 "maxAllowedNewCool3InThisWeek"）を事前決定済みです。"thisWeekPlan.maxAllowedNewCool3InThisWeek" を1回でも超えて割り当てることは絶対禁止です（0回の職員には絶対に3クールを入れないこと）。
-         - "thisWeekPlan.mustAssignNewCool3MinInThisWeek" が1回以上ある職員には、"thisWeekPlan.recommendedNewCool3InThisWeek" に従って他の職員より最優先で3クール枠を割り当ててください。
-         - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です。特に "forbidCool3OnFirstDayOfWeek": true の職員には今週初日（${firstDay}日）に3クールを絶対に入れないでください。
-      5. 施設ごとの必須スキル最低人数（Step 4）と不足時の次善策:
-         - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】
-         - まず各施設に該当スキル保持者（リーダー等）が最低人数以上入るように優先配置してください。
-         - どうしても出勤可能な保持者が足りない日は、希望休・既存シフト・配置不可制限・最大${maxStreak}連勤上限を破らず、「1施設に2名以上偏らせず1名ずつ分散配置」し、0名の施設にはベテラン（skills.isVeteran: true）や高powerScoreスタッフを配置してカバーしてください。
-      6. パワーバランスと必要人数・余剰時の日勤分散・不足時の優先順位・負担平準化:
-         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay"（キーはシフトコード）と "currentDailySummary" を参照して、可能な範囲で満たしてください。
-         - 【余剰人数（オーバー）が出る日の配置ルール】個人の所定出勤日数・パート契約日数を守った結果、出勤予定人数が必要人数合計を上回る日（targetWeek.dailyHeadcountBalancePlan[d].surplus > 0）は、3クール枠を必要人数以上にオーバーさせず、余剰分は各施設の「日勤（1クール）枠」へ偏りなく分散して配置してください（管理者が後から有休へ変更したり不足日へ移動させやすくするため）。
-         - 【重要：完璧に埋めきらなくてよいルール】AI対象スタッフだけで必要人数を100%埋めようとして、誰かの週休確保（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・3クール制限・配置制限を破ることは絶対禁止です。足りない枠は後からパート職員やAI除外スタッフ・管理者の手動調整で補う前提のため、出勤可能人数が足りない日は無理をせず不足のまま残してください。
-         - 出勤可能なAI対象スタッフ数がその日の必要人数合計に届かない場合は、①各施設の必須スキル（リーダー等）と、②3クール・2クール等の主力枠を優先して割り当て、パートや手動調整で補いやすい枠（日勤・半日・サブ枠など）の方を未達として残してください。
-         - 各施設のパワーバランス平準化（案A：施設間の1人あたり平均powerScore均等化）: 【${powerScoreSummaryText}】（ME室は対象外）。スタッフ全体の保有スキルスコアが高いため、単なる固定合計点ではなく「その日に出勤するスタッフの1人あたり平均powerScore」が各施設間で均等になるように（特定の施設に12〜13点の高スコア者が固まり、別施設の1人あたり平均スコアが当日全体平均より0.9点以上低くなる偏りが起きないように）高スコア者と中堅・若手を施設間でバランスよく分散配置してください。
-         - "cumulativeStatsSoFar"（これまでの出勤日数・3クール回数・残業時間）を見て、負担が偏らないよう平準化してください。
-      7. 日ごとの勤務地ローテーション・ランダム分散・施設偏りの防止（★重要★）:
-         - 機械的な固まり配置の禁止: 同じ日に名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めて並べたり、特定の職員を1週間ずっと同じ施設に張り付ける組み方はやめてください。各日の検討順（"targetWeek.dailyShuffledStaffOrder"）を活用し、人ごと・日ごとに自然なランダム性を持たせてください。
-         - 日替わり勤務地ローテーション: 複数の施設に配置可能な職員（"thisWeekPlan.rotationGuide" がある職員）は、可能な限り前営業日と同じ施設（週初日は "enteringLastFacility"）が連続しないよう、**日ごとに別の勤務地・別のクール区分へバラけてローテーション**させてください（"rotationGuide.dailyFacilityPreferenceHint" の日別推奨施設順を積極的に参考にしてください）。
-         - 月間の施設偏り平準化: "cumulativeStatsSoFar.facilityCountsSoFar" と "rotationGuide.underusedFacilitiesFirst" を確認し、これまでに入った回数が少ない施設へ優先配置して個人ごとの勤務地バランスを整えてください。
-         - ※ただし、配置制限（allowedWorkShifts）・[絶対]カスタム条件（曜日や施設の固定指定など）・必須スキル最低人数・必要人数の充足・連勤上限・週休確保が最優先です。それらを厳守した範囲で最大限バラけさせてください。
+      4. 3クール上限・連続3クール禁止と柔軟なペース配分（★重要★）:
+         - 3クールシフト（${cool3DescStr}）は、月間残り上限（"thisWeekPlan.maxAllowedNewCool3InThisWeek"）を超えて割り当てることは禁止です。
+         - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です（"forbidCool3OnFirstDayOfWeek": true の職員には今週初日 ${firstDay}日 に3クールを入れないこと）。
+         - 月間上限の範囲内であれば特定の人に固定せず、"thisWeekPlan.recommendedNewCool3InThisWeek" を目安にしながら、各日の3クール必要枠がしっかり埋まり、かつ月間下限（remainingMinCool3Needed > 0）がまだ残っている職員へ優先的に回るよう柔軟に配分してください。
+      5. 施設ごとの必須スキル最低人数とパワーバランス・必要人数の充足:
+         - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】を満たすよう優先配置してください。
+         - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay" と "currentDailySummary" を参照し、出勤予定スタッフ全員を使って**空欄の取りこぼしなくバランスよく埋めてください**。
+         - 出勤予定人数が必要人数合計を上回る日（dailyHeadcountBalancePlan[d].surplus > 0）は、3クール枠を必要人数以上にオーバーさせず、余剰分は各施設の日勤・2クール枠へ偏りなく分散して配置してください。
+         - 各施設のパワーバランス平準化: 【${powerScoreSummaryText}】。その日に出勤するスタッフの1人あたり平均powerScoreが施設間で極端に偏らないよう、高スコア者と中堅・若手を施設間でバランスよく分散配置してください。
+      6. 日ごとの勤務地・シフト種別ローテーションと偏り防止（★最重要★）:
+         - 機械的な固まり配置の禁止: 名簿順で「AAAA, FFFF」のように同じ施設・同じシフトを固めたり、特定の職員を1週間ずっと同じ施設や同じ勤務区分（日勤ばかり・2クールばかり等）に張り付ける組み方は絶対にやめてください。
+         - 日替わり勤務地ローテーション: 複数施設に配置可能な職員（"thisWeekPlan.rotationGuide" がある職員）は、前営業日と同じ施設（週初日は "enteringLastFacility"）が連続しないよう、**日ごとに別の施設・別のクール区分（2クール⇔日勤⇔3クール）へ自然にローテーション**させてください（"rotationGuide.dailyFacilityPreferenceHint" を積極活用）。
+         - 月間の施設＆シフト種別バランス: 前週までの実績である "cumulativeStatsSoFar.facilityCountsSoFar"（施設別回数）と "cumulativeStatsSoFar.shiftSlotCountsSoFar"（クール区分別回数）を確認し、**これまでに入った回数が少ない施設・少ないクール区分へ優先配置**して、1ヶ月を通した個人の偏りを解消してください。
 
       【カスタム条件①：[絶対] ルール（★最優先で必ず守る条件★ ※文中のシフト名・施設名は上の対応表の表示名・区分からコードへ変換して適用すること）】
       ${strictConditions ? strictConditions : '特になし'}
@@ -7704,138 +7635,76 @@ ${dailyCheckExampleLines}
       ${JSON.stringify(weeklyPayload)}
       `;
 
-        return {
-          targetWeek,
-          weekStepId,
-          allowedWeekDaysSet,
-          weekPrompt,
+        let weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+        if (!isRunActive()) break;
+
+        let weekPass = computeAiAppliedSchedule(
+          weekRaw,
+          workingShifts,
+          workingTasks,
+          originalShifts,
+          originalTasks,
+          false,
+          allowedWeekDaysSet
+        );
+
+        if (!weekPass.parsedOk && !(typeof weekRaw === 'string' && weekRaw.startsWith('⚠️'))) {
+          console.warn(`第${targetWeek.weekIndex}週の初回応答解析に失敗したため1回リトライします:`, weekPass.message);
+          updateStepItem(weekStepId, { status: 'active', detail: '応答を再取得中 (1/1)...' });
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          if (!isRunActive()) break;
+          weekRaw = await callGemini(weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
+          if (!isRunActive()) break;
+          weekPass = computeAiAppliedSchedule(
+            weekRaw,
+            workingShifts,
+            workingTasks,
+            originalShifts,
+            originalTasks,
+            false,
+            allowedWeekDaysSet
+          );
+        }
+
+        if (!isRunActive()) break;
+
+        const weekDurationMs = Math.max(500, Date.now() - weekStartedMs);
+        const weekDurationSec = Math.max(1, Math.round(weekDurationMs / 1000));
+        const completedCount = wIdx + 1;
+        autoFillTimingRef.current = {
+          ...autoFillTimingRef.current,
+          completedBuildWeeks: completedCount,
+          completedBuildMs: autoFillTimingRef.current.completedBuildMs + weekDurationMs,
+          currentStepStartMs: Date.now(),
         };
-      });
+        setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
+        setAiProgress(prev => Math.max(prev, Math.min(80, Math.round(10 + (completedCount / weeksToBuild.length) * 70))));
 
-      // Stage B: 全対象週を並列実行（250msずつ開始をずらしバースト制限を回避）
-      if (weekBuildPlans.length > 0) {
-        progressCeiling = 80;
-        setAiProgress(prev => Math.max(prev, 10));
-        weekBuildPlans.forEach(plan => {
-          updateStepItem(plan.weekStepId, { status: 'active', detail: 'AI並列計算中...' });
-        });
-        setAiLoadingMessage(
-          weekBuildPlans.length > 1
-            ? `全${weekBuildPlans.length}週を並列でシフト作成中... (0/${weekBuildPlans.length}週完了)`
-            : `第${weekBuildPlans[0].targetWeek.weekIndex}週（${weekBuildPlans[0].targetWeek.label}）のシフトを作成中...`
-        );
-        setAiLoadingSubDetail(
-          `月間全体の公休フラット配分・3クール枠を事前計算済み。${skillReqSummaryText}・日替わり施設ローテーションを並列計算しています`
-        );
+        if (weekPass.parsedOk) {
+          const weekEnforced = enforcePersonalRulesAndCool3Bounds(
+            weekPass.nextShifts,
+            originalShifts,
+            allowedWeekDaysSet
+          );
+          workingShifts = weekEnforced.nextShifts;
+          totalUpdatedCells += weekPass.count + weekEnforced.changedCount;
 
-        let completedParallelWeeks = 0;
-
-        await Promise.all(
-          weekBuildPlans.map(async (plan, pIdx) => {
-            if (pIdx > 0) {
-              await new Promise(resolve => setTimeout(resolve, pIdx * 250));
-            }
-            if (!isRunActive()) return;
-
-            const weekStartedMs = Date.now();
-            let weekRaw = await callGemini(plan.weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
-            if (!isRunActive()) return;
-
-            let weekPass = computeAiAppliedSchedule(
-              weekRaw,
-              originalShifts,
-              originalTasks,
-              originalShifts,
-              originalTasks,
-              false,
-              plan.allowedWeekDaysSet
-            );
-
-            // 一時的なJSON崩れやタイムアウト時は該当週のみ1回リトライ（APIキー未設定等の即エラーは除外）
-            if (!weekPass.parsedOk && !(typeof weekRaw === 'string' && weekRaw.startsWith('⚠️'))) {
-              console.warn(`第${plan.targetWeek.weekIndex}週の初回応答解析に失敗したため1回リトライします:`, weekPass.message);
-              updateStepItem(plan.weekStepId, { status: 'active', detail: '応答を再取得中 (1/1)...' });
-              await new Promise(resolve => setTimeout(resolve, 1500));
-              if (!isRunActive()) return;
-              weekRaw = await callGemini(plan.weekPrompt, systemInstruction, aiModel, { responseMimeType: 'application/json' });
-              if (!isRunActive()) return;
-              weekPass = computeAiAppliedSchedule(
-                weekRaw,
-                originalShifts,
-                originalTasks,
-                originalShifts,
-                originalTasks,
-                false,
-                plan.allowedWeekDaysSet
-              );
-            }
-
-            if (!isRunActive()) return;
-
-            const weekDurationMs = Math.max(500, Date.now() - weekStartedMs);
-            const weekDurationSec = Math.max(1, Math.round(weekDurationMs / 1000));
-            completedParallelWeeks++;
-            autoFillTimingRef.current = {
-              ...autoFillTimingRef.current,
-              completedBuildWeeks: completedParallelWeeks,
-              completedBuildMs: autoFillTimingRef.current.completedBuildMs + weekDurationMs,
-              currentStepStartMs: Date.now(),
-            };
-            setAiRemainingText(computeRemainingStatusText(autoFillTimingRef.current));
-            setAiProgress(prev => Math.max(prev, Math.min(80, Math.round(10 + (completedParallelWeeks / weekBuildPlans.length) * 70))));
-
-            if (weekPass.parsedOk) {
-              const weekEnforced = enforcePersonalRulesAndCool3Bounds(
-                weekPass.nextShifts,
-                originalShifts,
-                plan.allowedWeekDaysSet
-              );
-              const mergedShifts = { ...workingShifts };
-              Object.keys(weekEnforced.nextShifts || {}).forEach(sId => {
-                const updatedRow = { ...(mergedShifts[sId] || {}) };
-                let rowChanged = false;
-                plan.targetWeek.days.forEach(d => {
-                  const val = weekEnforced.nextShifts[sId]?.[d];
-                  if (val !== undefined && val !== null) {
-                    if (updatedRow[d] !== val) {
-                      updatedRow[d] = val;
-                      rowChanged = true;
-                    }
-                  } else if (Object.prototype.hasOwnProperty.call(updatedRow, d) && !originalShifts[sId]?.[d]) {
-                    delete updatedRow[d];
-                    rowChanged = true;
-                  }
-                });
-                if (rowChanged) {
-                  mergedShifts[sId] = updatedRow;
-                }
-              });
-              workingShifts = mergedShifts;
-              totalUpdatedCells += weekPass.count + weekEnforced.changedCount;
-
-              setShiftData(workingShifts);
-              setLastLiveFilledWeekLabel(
-                `第${plan.targetWeek.weekIndex}週（${plan.targetWeek.label}）を仮反映済み（${completedParallelWeeks}/${weekBuildPlans.length}週完了）`
-              );
-              setAiLoadingMessage(
-                completedParallelWeeks < weekBuildPlans.length
-                  ? `全${weekBuildPlans.length}週を並列でシフト作成中... (${completedParallelWeeks}/${weekBuildPlans.length}週完了)`
-                  : '全週のシフト作成が完了しました！全体検算へ進みます...'
-              );
-              updateStepItem(plan.weekStepId, {
-                status: 'done',
-                detail: weekPass.count > 0 ? `+${weekPass.count}枠配置（${weekDurationSec}秒）` : `変更なし（${weekDurationSec}秒）`,
-              });
-            } else {
-              const rawErrText = typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') ? weekRaw : weekPass.message;
-              weekErrors.push(`第${plan.targetWeek.weekIndex}週(${plan.targetWeek.label}): ${rawErrText || '応答エラー'}`);
-              updateStepItem(plan.weekStepId, {
-                status: 'done',
-                detail: '後の全体検算で補完',
-              });
-            }
-          })
-        );
+          setShiftData(workingShifts);
+          setLastLiveFilledWeekLabel(
+            `第${targetWeek.weekIndex}週（${targetWeek.label}）を仮反映済み（${completedCount}/${weeksToBuild.length}週完了）`
+          );
+          updateStepItem(weekStepId, {
+            status: 'done',
+            detail: weekPass.count > 0 ? `+${weekPass.count}枠配置（${weekDurationSec}秒）` : `変更なし（${weekDurationSec}秒）`,
+          });
+        } else {
+          const rawErrText = typeof weekRaw === 'string' && weekRaw.startsWith('⚠️') ? weekRaw : weekPass.message;
+          weekErrors.push(`第${targetWeek.weekIndex}週(${targetWeek.label}): ${rawErrText || '応答エラー'}`);
+          updateStepItem(weekStepId, {
+            status: 'done',
+            detail: '後の全体検算で補完',
+          });
+        }
       }
 
       if (!isRunActive()) {
