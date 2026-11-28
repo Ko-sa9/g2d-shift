@@ -1,10 +1,10 @@
-const functions = require("firebase-functions");
+const { onCall, HttpsError } = require("firebase-functions/https");
 
-exports.callGeminiAPI = functions.https.onCall(
+exports.callGeminiAPI = onCall(
   { timeoutSeconds: 540, memory: "1GiB" },
-  async (data) => {
+  async (request) => {
     // サーバーのバージョン(第2世代)の違いによる、データの格納場所のズレを吸収します
-    const requestData = data.data || data;
+    const requestData = request.data || request;
 
     // フロントエンドからデータを受け取ります
     const prompt = String(requestData.prompt || "").trim();
@@ -27,12 +27,12 @@ exports.callGeminiAPI = functions.https.onCall(
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      throw new functions.https.HttpsError("internal", "サーバーにAPIキーが設定されていません。");
+      throw new HttpsError("internal", "サーバーにAPIキーが設定されていません。");
     }
 
     // プロンプトも会話履歴も空の場合はAIに送る前にエラーで返します
     if (!prompt && (!rawContents || rawContents.length === 0)) {
-      throw new functions.https.HttpsError("invalid-argument", "AIへの指示内容が空です。");
+      throw new HttpsError("invalid-argument", "AIへの指示内容が空です。");
     }
 
     try {
@@ -140,7 +140,7 @@ exports.callGeminiAPI = functions.https.onCall(
       return { text };
     } catch (error) {
       console.error("Gemini API Error:", error);
-      throw new functions.https.HttpsError("internal", error.message || "AI呼び出し中にサーバーエラーが発生しました。");
+      throw new HttpsError("internal", error.message || "AI呼び出し中にサーバーエラーが発生しました。");
     }
   }
 );
