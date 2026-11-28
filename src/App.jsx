@@ -617,6 +617,14 @@ const isJinkuriFacilityCategory = (cat) => {
   return id === 'jinkuri' || lbl.includes('じん') || lbl.includes('腎');
 };
 
+// 木クリ施設カテゴリかどうかを判定（2クール以下施設のうちリーダー1名以上必須の対象）
+const isKikuriFacilityCategory = (cat) => {
+  if (!cat || resolveCategoryKind(cat) !== 'facility') return false;
+  const id = String(cat.id || '').trim().toLowerCase();
+  const lbl = String(cat.label || '').trim();
+  return id === 'kikuri' || lbl.includes('木クリ') || lbl.includes('木更津');
+};
+
 // 役割（タスク）に設定された施設別の必要人数マップ（じんクリは _mwf / _tts 分割対応・1名以上）を取得
 const getRoleFacilityTargets = (taskDef, categoryDefs = {}) => {
   if (!taskDef || !taskDef.facilityTargets || typeof taskDef.facilityTargets !== 'object') return {};
@@ -1697,24 +1705,112 @@ const evaluateScheduleValidation = ({
       }
     }
 
-    // (b) 施設別必須スキルチェック（リーダー等）
+    // (b) 施設別必須スキルチェック（3クール枠内リーダー必須 ＆ 2クール以下は木クリのみリーダー必須）
     const skItems = [];
     facilityCats.forEach(cat => {
-      const catShiftCodes = Object.values(shiftDefs)
-        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id)
-        .map(sd => sd.code);
+      const catShiftDefs = Object.values(shiftDefs)
+        .filter(sd => sd && getEffectiveShiftType(sd, categoryDefs) === 'shift' && sd.category === cat.id);
+      const catShiftCodes = catShiftDefs.map(sd => sd.code);
       if (catShiftCodes.length === 0) return;
 
       const catTargetHc = catShiftCodes.reduce((sum, c) => sum + readTargetCount(c, d), 0);
       const catActualHc = actualHeadcountByCat[cat.id] || 0;
       if (catTargetHc === 0 && catActualHc === 0) return;
 
+      const catHasAnyCool3Def = catShiftDefs.some(sd => cool3Set.has(sd.code));
+      const activeCool3DefsToday = catShiftDefs.filter(
+        sd => cool3Set.has(sd.code) && (readTargetCount(sd.code, d) > 0 || (codeCounts[sd.code] || 0) > 0)
+      );
+
       STAFF_SKILLS.forEach(sk => {
+        if (sk.key === 'isLeader') {
+          // ① 3クールがある施設で当日3クール枠が稼働している場合: 「3クール枠の中に」リーダー1名以上必須
+          if (activeCool3DefsToday.length > 0) {
+            activeCool3DefsToday.forEach(c3Def => {
+              const c3LeaderActual = staffList.filter(
+                s => shiftsMap?.[s.id]?.[d] === c3Def.code && s.skills?.isLeader
+              ).length;
+              if (c3LeaderActual < 1) {
+                const sameDayNonC3Leaders = staffList.filter(s => {
+                  const sc = shiftsMap?.[s.id]?.[d];
+                  return Boolean(sc && !cool3Set.has(sc) && s.skills?.isLeader && isShiftAllowed(s, c3Def.code));
+                });
+                const blankLeaders = staffList.filter(
+                  s => s.skills?.isLeader && canSafelyFillBlankOnDay(s, d) && isShiftAllowed(s, c3Def.code)
+                );
+                const isAiFixable = sameDayNonC3Leaders.length > 0 || blankLeaders.length > 0;
+                const hint = sameDayNonC3Leaders.length > 0
+                  ? '同日の日勤・2クールにリーダー保持者あり'
+                  : blankLeaders.length > 0
+                    ? '未割当のリーダー保持者あり'
+                    : '';
+                skItems.push({
+                  catId: cat.id,
+                  catLabel: `${cat.label}(${c3Def.label})`,
+                  skillKey: 'isLeader',
+                  skillLabel: '3クール内リーダー',
+                  actual: c3LeaderActual,
+                  target: 1,
+                  isAiFixable,
+                  hint,
+                });
+                if (isAiFixable) {
+                  aiRepairableItems.push(
+                    `[3クール内リーダー不足] ${month}/${d}(${dowLabel}): ${cat.label}の3クール「${c3Def.label}」(コード:"${c3Def.code}")内にリーダーが0名です（${hint}）。同日の通常シフトにいるリーダー保持者と入れ替えて必ず3クール内にリーダーを1名以上確保してください。`
+                  );
+                }
+              }
+            });
+            return;
+          }
+
+          // ② 2クールまでの施設は「木クリ」のみリーダー1名以上必須（3クール施設の3クール非稼働日は設定値に従う）
+          if (!catHasAnyCool3Def && !isKikuriFacilityCategory(cat)) {
+            return;
+          }
+          const reqLeaderMin = isKikuriFacilityCategory(cat) ? Math.max(1, readSkillMin(cat.id, 'isLeader')) : readSkillMin(cat.id, 'isLeader');
+          if (reqLeaderMin <= 0) return;
+          const actualLeader = skillCountsByCat[cat.id]?.isLeader || 0;
+          if (actualLeader < reqLeaderMin) {
+            const surplusCats = facilityCats
+              .filter(other => {
+                if (other.id === cat.id) return false;
+                const otherActual = skillCountsByCat[other.id]?.isLeader || 0;
+                return otherActual > 1;
+              })
+              .map(other => `${other.label}(${skillCountsByCat[other.id]?.isLeader}名)`);
+            const blankLeaders = staffList.filter(
+              s => s.skills?.isLeader && canSafelyFillBlankOnDay(s, d)
+            );
+            const isAiFixable = surplusCats.length > 0 || blankLeaders.length > 0;
+            const hint = surplusCats.length > 0
+              ? `同日の${surplusCats.join('・')}に余剰あり`
+              : blankLeaders.length > 0
+                ? '未割当のリーダー保持者あり'
+                : '';
+            skItems.push({
+              catId: cat.id,
+              catLabel: cat.label,
+              skillKey: 'isLeader',
+              skillLabel: sk.label,
+              actual: actualLeader,
+              target: reqLeaderMin,
+              isAiFixable,
+              hint,
+            });
+            if (isAiFixable) {
+              aiRepairableItems.push(
+                `[必須スキル不足] ${month}/${d}(${dowLabel}): ${cat.label} の リーダー が ${actualLeader}/${reqLeaderMin}名 です（${hint}）。同日の余剰リーダーと配置を入れ替えて必ず1名以上確保してください。`
+              );
+            }
+          }
+          return;
+        }
+
         const reqMin = readSkillMin(cat.id, sk.key);
         if (reqMin <= 0) return;
         const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
         if (actual < reqMin) {
-          // 同日の他施設に余剰保持者がいるか、または当日の未ロック空欄に保持者がいるか判定
           const surplusCats = facilityCats
             .filter(other => {
               if (other.id === cat.id) return false;
@@ -4686,7 +4782,58 @@ const handleResetSchedule = () => {
       );
       if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
 
+      const catShiftDefsForDay = catShiftCodes.map(c => shiftDefs[c]).filter(Boolean);
+      const catHasCool3 = catShiftDefsForDay.some(sd => isCool3ShiftDef(sd, categoryDefs));
+      const activeCool3ForDay = catShiftDefsForDay.filter(
+        sd =>
+          isCool3ShiftDef(sd, categoryDefs) &&
+          (getTargetCount(sd.code, day) > 0 || staffList.some(s => shiftsMap[s.id]?.[day] === sd.code))
+      );
+
       STAFF_SKILLS.forEach(sk => {
+        if (sk.key === 'isLeader') {
+          if (activeCool3ForDay.length > 0) {
+            activeCool3ForDay.forEach(c3Def => {
+              const c3LeaderCnt = staffList.filter(
+                s => shiftsMap[s.id]?.[day] === c3Def.code && s.skills?.isLeader
+              ).length;
+              if (c3LeaderCnt < 1) {
+                const item = {
+                  catId: cat.id,
+                  catLabel: `${cat.label}(${c3Def.label})`,
+                  skillKey: 'isLeader',
+                  skillLabel: '3クール内リーダー',
+                  actual: c3LeaderCnt,
+                  target: 1,
+                };
+                catShortages.push(item);
+                allShortages.push(item);
+              }
+            });
+            return;
+          }
+          if (!catHasCool3 && !isKikuriFacilityCategory(cat)) return;
+          const reqLeader = isKikuriFacilityCategory(cat)
+            ? Math.max(1, getFacilitySkillTarget(cat.id, 'isLeader', settingsObj))
+            : getFacilitySkillTarget(cat.id, 'isLeader', settingsObj);
+          if (reqLeader > 0) {
+            const actualL = skillCountsByCat[cat.id]?.isLeader || 0;
+            if (actualL < reqLeader) {
+              const item = {
+                catId: cat.id,
+                catLabel: cat.label,
+                skillKey: 'isLeader',
+                skillLabel: sk.label,
+                actual: actualL,
+                target: reqLeader,
+              };
+              catShortages.push(item);
+              allShortages.push(item);
+            }
+          }
+          return;
+        }
+
         const reqMin = getFacilitySkillTarget(cat.id, sk.key, settingsObj);
         if (reqMin > 0) {
           const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
@@ -6323,11 +6470,42 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       }
     });
 
+    const countLeadersOnCode = (code, d) => {
+      let cnt = 0;
+      staffList.forEach(st => {
+        if (ns[st.id]?.[d] === code && st.skills?.isLeader) cnt++;
+      });
+      return cnt;
+    };
+
+    const countLeadersInFacility = (catId, d) => {
+      if (!catId) return 0;
+      let cnt = 0;
+      staffList.forEach(st => {
+        const c = ns[st.id]?.[d];
+        if (c && shiftDefs[c]?.category === catId && isWorkCode(c) && st.skills?.isLeader) {
+          cnt++;
+        }
+      });
+      return cnt;
+    };
+
+    const wouldRemovingBreakKikuriLeader = (staff, d, nextFacId = null) => {
+      if (!staff?.skills?.isLeader) return false;
+      const curCode = ns[staff.id]?.[d];
+      const curFacId = curCode ? shiftDefs[curCode]?.category : null;
+      if (!curFacId || curFacId === nextFacId) return false;
+      if (!isKikuriFacilityCategory(categoryDefs[curFacId])) return false;
+      return countLeadersInFacility(curFacId, d) <= 1;
+    };
+
     // --- Phase 4: 連続3クール禁止（consecutive_cool3）および3クール月間上限超過（cool3_over_limit）の解消 ---
-    const replaceOrSwapOutCool3OnDay = (staff, d) => {
+    const replaceOrSwapOutCool3OnDay = (staff, d, { preserveCool3AndLeader = false } = {}) => {
       const curCool3Code = ns[staff.id]?.[d];
       if (!curCool3Code || !cool3Set.has(curCool3Code)) return false;
       const facId = shiftDefs[curCool3Code]?.category;
+      const isSoleC3Leader =
+        Boolean(staff.skills?.isLeader) && countLeadersOnCode(curCool3Code, d) <= 1;
 
       const swapPartners = staffList.filter(other => {
         if (other.id === staff.id || other.excludeFromAi) return false;
@@ -6336,6 +6514,10 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         if (!otherCode || !isWorkCode(otherCode) || cool3Set.has(otherCode)) return false;
         if (!isShiftAllowedForStaff(staff, otherCode)) return false;
         if (!canTakeCool3OnDay(other, d, curCool3Code)) return false;
+        // 3クール内の唯一のリーダーを外す場合は、相手もリーダー保持者の場合のみ許可（preserve時）
+        if (preserveCool3AndLeader && isSoleC3Leader && !other.skills?.isLeader) return false;
+        // 相手が木クリの唯一のリーダーで自分が非リーダーなら木クリのリーダーが0になるため除外
+        if (!staff.skills?.isLeader && wouldRemovingBreakKikuriLeader(other, d, facId)) return false;
         const otherC3Count = getStaffCool3Days(other.id).length;
         const otherMax = other.maxCool3 !== undefined && other.maxCool3 !== null ? Number(other.maxCool3) : 99;
         return otherC3Count < otherMax;
@@ -6343,6 +6525,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
       if (swapPartners.length > 0) {
         swapPartners.sort((a, b) => {
+          // 唯一リーダーのときは相手がリーダーであることを最優先（4-Aでもリーダー維持）
+          if (isSoleC3Leader) {
+            const aL = a.skills?.isLeader ? 1 : 0;
+            const bL = b.skills?.isLeader ? 1 : 0;
+            if (aL !== bL) return bL - aL;
+          }
           const aSameFac = shiftDefs[ns[a.id][d]]?.category === facId ? 1 : 0;
           const bSameFac = shiftDefs[ns[b.id][d]]?.category === facId ? 1 : 0;
           if (aSameFac !== bSameFac) return bSameFac - aSameFac;
@@ -6361,6 +6549,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
         return true;
       }
 
+      // preserveCool3AndLeader=true（月間上限調整時）は、3クール必要人数割れやリーダー不在を起こしてまで単純降格させない
+      if (preserveCool3AndLeader) {
+        if (isSoleC3Leader) return false;
+        if (countCodeOnDay(curCool3Code, d) <= getTargetCount(curCool3Code, d)) return false;
+      }
+
       const fallbackNonCool3 = pickAllowedNonCool3ShiftForDay(staff, d, facId);
       if (fallbackNonCool3) {
         ns[staff.id][d] = fallbackNonCool3;
@@ -6370,55 +6564,51 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
       return false;
     };
 
-    // 4-A: 連続3クールの解消
+    // 4-A: 連続3クールの解消（絶対禁止ルール）
     staffList.forEach(s => {
       if (s.excludeFromAi) return;
       const carry = prevMonthCarryOver?.byStaff?.[s.id];
       if (cool3Set.has(ns[s.id]?.[1]) && carry?.prevLastDayWasCool3 && isEditable(s, 1)) {
-        replaceOrSwapOutCool3OnDay(s, 1);
+        replaceOrSwapOutCool3OnDay(s, 1, { preserveCool3AndLeader: false });
       }
       for (let d = 2; d <= maxDay; d++) {
         if (isSunday(year, month, d) || isSunday(year, month, d - 1)) continue;
         if (cool3Set.has(ns[s.id]?.[d]) && cool3Set.has(ns[s.id]?.[d - 1])) {
           if (isEditable(s, d)) {
-            replaceOrSwapOutCool3OnDay(s, d);
+            replaceOrSwapOutCool3OnDay(s, d, { preserveCool3AndLeader: false });
           } else if (isEditable(s, d - 1)) {
-            replaceOrSwapOutCool3OnDay(s, d - 1);
+            replaceOrSwapOutCool3OnDay(s, d - 1, { preserveCool3AndLeader: false });
           }
         }
       }
     });
 
-    // 4-B: 3クール月間上限超過（maxCool3）の解消
+    // 4-B: 3クール月間上限超過（maxCool3）の解消（※3クール必要人数と3クール内リーダーを崩さない範囲でスワップ・調整）
     staffList.forEach(s => {
       if (s.excludeFromAi) return;
       if (s.maxCool3 === undefined || s.maxCool3 === null) return;
       const maxLimit = Number(s.maxCool3);
+      const triedDays = new Set();
       for (let guard = 0; guard < 15; guard++) {
         const c3Days = getStaffCool3Days(s.id);
         if (c3Days.length <= maxLimit) break;
-        const editableC3Days = c3Days.filter(d => isEditable(s, d));
+        const editableC3Days = c3Days.filter(d => isEditable(s, d) && !triedDays.has(d));
         if (editableC3Days.length === 0) break;
         editableC3Days.sort((a, b) => {
-          const hasPartner = (dayNum) =>
-            staffList.some(other => {
-              if (other.id === s.id || other.excludeFromAi || !isEditable(other, dayNum)) return false;
-              const oc = ns[other.id]?.[dayNum];
-              if (!oc || !isWorkCode(oc) || cool3Set.has(oc)) return false;
-              const oMax = other.maxCool3 !== undefined && other.maxCool3 !== null ? Number(other.maxCool3) : 99;
-              return (
-                isShiftAllowedForStaff(s, oc) &&
-                canTakeCool3OnDay(other, dayNum, ns[s.id][dayNum]) &&
-                getStaffCool3Days(other.id).length < oMax
-              );
-            }) ? 1 : 0;
-          return hasPartner(b) - hasPartner(a);
+          const soleA = s.skills?.isLeader && countLeadersOnCode(ns[s.id][a], a) <= 1 ? 1 : 0;
+          const soleB = s.skills?.isLeader && countLeadersOnCode(ns[s.id][b], b) <= 1 ? 1 : 0;
+          if (soleA !== soleB) return soleA - soleB;
+          const surpA = countCodeOnDay(ns[s.id][a], a) - getTargetCount(ns[s.id][a], a);
+          const surpB = countCodeOnDay(ns[s.id][b], b) - getTargetCount(ns[s.id][b], b);
+          return surpB - surpA;
         });
-        if (!replaceOrSwapOutCool3OnDay(s, editableC3Days[0])) break;
+        const targetDay = editableC3Days[0];
+        triedDays.add(targetDay);
+        replaceOrSwapOutCool3OnDay(s, targetDay, { preserveCool3AndLeader: true });
       }
     });
 
-    // --- Phase 5: 3クール月間下限未達（minCool3）の引き上げ（未充足3クールへの昇格 ＆ 余裕がある職員との同一日スワップ） ---
+    // --- Phase 5: 3クール月間下限未達（minCool3）の引き上げ（リーダー要件・施設バランスを保護しつつ調整） ---
     if (!hasScope) {
       staffList.forEach(s => {
         if (s.excludeFromAi) return;
@@ -6441,12 +6631,17 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
 
           let gainedCool3 = false;
 
-          // ステップA: 同じ日に必要人数未達の3クール枠があれば直接昇格（同一施設を最優先）
+          // ステップA: 同じ日に必要人数未達の3クール枠があれば直接昇格（木クリ唯一リーダーを空けない場合のみ）
           for (const d of candidateWorkDays) {
             const curCode = ns[s.id][d];
             const curFacId = shiftDefs[curCode]?.category;
             const allowedShortC3 = cool3Codes
-              .filter(c3 => canTakeCool3OnDay(s, d, c3) && countCodeOnDay(c3, d) < getTargetCount(c3, d))
+              .filter(
+                c3 =>
+                  canTakeCool3OnDay(s, d, c3) &&
+                  countCodeOnDay(c3, d) < getTargetCount(c3, d) &&
+                  !wouldRemovingBreakKikuriLeader(s, d, shiftDefs[c3]?.category)
+              )
               .sort((a, b) => {
                 const aSame = shiftDefs[a]?.category === curFacId ? 1 : 0;
                 const bSame = shiftDefs[b]?.category === curFacId ? 1 : 0;
@@ -6461,7 +6656,7 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           }
           if (gainedCool3) continue;
 
-          // ステップB: 同じ日に3クール回数の余裕（cool3Count > minCool3）がある他職員と1対1スワップ（同一施設を最優先）
+          // ステップB: 同じ日に3クール回数の余裕（cool3Count > minCool3）がある他職員と1対1スワップ（3クール内リーダー・木クリリーダー・ローテーション保護）
           let bestSwap = null;
           for (const d of candidateWorkDays) {
             const curCode = ns[s.id][d];
@@ -6476,11 +6671,14 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
               if (donorC3Count <= donorMin) return;
               if (!canTakeCool3OnDay(s, d, donorC3Code)) return;
               if (!isShiftAllowedForStaff(donor, curCode)) return;
-
+              // donorが3クール唯一のリーダーで自分が非リーダーなら交換不可
+              if (!s.skills?.isLeader && donor.skills?.isLeader && countLeadersOnCode(donorC3Code, d) <= 1) return;
               const donorFacId = shiftDefs[donorC3Code]?.category;
+              // 自分が木クリ唯一のリーダーでdonorが非リーダーなら交換不可
+              if (!donor.skills?.isLeader && wouldRemovingBreakKikuriLeader(s, d, donorFacId)) return;
+
               const isSameFac = donorFacId === curFacId ? 1 : 0;
               if (!isSameFac) {
-                // 施設をまたぐ交換は前後営業日と施設連続を起こさない場合のみ許可（ローテーション維持）
                 const sAdj = getAdjacentFacilitySet(s.id, d);
                 const dAdj = getAdjacentFacilitySet(donor.id, d);
                 if (sAdj.has(donorFacId) || dAdj.has(curFacId)) return;
@@ -6502,6 +6700,235 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
           if (!gainedCool3) break;
         }
       });
+    }
+
+    // --- Phase 6: 3クール必要人数の確実確保 ＆ 3クール枠内リーダー1名以上 ＆ 木クリリーダー1名以上の自動確保パス ---
+    const canSafelyAssignBlankStaffToWorkOnDay = (staff, d) => {
+      if (!staff || staff.excludeFromAi || ns[staff.id]?.[d] || !isEditable(staff, d)) return false;
+      if (wouldAddingWorkExceedStreak(staff, d)) return false;
+      const partRange = getPartTimeWeeklyContractRange(staff);
+      const wDays = operatingWeeks.find(w => w.includes(d));
+      if (wDays) {
+        const curWeekWork = wDays.filter(wd => isWorkCode(ns[staff.id]?.[wd])).length;
+        if (partRange && curWeekWork >= partRange.max) return false;
+        if (!partRange && staff.jobTitle !== 'パート' && wDays.length === 6) {
+          const otherOffs = wDays.filter(wd => wd !== d && !isWorkCode(ns[staff.id]?.[wd])).length;
+          if (otherOffs === 0) return false;
+        }
+      }
+      return true;
+    };
+
+    for (let d = 1; d <= maxDay; d++) {
+      if (!isDayInScope(d) || isSunday(year, month, d)) continue;
+
+      // 6-A: 各3クールシフトの必要人数を最優先で100%満たす
+      cool3Codes.forEach(c3Code => {
+        const target = getTargetCount(c3Code, d);
+        if (target <= 0) return;
+        const c3FacId = shiftDefs[c3Code]?.category;
+
+        for (let guard = 0; guard < 12; guard++) {
+          if (countCodeOnDay(c3Code, d) >= target) break;
+          const needsLeaderNow = countLeadersOnCode(c3Code, d) === 0;
+
+          // ① 同日に通常シフト（日勤・2クール）で出勤中の配置可能スタッフを3クールへ昇格（上限内の人を優先）
+          let workingCands = staffList.filter(cand => {
+            if (cand.excludeFromAi || !isEditable(cand, d)) return false;
+            const curCode = ns[cand.id]?.[d];
+            if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) return false;
+            if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+            if (wouldRemovingBreakKikuriLeader(cand, d, c3FacId)) return false;
+            const cMax = cand.maxCool3 !== undefined && cand.maxCool3 !== null ? Number(cand.maxCool3) : 99;
+            return getStaffCool3Days(cand.id).length < cMax;
+          });
+
+          // ② 上限内の通常出勤者に候補がいなければ、週休・連勤を守れる当日の空欄スタッフから補充
+          if (workingCands.length === 0) {
+            const blankCands = staffList.filter(cand => {
+              if (!canSafelyAssignBlankStaffToWorkOnDay(cand, d)) return false;
+              if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+              const cMax = cand.maxCool3 !== undefined && cand.maxCool3 !== null ? Number(cand.maxCool3) : 99;
+              return getStaffCool3Days(cand.id).length < cMax;
+            });
+            if (blankCands.length > 0) {
+              blankCands.sort((a, b) => {
+                if (needsLeaderNow) {
+                  const aL = a.skills?.isLeader ? 1 : 0;
+                  const bL = b.skills?.isLeader ? 1 : 0;
+                  if (aL !== bL) return bL - aL;
+                }
+                const aRem = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+                const bRem = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+                return bRem - aRem;
+              });
+              ns[blankCands[0].id][d] = c3Code;
+              changedCount++;
+              continue;
+            }
+          }
+
+          // ③ それでも足りない緊急時のみ、連続3クールにならない通常出勤者から最小超過で昇格して欠員を防ぐ
+          if (workingCands.length === 0) {
+            workingCands = staffList.filter(cand => {
+              if (cand.excludeFromAi || !isEditable(cand, d)) return false;
+              const curCode = ns[cand.id]?.[d];
+              if (!curCode || !isWorkCode(curCode) || cool3Set.has(curCode)) return false;
+              if ((cand.maxCool3 ?? 5) <= 0) return false;
+              if (!canTakeCool3OnDay(cand, d, c3Code)) return false;
+              if (wouldRemovingBreakKikuriLeader(cand, d, c3FacId)) return false;
+              return true;
+            });
+          }
+
+          if (workingCands.length === 0) break;
+
+          workingCands.sort((a, b) => {
+            if (needsLeaderNow) {
+              const aL = a.skills?.isLeader ? 1 : 0;
+              const bL = b.skills?.isLeader ? 1 : 0;
+              if (aL !== bL) return bL - aL;
+            }
+            const codeA = ns[a.id][d];
+            const codeB = ns[b.id][d];
+            const surpA = countCodeOnDay(codeA, d) - getTargetCount(codeA, d);
+            const surpB = countCodeOnDay(codeB, d) - getTargetCount(codeB, d);
+            if (surpA !== surpB) return surpB - surpA;
+            const sameA = shiftDefs[codeA]?.category === c3FacId ? 1 : 0;
+            const sameB = shiftDefs[codeB]?.category === c3FacId ? 1 : 0;
+            if (sameA !== sameB) return sameB - sameA;
+            const remA = (a.maxCool3 ?? 99) - getStaffCool3Days(a.id).length;
+            const remB = (b.maxCool3 ?? 99) - getStaffCool3Days(b.id).length;
+            return remB - remA;
+          });
+
+          ns[workingCands[0].id][d] = c3Code;
+          changedCount++;
+        }
+      });
+
+      // 6-B: 各3クール枠の中に必ずリーダー（isLeader）を1名以上確保する
+      cool3Codes.forEach(c3Code => {
+        if (getTargetCount(c3Code, d) <= 0 && countCodeOnDay(c3Code, d) <= 0) return;
+        if (countLeadersOnCode(c3Code, d) >= 1) return;
+
+        const c3FacId = shiftDefs[c3Code]?.category;
+        const editableNonLeadersInC3 = staffList.filter(
+          st => !st.excludeFromAi && isEditable(st, d) && ns[st.id]?.[d] === c3Code && !st.skills?.isLeader
+        );
+
+        // 方法①: 同日の日勤・2クールにいるリーダー保持者と1対1スワップ（同施設を最優先、上限内を優先）
+        if (editableNonLeadersInC3.length > 0) {
+          let bestLeaderSwap = null;
+          staffList.forEach(leaderCand => {
+            if (leaderCand.excludeFromAi || !leaderCand.skills?.isLeader || !isEditable(leaderCand, d)) return;
+            const lCode = ns[leaderCand.id]?.[d];
+            if (!lCode || !isWorkCode(lCode) || cool3Set.has(lCode)) return;
+            if ((leaderCand.maxCool3 ?? 5) <= 0) return;
+            if (!canTakeCool3OnDay(leaderCand, d, c3Code)) return;
+            if (wouldRemovingBreakKikuriLeader(leaderCand, d, c3FacId)) return;
+
+            const lMax = leaderCand.maxCool3 !== undefined && leaderCand.maxCool3 !== null ? Number(leaderCand.maxCool3) : 99;
+            const lRem = lMax - getStaffCool3Days(leaderCand.id).length;
+            const withinMax = lRem > 0 ? 1 : 0;
+            const sameFac = shiftDefs[lCode]?.category === c3FacId ? 1 : 0;
+
+            editableNonLeadersInC3.forEach(nonL => {
+              if (!isShiftAllowedForStaff(nonL, lCode)) return;
+              const score = withinMax * 1000 + sameFac * 100 + lRem;
+              if (!bestLeaderSwap || score > bestLeaderSwap.score) {
+                bestLeaderSwap = { leaderCand, nonL, lCode, score };
+              }
+            });
+          });
+
+          if (bestLeaderSwap) {
+            ns[bestLeaderSwap.leaderCand.id][d] = c3Code;
+            ns[bestLeaderSwap.nonL.id][d] = bestLeaderSwap.lCode;
+            changedCount++;
+            return;
+          }
+        }
+
+        // 方法②: 別の3クール枠にリーダーが2名以上いる場合、3クール同士で1対1スワップ
+        if (editableNonLeadersInC3.length > 0) {
+          let bestCrossC3Swap = null;
+          cool3Codes.forEach(otherC3 => {
+            if (otherC3 === c3Code || countLeadersOnCode(otherC3, d) < 2) return;
+            staffList.forEach(surplusLeader => {
+              if (
+                surplusLeader.excludeFromAi ||
+                !surplusLeader.skills?.isLeader ||
+                !isEditable(surplusLeader, d) ||
+                ns[surplusLeader.id]?.[d] !== otherC3
+              ) {
+                return;
+              }
+              if (!canTakeCool3OnDay(surplusLeader, d, c3Code)) return;
+              editableNonLeadersInC3.forEach(nonL => {
+                if (!canTakeCool3OnDay(nonL, d, otherC3)) return;
+                bestCrossC3Swap = { surplusLeader, nonL, otherC3 };
+              });
+            });
+          });
+
+          if (bestCrossC3Swap) {
+            ns[bestCrossC3Swap.surplusLeader.id][d] = c3Code;
+            ns[bestCrossC3Swap.nonL.id][d] = bestCrossC3Swap.otherC3;
+            changedCount++;
+          }
+        }
+      });
+
+      // 6-C: 2クールまでの施設のうち「木クリ」に必ずリーダーを1名以上確保する
+      Object.values(categoryDefs)
+        .filter(cat => isKikuriFacilityCategory(cat))
+        .forEach(kikuriCat => {
+          const kikuriShiftCodes = allFacilityWorkCodes.filter(c => shiftDefs[c]?.category === kikuriCat.id);
+          const kikuriTargetSum = kikuriShiftCodes.reduce((sum, c) => sum + getTargetCount(c, d), 0);
+          if (kikuriTargetSum <= 0) return;
+          if (countLeadersInFacility(kikuriCat.id, d) >= 1) return;
+
+          const editableNonLeadersInKikuri = staffList.filter(st => {
+            const c = ns[st.id]?.[d];
+            return Boolean(c && shiftDefs[c]?.category === kikuriCat.id && !st.excludeFromAi && isEditable(st, d) && !st.skills?.isLeader);
+          });
+          if (editableNonLeadersInKikuri.length === 0) return;
+
+          let bestKikuriSwap = null;
+          staffList.forEach(donorLeader => {
+            if (donorLeader.excludeFromAi || !donorLeader.skills?.isLeader || !isEditable(donorLeader, d)) return;
+            const dCode = ns[donorLeader.id]?.[d];
+            if (!dCode || !isWorkCode(dCode)) return;
+            const dFacId = shiftDefs[dCode]?.category;
+            if (dFacId === kikuriCat.id) return;
+
+            // donorが3クール唯一のリーダー、または他木クリ系施設の唯一リーダーなら除外
+            if (cool3Set.has(dCode) && countLeadersOnCode(dCode, d) <= 1) return;
+            if (isKikuriFacilityCategory(categoryDefs[dFacId]) && countLeadersInFacility(dFacId, d) <= 1) return;
+
+            editableNonLeadersInKikuri.forEach(kNonL => {
+              const kCode = ns[kNonL.id][d];
+              if (!isShiftAllowedForStaff(donorLeader, kCode)) return;
+              if (!isShiftAllowedForStaff(kNonL, dCode)) return;
+              if (cool3Set.has(dCode)) {
+                const kMax = kNonL.maxCool3 !== undefined && kNonL.maxCool3 !== null ? Number(kNonL.maxCool3) : 99;
+                if (!canTakeCool3OnDay(kNonL, d, dCode) || getStaffCool3Days(kNonL.id).length >= kMax) return;
+              }
+              const nonCool3Bonus = cool3Set.has(dCode) ? 0 : 50;
+              const score = nonCool3Bonus - countStaffFacilityInMonth(donorLeader.id, kikuriCat.id);
+              if (!bestKikuriSwap || score > bestKikuriSwap.score) {
+                bestKikuriSwap = { donorLeader, kNonL, dCode, kCode, score };
+              }
+            });
+          });
+
+          if (bestKikuriSwap) {
+            ns[bestKikuriSwap.donorLeader.id][d] = bestKikuriSwap.kCode;
+            ns[bestKikuriSwap.kNonL.id][d] = bestKikuriSwap.dCode;
+            changedCount++;
+          }
+        });
     }
 
     return { nextShifts: ns, changedCount };
@@ -7597,12 +8024,12 @@ const prepareScheduleDataForAi = (customShifts = shiftData, customTasks = taskDa
          - 日別の出勤人数が偏らないよう、"thisWeekPlan.plannedBlankOffDaysInThisWeek"（公休候補日）と "thisWeekPlan.plannedWorkDaysInThisWeek"（出勤予定日）を事前バランス配分しています。
          - 原則として **plannedWorkDaysInThisWeek の日は漏れなく出勤シフトを割り当て**、**plannedBlankOffDaysInThisWeek は空欄（公休）のまま残してください**。ただし、特定シフトの必要人数や必須スキルが欠ける場合は、その職員の週休最低日数（mustKeepBlankDaysMinInThisWeek）・最大${maxStreak}連勤制限・パート週契約上限（contractWorkDaysMax）を絶対に破らない範囲で、同週内の出勤日と公休日を入れ替えて必要人数を満たす工夫をして構いません。
          - ★週単位の契約出勤日数（"contractWorkDaysMin"〜"contractWorkDaysMax"）が設定されているパート職員は、その契約出勤日数（下限〜上限）を【絶対厳守】してください。
-      4. 3クール上限・連続3クール禁止と柔軟なペース配分（★重要★）:
-         - 3クールシフト（${cool3DescStr}）は、月間残り上限（"thisWeekPlan.maxAllowedNewCool3InThisWeek"）を超えて割り当てることは禁止です。
-         - 同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です（"forbidCool3OnFirstDayOfWeek": true の職員には今週初日 ${firstDay}日 に3クールを入れないこと）。
-         - 月間上限の範囲内であれば特定の人に固定せず、"thisWeekPlan.recommendedNewCool3InThisWeek" を目安にしながら、各日の3クール必要枠がしっかり埋まり、かつ月間下限（remainingMinCool3Needed > 0）がまだ残っている職員へ優先的に回るよう柔軟に配分してください。
-      5. 施設ごとの必須スキル最低人数とパワーバランス・必要人数の充足:
-         - 各施設の1日あたりの必須スキル最低人数: 【${skillReqSummaryText}】を満たすよう優先配置してください。
+      4. 3クールの人員＆リーダー最優先確保と連続3クール禁止・柔軟なペース配分（★最優先・絶対厳守★）:
+         - 【3クール人員の絶対確保】3クールシフト（${cool3DescStr}）の必要人数が設定されている日は、日勤や2クール枠より**最優先で3クールの必要人数を100%満たしてください**（万一人数が足りない日でも、不足は日勤側に残し3クールは絶対に欠員させないこと）。
+         - 【3クール内リーダー必須】3クールがある施設では、施設全体ではなく**「その3クール枠の中に」必ずリーダー保持者（skills.isLeader: true）を1名以上配置**してください（夜間帯のリーダー不在を防ぐため）。
+         - 3クールシフトは原則として月間残り上限（"thisWeekPlan.maxAllowedNewCool3InThisWeek"）以内で、"thisWeekPlan.recommendedNewCool3InThisWeek" を目安に特定の人に固定せず柔軟に配分してください。また、同じ職員に3クールシフトを2日連続で割り当てることは絶対禁止です（"forbidCool3OnFirstDayOfWeek": true の職員には今週初日 ${firstDay}日 に3クールを入れないこと）。
+      5. 施設ごとのリーダー・必須スキル確保とパワーバランス・必要人数の充足:
+         - 2クールまでの施設については、**木クリに必ずリーダー保持者（skills.isLeader: true）を1名以上配置**してください（じんクリはリーダー必須ではありません）。その他の必須スキル設定【${skillReqSummaryText}】も満たすよう優先配置してください。
          - 各日のシフト別目標人数は "targetWeek.exactTargetCountsByDay" と "currentDailySummary" を参照し、出勤予定スタッフ全員を使って**空欄の取りこぼしなくバランスよく埋めてください**。
          - 出勤予定人数が必要人数合計を上回る日（dailyHeadcountBalancePlan[d].surplus > 0）は、3クール枠を必要人数以上にオーバーさせず、余剰分は各施設の日勤・2クール枠へ偏りなく分散して配置してください。
          - 各施設のパワーバランス平準化: 【${powerScoreSummaryText}】。その日に出勤するスタッフの1人あたり平均powerScoreが施設間で極端に偏らないよう、高スコア者と中堅・若手を施設間でバランスよく分散配置してください。
@@ -7837,7 +8264,7 @@ ${dailyCheckExampleLines}
           【手直し時の厳守ルール】
           1. 変更してよいセル: 各職員の "aiEditableDaysByStaff" に含まれる日付のみ変更・入れ替え・空欄戻し（null）が可能です。個人入力（staffRequests）・各班管理者固定（teamAdminLocks）・当初からの既存シフト・ME室（${meShiftDescStr}）・その他（出勤・公出等）・日曜日は絶対に変更・新規出力しないでください（※公出は公休扱いのため連勤・出勤日数・出勤人数にはカウントしません）。
           2. 連勤超過の直し方: 最大${maxStreak}連勤を超えている職員は、aiEditableDaysByStaff に含まれる連勤途中の日を null（空欄の公休）に変更して連勤を切り、その日に週休・連勤上限を守ったまま追加出勤できる余力スタッフが他にいる場合のみ振り替えてください（余力スタッフがいなければパート・手動調整で補うため未達のまま空けておくこと）。
-          3. 必須スキル（リーダー等）偏り・人数不足の直し方: 同日の他施設に余剰リーダーがいる場合は施設間でシフトを入れ替えるか、週休・連勤上限を守ったまま出勤日数に余力のある未ロック空欄スタッフがいる場合のみ出勤シフト（allowedWorkShifts内の【シフトコード】）を割り当ててください。誰かの週休（空欄公休）を潰したり${maxStreak + 1}連勤以上を作ってまで人数不足を埋めることは絶対禁止です。
+          3. 3クール人員・3クール内リーダー・木クリリーダー・人数不足の直し方: 3クール枠の必要人数と「各3クール枠内のリーダー1名以上」、および「木クリのリーダー1名以上」を最優先で確保してください（じんクリはリーダー不要）。3クール内にリーダーがいない場合や木クリにリーダーがいない場合は、同日の日勤・2クールや他施設の余剰リーダーとシフトを入れ替えて確実に解消してください。誰かの週休（空欄公休）を潰したり${maxStreak + 1}連勤以上を作ったりすることは絶対禁止です。
           4. 新たな違反を作らないこと: 手直しによって別の職員が${maxStreak + 1}連勤以上になったり、週休が消えたり、3クール連続（${cool3DescStr}の連続）や maxCool3 超過にならないよう必ず確認してください。
           5. 勤務地の偏り・連日同一施設への配慮: 空欄への追加配置やシフト入れ替えを行う際は、複数施設に入れる職員（allowedFacilitiesCount >= 2）について前後の営業日と別の施設・これまでに回数が少ない施設（currentStats.priorityFacilitiesToBalance）を優先して選び、同じ施設ばかり連続しないよう配慮してください。
           ${strictConditions ? `\n【引き続き厳守する [絶対] カスタム条件（※文中のシフト名・施設名は上の対応表からコードへ変換して適用）】\n${strictConditions}\n` : ''}
@@ -8847,8 +9274,59 @@ ${messageText}`;
         const catActualHeadcount = actualHeadcountByCat[cat.id] || 0;
         if (catTargetHeadcount === 0 && catActualHeadcount === 0) return;
 
+        const catShiftDefsForDay = catShiftCodes.map(c => shiftDefs[c]).filter(Boolean);
+        const catHasCool3 = catShiftDefsForDay.some(sd => isCool3ShiftDef(sd, categoryDefs));
+        const activeCool3ForDay = catShiftDefsForDay.filter(
+          sd =>
+            isCool3ShiftDef(sd, categoryDefs) &&
+            ((targetCounts[sd.code]?.[dow] || 0) > 0 || staffList.some(s => shiftData[s.id]?.[day] === sd.code))
+        );
+
         const catShortages = [];
         STAFF_SKILLS.forEach(sk => {
+          if (sk.key === 'isLeader') {
+            if (activeCool3ForDay.length > 0) {
+              activeCool3ForDay.forEach(c3Def => {
+                const c3LeaderCnt = staffList.filter(
+                  s => shiftData[s.id]?.[day] === c3Def.code && s.skills?.isLeader
+                ).length;
+                if (c3LeaderCnt < 1) {
+                  const item = {
+                    catId: cat.id,
+                    catLabel: `${cat.label}(${c3Def.label})`,
+                    skillKey: 'isLeader',
+                    skillLabel: '3クール内リーダー',
+                    actual: c3LeaderCnt,
+                    target: 1,
+                  };
+                  catShortages.push(item);
+                  allShortages.push(item);
+                }
+              });
+              return;
+            }
+            if (!catHasCool3 && !isKikuriFacilityCategory(cat)) return;
+            const reqLeader = isKikuriFacilityCategory(cat)
+              ? Math.max(1, readSkillMin(cat.id, 'isLeader'))
+              : readSkillMin(cat.id, 'isLeader');
+            if (reqLeader > 0) {
+              const actualL = skillCountsByCat[cat.id]?.isLeader || 0;
+              if (actualL < reqLeader) {
+                const item = {
+                  catId: cat.id,
+                  catLabel: cat.label,
+                  skillKey: 'isLeader',
+                  skillLabel: sk.label,
+                  actual: actualL,
+                  target: reqLeader,
+                };
+                catShortages.push(item);
+                allShortages.push(item);
+              }
+            }
+            return;
+          }
+
           const reqMin = readSkillMin(cat.id, sk.key);
           if (reqMin > 0) {
             const actual = skillCountsByCat[cat.id]?.[sk.key] || 0;
