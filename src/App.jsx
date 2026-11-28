@@ -13996,8 +13996,8 @@ ${messageText}`;
                               <th className="p-2 border text-left min-w-[120px]">職員名 / 役職</th>
                               <th className="p-2 border text-center w-14">編集</th>
                               <th className="p-2 border text-center w-16">AI除外</th>
-                              <th className="p-2 border text-center w-32">契約出勤日数</th>
                               <th className="p-2 border text-center w-28">3クール(下限〜上限)</th>
+                              <th className="p-2 border text-center w-32">契約出勤日数</th>
                               <th className="p-2 border text-left min-w-[210px]">AI配置可能施設 / 制限</th>
                               {STAFF_SKILLS.map(skill => (<th key={skill.key} className="p-2 border text-center w-16"><div className="flex flex-col items-center"><skill.icon size={14} className="text-gray-600 mb-1"/><span>{skill.label}</span></div></th>))}
                             </tr>
@@ -14026,6 +14026,49 @@ ${messageText}`;
                                   <td className="p-2 border font-bold text-gray-700"><div>{staff.name}</div><div className="text-[10px] text-gray-400">{staff.jobTitle}</div></td>
                                   <td className="p-2 border text-center"><button onClick={() => handleEditStaff(staff)} className="text-blue-600 hover:bg-blue-50 p-1 rounded" title="詳細・個別シフト制限を編集"><Edit2 size={14}/></button></td>
                                   <td className="p-2 border text-center bg-red-50"><input type="checkbox" className="w-4 h-4" checked={staff.excludeFromAi || false} onChange={(e) => { const newList = [...staffList]; newList[index] = { ...staff, excludeFromAi: e.target.checked }; setStaffList(newList); }}/></td>
+                                  <td className="p-2 border text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <select
+                                        title="3クール月間下限回数"
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.minCool3 ?? 0)}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            minCool3: val,
+                                            maxCool3: Math.max(val, staff.maxCool3 ?? 5),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.minCool3 ?? 0).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
+                                      <span className="text-gray-400 text-xs">〜</span>
+                                      <select
+                                        title="3クール月間上限回数"
+                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
+                                        value={String(staff.maxCool3 ?? 5)}
+                                        onChange={(e) => {
+                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
+                                          const newList = [...staffList];
+                                          newList[index] = {
+                                            ...staff,
+                                            maxCool3: val,
+                                            minCool3: Math.min(staff.minCool3 ?? 0, val),
+                                          };
+                                          setStaffList(newList);
+                                        }}
+                                      >
+                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.maxCool3 ?? 5).map(n => (
+                                          <option key={n} value={String(n)}>{n}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </td>
                                   <td className="p-2 border text-center bg-emerald-50/30">
                                     {staff.jobTitle === 'パート' ? (
                                       <div className="flex items-center justify-center gap-1">
@@ -14082,49 +14125,6 @@ ${messageText}`;
                                     ) : (
                                       <span className="text-gray-300 text-xs">-</span>
                                     )}
-                                  </td>
-                                  <td className="p-2 border text-center">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <select
-                                        title="3クール月間下限回数"
-                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
-                                        value={String(staff.minCool3 ?? 0)}
-                                        onChange={(e) => {
-                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                          const newList = [...staffList];
-                                          newList[index] = {
-                                            ...staff,
-                                            minCool3: val,
-                                            maxCool3: Math.max(val, staff.maxCool3 ?? 5),
-                                          };
-                                          setStaffList(newList);
-                                        }}
-                                      >
-                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.minCool3 ?? 0).map(n => (
-                                          <option key={n} value={String(n)}>{n}</option>
-                                        ))}
-                                      </select>
-                                      <span className="text-gray-400 text-xs">〜</span>
-                                      <select
-                                        title="3クール月間上限回数"
-                                        className="w-12 p-1 border rounded text-center text-xs bg-white font-bold"
-                                        value={String(staff.maxCool3 ?? 5)}
-                                        onChange={(e) => {
-                                          const val = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                          const newList = [...staffList];
-                                          newList[index] = {
-                                            ...staff,
-                                            maxCool3: val,
-                                            minCool3: Math.min(staff.minCool3 ?? 0, val),
-                                          };
-                                          setStaffList(newList);
-                                        }}
-                                      >
-                                        {buildNumericOptions(COOL3_LIMIT_OPTIONS, staff.maxCool3 ?? 5).map(n => (
-                                          <option key={n} value={String(n)}>{n}</option>
-                                        ))}
-                                      </select>
-                                    </div>
                                   </td>
                                   <td className="p-2 border">
                                     <div className="flex flex-wrap items-center gap-1">
